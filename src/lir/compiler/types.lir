@@ -1,0 +1,306 @@
+// LIR Compiler — Type System
+// Type representations, type checking, ownership tracking
+// Ensures memory safety and data race freedom at compile time
+
+import core
+
+// ════════════════════════════════════════════════════════════════════════════
+// Type Representation
+// ════════════════════════════════════════════════════════════════════════════
+
+enum TypeKind {
+    // Primitives
+    Bool I8 I16 I32 I64 I128
+    U8 U16 U32 U64 U128
+    F16 F32 F64 F128
+    Char String Void Never
+
+    // Compound
+    Pointer           // *T
+    ConstPointer      // *const T
+    MutPointer        // *mut T
+    Optional          // ?T
+    Slice             // []T
+    Array             // [T; N]
+    Tuple             // (T1, T2, ...)
+    Function          // fn(T1, T2) -> R
+    Result            // !T
+
+    // User-defined
+    Named             // User, Color, etc.
+    Struct            // struct { ... }
+    Enum              // enum { ... }
+    Trait             // trait { ... }
+
+    // Generic
+    Generic           // T (type parameter)
+    GenericInst       // Vec(i32) (generic instantiation)
+
+    // Special
+    TypeOf            // typeof(expr)
+    ComptimeType      // comptime type
+    Error
+}
+
+struct TypeInfo {
+    kind: TypeKind
+    size: u32          // size in bytes (0 = opaque)
+    align: u32         // alignment
+    id: u32            // unique type ID
+    name: string       // type name (for debugging)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Type Table
+// ════════════════════════════════════════════════════════════════════════════
+
+struct TypeTable {
+    types: ArrayList(TypeInfo)
+    next_id: u32
+    allocator: *Allocator
+
+    fn init(alloc: *Allocator) -> TypeTable {
+        TypeTable {
+            types: ArrayList(TypeInfo).init(alloc)
+            next_id: 1
+            allocator: alloc
+        }
+    }
+
+    fn addType(self: *TypeTable, kind: TypeKind, size: u32, align_val: u32, name: string) -> u32 {
+        let id = self.next_id
+        self.next_id += 1
+        self.types.push(TypeInfo {
+            kind: kind
+            size: size
+            align: align_val
+            id: id
+            name: name
+        })
+        id
+    }
+
+    fn getType(self: *TypeTable, id: u32) -> ?*TypeInfo {
+        if id == 0 or id >= self.types.len() { return null }
+        &self.types.items.ptr[id - 1]
+    }
+
+    fn findByName(self: *TypeTable, name: string) -> ?u32 {
+        var i: u64 = 0
+        while i < self.types.len() {
+            let t = &self.types.items.ptr[i]
+            if t.name.len == name.len {
+                var match = true
+                var j: u64 = 0
+                while j < name.len {
+                    if t.name.ptr[j] != name.ptr[j] { match = false; break }
+                    j += 1
+                }
+                if match { return t.id }
+            }
+            i += 1
+        }
+        null
+    }
+
+    fn initPrimitives(self: *TypeTable) {
+        // Add primitive types
+        self.addType(TypeKind.Void, 0, 1, "void")
+        self.addType(TypeKind.Bool, 1, 1, "bool")
+        self.addType(TypeKind.I8, 1, 1, "i8")
+        self.addType(TypeKind.I16, 2, 2, "i16")
+        self.addType(TypeKind.I32, 4, 4, "i32")
+        self.addType(TypeKind.I64, 8, 8, "i64")
+        self.addType(TypeKind.I128, 16, 16, "i128")
+        self.addType(TypeKind.U8, 1, 1, "u8")
+        self.addType(TypeKind.U16, 2, 2, "u16")
+        self.addType(TypeKind.U32, 4, 4, "u32")
+        self.addType(TypeKind.U64, 8, 8, "u64")
+        self.addType(TypeKind.U128, 16, 16, "u128")
+        self.addType(TypeKind.F16, 2, 2, "f16")
+        self.addType(TypeKind.F32, 4, 4, "f32")
+        self.addType(TypeKind.F64, 8, 8, "f64")
+        self.addType(TypeKind.F128, 16, 16, "f128")
+        self.addType(TypeKind.Char, 4, 4, "char")
+        self.addType(TypeKind.String, 16, 8, "string")  // ptr + len
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Symbol Table
+// ════════════════════════════════════════════════════════════════════════════
+
+enum SymbolKind {
+    Local
+    Parameter
+    Function
+    Struct
+    Enum
+    Trait
+    Type
+    Const
+    Module
+}
+
+enum Ownership {
+    Owned
+    Borrowed
+    Moved
+    Dropped
+}
+
+struct Symbol {
+    name: string
+    kind: SymbolKind
+    type_id: u32
+    ownership: Ownership
+    is_mut: bool
+    line: u32
+    col: u32
+    scope_depth: u32
+}
+
+struct SymbolTable {
+    symbols: ArrayList(Symbol)
+    scope_depth: u32
+    allocator: *Allocator
+
+    fn init(alloc: *Allocator) -> SymbolTable {
+        SymbolTable {
+            symbols: ArrayList(Symbol).init(alloc)
+            scope_depth: 0
+            allocator: alloc
+        }
+    }
+
+    fn pushScope(self: *SymbolTable) {
+        self.scope_depth += 1
+    }
+
+    fn popScope(self: *SymbolTable) {
+        // Remove symbols from this scope
+        var i = self.symbols.len()
+        while i > 0 {
+            i -= 1
+            if self.symbols.items.ptr[i].scope_depth == self.scope_depth {
+                // Mark as dropped
+                self.symbols.items.ptr[i].ownership = Ownership.Dropped
+            }
+        }
+        if self.scope_depth > 0 { self.scope_depth -= 1 }
+    }
+
+    fn addSymbol(self: *SymbolTable, sym: Symbol) -> bool {
+        // Check for redefinition in same scope
+        var i: u64 = 0
+        while i < self.symbols.len() {
+            let existing = &self.symbols.items.ptr[i]
+            if existing.scope_depth == self.scope_depth and existing.ownership != Ownership.Dropped {
+                if existing.name.len == sym.name.len {
+                    var match = true
+                    var j: u64 = 0
+                    while j < existing.name.len {
+                        if existing.name.ptr[j] != sym.name.ptr[j] { match = false; break }
+                        j += 1
+                    }
+                    if match { return false } // redefinition error
+                }
+            }
+            i += 1
+        }
+        self.symbols.push(sym)
+        true
+    }
+
+    fn lookup(self: *SymbolTable, name: string) -> ?*Symbol {
+        var i = self.symbols.len()
+        while i > 0 {
+            i -= 1
+            let sym = &self.symbols.items.ptr[i]
+            if sym.ownership == Ownership.Dropped { continue }
+            if sym.name.len == name.len {
+                var match = true
+                var j: u64 = 0
+                while j < name.len {
+                    if sym.name.ptr[j] != name.ptr[j] { match = false; break }
+                    j += 1
+                }
+                if match { return sym }
+            }
+        }
+        null
+    }
+
+    fn canBorrow(self: *SymbolTable, name: string, mutable: bool) -> bool {
+        let sym = self.lookup(name)
+        if sym == null { return false }
+        if sym.?.ownership == Ownership.Moved { return false }
+        if sym.?.ownership == Ownership.Dropped { return false }
+        // Check for conflicting borrows
+        // TODO: implement borrow checking
+        true
+    }
+
+    fn moveTo(self: *SymbolTable, name: string) -> bool {
+        let sym = self.lookup(name)
+        if sym == null { return false }
+        if sym.?.ownership == Ownership.Moved { return false }
+        sym.?.ownership = Ownership.Moved
+        true
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Type Checker
+// ════════════════════════════════════════════════════════════════════════════
+
+struct TypeChecker {
+    types: TypeTable
+    symbols: SymbolTable
+    errors: ArrayList(TypeError)
+    allocator: *Allocator
+
+    struct TypeError {
+        msg: string
+        line: u32
+        col: u32
+        expected: string
+        found: string
+    }
+
+    fn init(alloc: *Allocator) -> TypeChecker {
+        var types = TypeTable.init(alloc)
+        types.initPrimitives()
+
+        TypeChecker {
+            types: types
+            symbols: SymbolTable.init(alloc)
+            errors: ArrayList(TypeError).init(alloc)
+            allocator: alloc
+        }
+    }
+
+    fn addError(self: *TypeChecker, msg: string, line: u32, col: u32, expected: string, found: string) {
+        self.errors.push(TypeError {
+            msg: msg
+            line: line
+            col: col
+            expected: expected
+            found: found
+        })
+    }
+
+    fn hasErrors(self: *TypeChecker) -> bool {
+        self.errors.len() > 0
+    }
+
+    fn checkType(self: *TypeChecker, expected: u32, found: u32, line: u32, col: u32) -> bool {
+        if expected == found { return true }
+        let exp_info = self.types.getType(expected)
+        let found_info = self.types.getType(found)
+        let exp_name = if exp_info != null { exp_info.?.name } else { string { ptr: "?", len: 1 } }
+        let found_name = if found_info != null { found_info.?.name } else { string { ptr: "?", len: 1 } }
+        self.addError("type mismatch", line, col, exp_name, found_name)
+        false
+    }
+}

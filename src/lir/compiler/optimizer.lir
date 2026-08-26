@@ -1,0 +1,254 @@
+// LIR Compiler — Optimizer
+// Multi-pass optimization pipeline
+// Targets: faster execution, smaller binaries, better cache behavior
+
+import core
+
+// ════════════════════════════════════════════════════════════════════════════
+// Optimization Levels
+// ════════════════════════════════════════════════════════════════════════════
+
+enum OptLevel {
+    None        // No optimization (debug builds)
+    Low         // Basic optimizations (fast compile)
+    Medium      // Standard optimizations (release builds)
+    High        // Aggressive optimizations (max performance)
+    Size        // Optimize for binary size
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Optimization Passes
+// ════════════════════════════════════════════════════════════════════════════
+
+struct Optimizer {
+    level: OptLevel
+    stats: OptStats
+    allocator: *Allocator
+
+    struct OptStats {
+        constant_folds: u32
+        dead_code_eliminated: u32
+        functions_inlined: u32
+        branches_simplified: u32
+        loops_unrolled: u32
+        allocations_elided: u32
+        instructions_reduced: u32
+    }
+
+    fn init(level: OptLevel, alloc: *Allocator) -> Optimizer {
+        Optimizer {
+            level: level
+            stats = OptStats {
+                constant_folds: 0
+                dead_code_eliminated: 0
+                functions_inlined: 0
+                branches_simplified: 0
+                loops_unrolled: 0
+                allocations_elided: 0
+                instructions_reduced: 0
+            }
+            allocator: alloc
+        }
+    }
+
+    fn printStats(self: *Optimizer) {
+        print("Optimization stats:\n")
+        print("  Constant folds: ")
+        printInt(self.stats.constant_folds as i64)
+        print("\n")
+        print("  Dead code eliminated: ")
+        printInt(self.stats.dead_code_eliminated as i64)
+        print("\n")
+        print("  Functions inlined: ")
+        printInt(self.stats.functions_inlined as i64)
+        print("\n")
+        print("  Branches simplified: ")
+        printInt(self.stats.branches_simplified as i64)
+        print("\n")
+        print("  Loops unrolled: ")
+        printInt(self.stats.loops_unrolled as i64)
+        print("\n")
+        print("  Allocations elided: ")
+        printInt(self.stats.allocations_elided as i64)
+        print("\n")
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Constant Folding
+// ════════════════════════════════════════════════════════════════════════════
+
+// Evaluates constant expressions at compile time
+// 2 + 3 → 5
+// "hello" ++ " world" → "hello world"
+// 1 << 4 → 16
+
+fn foldConstants(expr: *ASTNode, ast: *AST) -> bool {
+    if expr.kind == NodeKind.BinaryExpr {
+        let left = ast.getNode(expr.data0)
+        let right = ast.getNode(expr.data1)
+
+        // Both operands are integer literals
+        if left.kind == NodeKind.IntLiteral and right.kind == NodeKind.IntLiteral {
+            let a = left.data0 as i64
+            let b = right.data0 as i64
+            let result = match expr.data2 { // op
+                0 => a + b,     // add
+                1 => a - b,     // sub
+                2 => a * b,     // mul
+                3 => a / b,     // div
+                4 => a % b,     // mod
+                5 => a & b,     // and
+                6 => a | b,     // or
+                7 => a ^ b,     // xor
+                8 => a << b,    // shl
+                9 => a >> b,    // shr
+                else => a
+            }
+            expr.kind = NodeKind.IntLiteral
+            expr.data0 = result as u64
+            return true
+        }
+
+        // Both operands are float literals
+        if left.kind == NodeKind.FloatLiteral and right.kind == NodeKind.FloatLiteral {
+            let a = @as(f64, @bitCast(left.data0))
+            let b = @as(f64, @bitCast(right.data0))
+            let result = match expr.data2 {
+                0 => a + b,
+                1 => a - b,
+                2 => a * b,
+                3 => a / b,
+                else => a
+            }
+            expr.kind = NodeKind.FloatLiteral
+            expr.data0 = @bitCast(result)
+            return true
+        }
+
+        // Boolean operations
+        if left.kind == NodeKind.BoolLiteral and right.kind == NodeKind.BoolLiteral {
+            let a = left.data0 != 0
+            let b = right.data0 != 0
+            let result = match expr.data2 {
+                10 => a and b,  // and
+                11 => a or b,   // or
+                else => a
+            }
+            expr.kind = NodeKind.BoolLiteral
+            expr.data0 = if result { 1 } else { 0 }
+            return true
+        }
+    }
+
+    false
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Dead Code Elimination
+// ════════════════════════════════════════════════════════════════════════════
+
+// Removes unreachable code after return/break/continue
+// Removes unused variables
+// Removes empty blocks
+
+fn eliminateDeadCode(block: *ASTNode, ast: *AST) -> u32 {
+    let mut removed: u32 = 0
+    let mut found_terminator = false
+
+    // Scan statements in block
+    // If we find a return/break/continue, mark subsequent statements as dead
+    // TODO: implement with actual AST traversal
+
+    removed
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Function Inlining
+// ════════════════════════════════════════════════════════════════════════════
+
+// Inlines small functions at call sites
+// Criteria for inlining:
+// - Function body < 5 statements
+// - Called only once (or marked #[inline])
+// - No recursion
+
+fn shouldInline(fn_node: *ASTNode, ast: *AST, call_count: u32) -> bool {
+    if call_count <= 1 { return true }
+    // Check function size
+    let body = ast.getNode(fn_node.data3) // body node
+    if body.kind == NodeKind.Block {
+        // Count statements in block
+        // If < 5, inline
+        // TODO: count actual statements
+    }
+    false
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Branch Simplification
+// ════════════════════════════════════════════════════════════════════════════
+
+// Simplifies known branches:
+// if true { A } else { B } → A
+// if false { A } else { B } → B
+// if x == x { A } else { B } → A
+// x > x → false
+// x < x → false
+// x == x → true
+
+fn simplifyBranch(cond: *ASTNode, ast: *AST) -> ?*ASTNode {
+    // Constant condition
+    if cond.kind == NodeKind.BoolLiteral {
+        return null // will be handled by constant folding
+    }
+
+    // Comparison with self
+    if cond.kind == NodeKind.BinaryExpr {
+        let left = ast.getNode(cond.data0)
+        let right = ast.getNode(cond.data1)
+
+        // x == x → true
+        if cond.data2 == 4 and left.kind == right.kind {
+            // Check if same variable
+            // TODO: implement variable comparison
+        }
+
+        // x > x → false
+        if cond.data2 == 3 {
+            // TODO: implement
+        }
+    }
+
+    null
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Loop Optimization
+// ════════════════════════════════════════════════════════════════════════════
+
+// Unrolls small loops (iteration count known at compile time)
+// Converts for-in on arrays to while loops with bounds check
+// Hoists loop-invariant code
+
+fn unrollLoop(loop: *ASTNode, ast: *AST, max_unroll: u32) -> bool {
+    // Check if loop count is known at compile time
+    // If so, unroll the loop body
+    // TODO: implement loop unrolling
+    false
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Allocation Elision
+// ════════════════════════════════════════════════════════════════════════════
+
+// Stack-allocates heap allocations that don't escape
+// Converts box to stack variable when possible
+// Eliminates unnecessary Rc/Arc when single-owner
+
+fn elideAllocation(expr: *ASTNode, ast: *AST) -> bool {
+    // Check if box/rc/arc result escapes the function
+    // If not, stack-allocate instead
+    // TODO: implement escape analysis
+    false
+}

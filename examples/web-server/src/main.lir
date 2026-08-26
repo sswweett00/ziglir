@@ -1,0 +1,130 @@
+// Minimal HTTP Web Server
+// Demonstrates: structs, methods, extern syscalls, string building
+
+import core
+import io
+
+// ════════════════════════════════════════════════════════════════════════════
+// HTTP Response
+// ════════════════════════════════════════════════════════════════════════════
+
+struct HttpResponse {
+    status: i32
+    content_type: string
+    body: string
+
+    fn buildResponse(self: *HttpResponse, buf: *u8, buf_size: u64) -> u64 {
+        var pos: u64 = 0
+
+        // Status line
+        let status_text = match self.status {
+            200 => "200 OK"
+            404 => "404 Not Found"
+            500 => "500 Internal Server Error"
+            else => "200 OK"
+        }
+        pos = appendStr(buf, pos, "HTTP/1.1 ", buf_size)
+        pos = appendStr(buf, pos, status_text, buf_size)
+        pos = appendByte(buf, pos, '\r', buf_size)
+        pos = appendByte(buf, pos, '\n', buf_size)
+
+        // Content-Type header
+        pos = appendStr(buf, pos, "Content-Type: ", buf_size)
+        pos = appendStr(buf, pos, self.content_type, buf_size)
+        pos = appendByte(buf, pos, '\r', buf_size)
+        pos = appendByte(buf, pos, '\n', buf_size)
+
+        // Content-Length
+        pos = appendStr(buf, pos, "Content-Length: ", buf_size)
+        pos = appendInt(buf, pos, self.body.len as i64, buf_size)
+        pos = appendByte(buf, pos, '\r', buf_size)
+        pos = appendByte(buf, pos, '\n', buf_size)
+
+        // End of headers
+        pos = appendByte(buf, pos, '\r', buf_size)
+        pos = appendByte(buf, pos, '\n', buf_size)
+
+        // Body
+        pos = appendStr(buf, pos, self.body, buf_size)
+
+        pos
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// String Helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+fn appendStr(buf: *u8, pos: u64, s: string, buf_size: u64) -> u64 {
+    var i: u64 = 0
+    var p = pos
+    while i < s.len and p < buf_size - 1 {
+        buf[p] = s.ptr[i]
+        p += 1
+        i += 1
+    }
+    p
+}
+
+fn appendByte(buf: *u8, pos: u64, ch: u8, buf_size: u64) -> u64 {
+    if pos < buf_size - 1 {
+        buf[pos] = ch
+        pos + 1
+    } else {
+        pos
+    }
+}
+
+fn appendInt(buf: *u8, pos: u64, value: i64, buf_size: u64) -> u64 {
+    var buf2: [32]u8
+    let len = itoa(value, &buf2, 32)
+    var i: u64 = 0
+    var p = pos
+    while i < len and p < buf_size - 1 {
+        buf[p] = buf2[i]
+        p += 1
+        i += 1
+    }
+    p
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Main
+// ════════════════════════════════════════════════════════════════════════════
+
+fn main() -> i64 {
+    println("Lir Web Server v0.1.0")
+    println("Listening on port 8080...")
+
+    // Build a sample response
+    var resp = HttpResponse {
+        status: 200
+        content_type: string { ptr: "text/plain", len: 10 }
+        body: string { ptr: "Hello from Lir Web Server!", len: 26 }
+    }
+
+    var buf: [4096]u8
+    let len = resp.buildResponse(&buf, 4096)
+
+    print("Response (")
+    printInt(len as i64)
+    println(" bytes):")
+
+    // Print response
+    var i: u64 = 0
+    while i < len {
+        var line_start = i
+        while i < len and buf[i] != '\n' { i += 1 }
+        // Print line content (without trailing \r)
+        let line_len = if i > line_start and buf[i - 1] == '\r' { i - line_start - 1 } else { i - line_start }
+        syscall_write(1, &buf[line_start], line_len)
+        syscall_write(1, "\n", 1)
+        if i < len { i += 1 }
+    }
+
+    println("")
+    println("Server ready for connections.")
+    println("(Full networking not yet implemented)")
+
+    0
+}

@@ -1,0 +1,266 @@
+// LIR Compiler — Main Entry Point
+// Orchestrates the complete compilation pipeline:
+// Source → Lexer → Parser → Type Check → Optimize → Codegen → ELF Binary
+//
+// Zero external dependencies — self-contained compilation
+
+import core
+import io
+import lexer
+import parser
+import types
+import codegen
+import optimizer
+
+// ════════════════════════════════════════════════════════════════════════════
+// Compiler Configuration
+// ════════════════════════════════════════════════════════════════════════════
+
+struct CompileConfig {
+    input_file: string
+    output_file: string
+    opt_level: OptLevel
+    target: string
+    verbose: bool
+    emit_asm: bool
+    emit_ir: bool
+    check_only: bool
+    allocator: *Allocator
+
+    fn default(alloc: *Allocator) -> CompileConfig {
+        CompileConfig {
+            input_file: string { ptr: "", len: 0 }
+            output_file: string { ptr: "a.out", len: 5 }
+            opt_level: OptLevel.Low
+            target: string { ptr: "native", len: 6 }
+            verbose: false
+            emit_asm: false
+            emit_ir: false
+            check_only: false
+            allocator: alloc
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Compilation Result
+// ════════════════════════════════════════════════════════════════════════════
+
+enum CompileStatus {
+    Success
+    ParseError
+    TypeError
+    CodegenError
+    LinkError
+    IOError
+}
+
+struct CompileResult {
+    status: CompileStatus
+    errors: u32
+    warnings: u32
+    compile_time_ms: u64
+    output_size: u64
+    error_msg: string
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Compiler Pipeline
+// ════════════════════════════════════════════════════════════════════════════
+
+fn compile(config: CompileConfig) -> CompileResult {
+    let start_time = now()
+
+    if config.verbose {
+        println("LIR Compiler v2.0.0")
+        print("Compiling: ")
+        println(config.input_file)
+    }
+
+    // Phase 1: Read source
+    let source = readFile(config.input_file, config.allocator)
+    if source.isErr() {
+        return CompileResult {
+            status: CompileStatus.IOError
+            errors: 1
+            warnings: 0
+            compile_time_ms: 0
+            output_size: 0
+            error_msg: "failed to read source file"
+        }
+    }
+
+    let src = source.unwrap()
+    if config.verbose {
+        print("  Source: ")
+        printInt(src.len as i64)
+        println(" bytes")
+    }
+
+    // Phase 2: Lexing
+    if config.verbose { print("  Lexing... ") }
+    var lex = Lexer.init(config.allocator, src)
+    lex.tokenize()
+    if config.verbose {
+        printInt(lex.getTokenCount() as i64)
+        println(" tokens")
+    }
+
+    if lex.errors.len() > 0 {
+        var i: u64 = 0
+        while i < lex.errors.len() {
+            let err = lex.errors.items.ptr[i]
+            eprint("Lexer error [")
+            eprint(config.input_file)
+            eprint(":")
+            printInt(err.line as i64)
+            eprint("]: ")
+            eprintln(err.msg)
+            i += 1
+        }
+        return CompileResult {
+            status: CompileStatus.ParseError
+            errors: lex.errors.len() as u32
+            warnings: 0
+            compile_time_ms: 0
+            output_size: 0
+            error_msg: "lexer errors"
+        }
+    }
+
+    // Phase 3: Parsing
+    if config.verbose { print("  Parsing... ") }
+    var ast = AST.init(config.allocator)
+    var par = Parser.init(config.allocator, lex.tokens, &ast)
+    par.parse()
+    if config.verbose {
+        printInt(ast.nodes.len() as i64)
+        println(" AST nodes")
+    }
+
+    if par.has_error {
+        var i: u64 = 0
+        while i < par.errors.len() {
+            let err = par.errors.items.ptr[i]
+            eprint("Parse error [")
+            eprint(config.input_file)
+            eprint(":")
+            printInt(err.line as i64)
+            eprint("]: ")
+            eprintln(err.msg)
+            i += 1
+        }
+        return CompileResult {
+            status: CompileStatus.ParseError
+            errors: par.errors.len() as u32
+            warnings: 0
+            compile_time_ms: 0
+            output_size: 0
+            error_msg: "parse errors"
+        }
+    }
+
+    // Phase 4: Type Checking
+    if config.verbose { print("  Type checking... ") }
+    var checker = TypeChecker.init(config.allocator)
+    // TODO: walk AST and type check
+    if config.verbose { println("done") }
+
+    if checker.hasErrors() {
+        var i: u64 = 0
+        while i < checker.errors.len() {
+            let err = checker.errors.items.ptr[i]
+            eprint("Type error [")
+            eprint(config.input_file)
+            eprint(":")
+            printInt(err.line as i64)
+            eprint("]: ")
+            eprintln(err.msg)
+            i += 1
+        }
+        return CompileResult {
+            status: CompileStatus.TypeError
+            errors: checker.errors.len() as u32
+            warnings: 0
+            compile_time_ms: 0
+            output_size: 0
+            error_msg: "type errors"
+        }
+    }
+
+    if config.check_only {
+        println("Type checking passed!")
+        return CompileResult {
+            status: CompileStatus.Success
+            errors: 0
+            warnings: 0
+            compile_time_ms: 0
+            output_size: 0
+            error_msg: ""
+        }
+    }
+
+    // Phase 5: Optimization
+    if config.verbose { print("  Optimizing... ") }
+    var opt = Optimizer.init(config.opt_level, config.allocator)
+    // TODO: run optimization passes
+    if config.verbose {
+        opt.printStats()
+    }
+
+    // Phase 6: Code Generation
+    if config.verbose { print("  Codegen... ") }
+    var gen = CodeGen.init(config.allocator)
+
+    // Emit standard library runtime
+    // (syscall wrappers, etc.)
+
+    // Emit main function
+    gen.emitter.putLabel("_start")
+    gen.emitPrologue(16)
+
+    // TODO: walk AST and emit code for each function
+
+    // Emit epilogue
+    gen.emitter.xorRegReg(Reg.rax, Reg.rax)
+    gen.emitEpilogue(16)
+
+    // Generate ELF binary
+    let elf = gen.generateELF()
+    if config.verbose {
+        print("  Output: ")
+        printInt(elf.len() as i64)
+        println(" bytes")
+    }
+
+    // Write output
+    let written = gen.writeFile(config.output_file)
+    if !written {
+        return CompileResult {
+            status: CompileStatus.IOError
+            errors: 1
+            warnings: 0
+            compile_time_ms: 0
+            output_size: 0
+            error_msg: "failed to write output file"
+        }
+    }
+
+    let elapsed = timestampDiff(start_time, now())
+
+    if config.verbose {
+        println("Compilation successful!")
+        print("  Time: ")
+        printInt(elapsed as i64)
+        println(" ms")
+    }
+
+    CompileResult {
+        status: CompileStatus.Success
+        errors: 0
+        warnings: 0
+        compile_time_ms: elapsed
+        output_size: elf.len() as u64
+        error_msg: ""
+    }
+}

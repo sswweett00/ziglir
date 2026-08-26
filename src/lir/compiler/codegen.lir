@@ -1,0 +1,612 @@
+// LIR Compiler — x86-64 Native Code Generator
+// Generates efficient machine code directly from AST
+// No intermediate representation — single-pass compilation
+// Target: Linux x86-64 ELF executables
+
+import core
+
+// ════════════════════════════════════════════════════════════════════════════
+// x86-64 Registers
+// ════════════════════════════════════════════════════════════════════════════
+
+enum Reg {
+    rax rcx rdx rbx rsp rbp rsi rdi
+    r8 r9 r10 r11 r12 r13 r14 r15
+}
+
+// System V AMD64 ABI: first 6 integer args in rdi, rsi, rdx, rcx, r8, r9
+const ARG_REGS = [Reg.rdi, Reg.rsi, Reg.rdx, Reg.rcx, Reg.r8, Reg.r9]
+
+// Callee-saved: rbx, rbp, r12-r15
+const CALLEE_SAVED = [Reg.rbx, Reg.rbp, Reg.r12, Reg.r3, Reg.r14, Reg.r15]
+
+// ════════════════════════════════════════════════════════════════════════════
+// ELF Constants
+// ════════════════════════════════════════════════════════════════════════════
+
+const ELF_MAGIC = [u8{ 0x7f, 'E', 'L', 'F' }]
+const ELFCLASS64: u8 = 2
+const ET_EXEC: u16 = 2
+const EM_X86_64: u16 = 62
+const PT_LOAD: u32 = 1
+const PT_GNU_STACK: u32 = 0x6474e551
+const SHT_NULL: u32 = 0
+const SHT_PROGBITS: u32 = 1
+const SHT_STRTAB: u32 = 3
+const SHF_ALLOC: u64 = 2
+const SHF_EXECINSTR: u64 = 4
+const SHF_WRITE: u64 = 1
+
+// Linux syscall numbers
+const SYS_write: u64 = 1
+const SYS_exit: u64 = 60
+const SYS_read: u64 = 0
+const SYS_open: u64 = 2
+const SYS_close: u64 = 3
+const SYS_brk: u64 = 12
+
+// ════════════════════════════════════════════════════════════════════════════
+// Code Emitter
+// ════════════════════════════════════════════════════════════════════════════
+
+struct CodeEmitter {
+    code: ArrayList(u8)
+    data: ArrayList(u8)
+    rodata: ArrayList(u8)
+    bss_size: u64
+    labels: HashMap(string, u32)
+    relocations: ArrayList(Relocation)
+    string_table: HashMap(string, u32)
+    allocator: *Allocator
+
+    struct Relocation {
+        offset: u32
+        label: string
+        kind: RelocKind
+    }
+
+    enum RelocKind {
+        Call32
+        Jmp32
+        RipRelative
+    }
+
+    fn init(alloc: *Allocator) -> CodeEmitter {
+        CodeEmitter {
+            code: ArrayList(u8).init(alloc)
+            data: ArrayList(u8).init(alloc)
+            rodata: ArrayList(u8).init(alloc)
+            bss_size: 0
+            labels: HashMap(string, u32).init(alloc)
+            relocations: ArrayList(Relocation).init(alloc)
+            string_table: HashMap(string, u32).init(alloc)
+            allocator: alloc
+        }
+    }
+
+    // ── Low-level emit ───────────────────────────────────────────────
+
+    fn emit8(self: *CodeEmitter, byte: u8) {
+        self.code.push(byte)
+    }
+
+    fn emit32(self: *CodeEmitter, val: u32) {
+        self.code.push(@truncate(val))
+        self.code.push(@truncate(val >> 8))
+        self.code.push(@truncate(val >> 16))
+        self.code.push(@truncate(val >> 24))
+    }
+
+    fn emit64(self: *CodeEmitter, val: u64) {
+        self.code.push(@truncate(val))
+        self.code.push(@truncate(val >> 8))
+        self.code.push(@truncate(val >> 16))
+        self.code.push(@truncate(val >> 24))
+        self.code.push(@truncate(val >> 32))
+        self.code.push(@truncate(val >> 40))
+        self.code.push(@truncate(val >> 48))
+        self.code.push(@truncate(val >> 56))
+    }
+
+    fn codeOffset(self: *CodeEmitter) -> u32 {
+        self.code.len() as u32
+    }
+
+    // ── Labels ───────────────────────────────────────────────────────
+
+    fn putLabel(self: *CodeEmitter, name: string) {
+        self.labels.put(name, self.codeOffset())
+    }
+
+    fn getLabel(self: *CodeEmitter, name: string) -> ?u32 {
+        self.labels.get(name)
+    }
+
+    fn addReloc(self: *CodeEmitter, offset: u32, label: string, kind: RelocKind) {
+        self.relocations.push(Relocation {
+            offset: offset
+            label: label
+            kind: kind
+        })
+    }
+
+    // ── String Table ─────────────────────────────────────────────────
+
+    fn addString(self: *CodeEmitter, str: string) -> u32 {
+        if self.string_table.get(str) |off| { return off }
+        let off = self.rodata.len() as u32
+        self.rodata.pushSlice(str.ptr, str.len)
+        self.rodata.push(0) // null terminator
+        self.string_table.put(str, off)
+        off
+    }
+
+    // ── x86-64 Instructions ──────────────────────────────────────────
+
+    /// mov reg, imm64
+    fn movReg64Imm64(self: *CodeEmitter, dst: Reg, imm: u64) {
+        let d = @intFromEnum(dst)
+        if d >= 8 { self.emit8(0x49) } else { self.emit8(0x48) }
+        self.emit8(0xB8 + (d & 7))
+        self.emit64(imm)
+    }
+
+    /// mov reg, imm32 (sign-extended)
+    fn movReg32Imm32(self: *CodeEmitter, dst: Reg, imm: u32) {
+        let d = @intFromEnum(dst)
+        if d >= 8 { self.emit8(0x41) }
+        self.emit8(0xB8 + (d & 7))
+        self.emit32(imm)
+    }
+
+    /// mov reg, reg
+    fn movRegReg(self: *CodeEmitter, dst: Reg, src: Reg) {
+        let d = @intFromEnum(dst)
+        let s = @intFromEnum(src)
+        var rex: u8 = 0x48
+        if s >= 8 { rex |= 0x04 }
+        if d >= 8 { rex |= 0x01 }
+        self.emit8(rex)
+        self.emit8(0x89)
+        self.emit8(0xC0 | ((s & 7) << 3) | (d & 7))
+    }
+
+    /// push reg
+    fn push(self: *CodeEmitter, reg: Reg) {
+        let r = @intFromEnum(reg)
+        if r >= 8 { self.emit8(0x41) }
+        self.emit8(0x50 + (r & 7))
+    }
+
+    /// pop reg
+    fn pop(self: *CodeEmitter, reg: Reg) {
+        let r = @intFromEnum(reg)
+        if r >= 8 { self.emit8(0x41) }
+        self.emit8(0x58 + (r & 7))
+    }
+
+    /// sub rsp, imm32
+    fn subRsp(self: *CodeEmitter, imm: u32) {
+        self.emit8(0x48)
+        self.emit8(0x81)
+        self.emit8(0xEC)
+        self.emit32(imm)
+    }
+
+    /// add rsp, imm32
+    fn addRsp(self: *CodeEmitter, imm: u32) {
+        self.emit8(0x48)
+        self.emit8(0x81)
+        self.emit8(0xC4)
+        self.emit32(imm)
+    }
+
+    /// mov [rbp+disp32], reg
+    fn movMemReg(self: *CodeEmitter, base: Reg, disp: i32, src: Reg) {
+        let b = @intFromEnum(base)
+        let s = @intFromEnum(src)
+        var rex: u8 = 0x48
+        if s >= 8 { rex |= 0x04 }
+        if b >= 8 { rex |= 0x01 }
+        self.emit8(rex)
+        self.emit8(0x89)
+        if disp >= -128 and disp <= 127 {
+            self.emit8(0x40 | ((s & 7) << 3) | (b & 7))
+            self.emit8(@intCast(disp & 0xFF))
+        } else {
+            self.emit8(0x80 | ((s & 7) << 3) | (b & 7))
+            self.emit32(@bitCast(disp))
+        }
+    }
+
+    /// mov reg, [rbp+disp32]
+    fn movRegMem(self: *CodeEmitter, dst: Reg, base: Reg, disp: i32) {
+        let d = @intFromEnum(dst)
+        let b = @intFromEnum(base)
+        var rex: u8 = 0x48
+        if d >= 8 { rex |= 0x04 }
+        if b >= 8 { rex |= 0x01 }
+        self.emit8(rex)
+        self.emit8(0x8B)
+        if disp >= -128 and disp <= 127 {
+            self.emit8(0x40 | ((d & 7) << 3) | (b & 7))
+            self.emit8(@intCast(disp & 0xFF))
+        } else {
+            self.emit8(0x80 | ((d & 7) << 3) | (b & 7))
+            self.emit32(@bitCast(disp))
+        }
+    }
+
+    /// call rel32
+    fn call(self: *CodeEmitter, offset: i32) {
+        self.emit8(0xE8)
+        self.emit32(@bitCast(offset))
+    }
+
+    /// call reg
+    fn callReg(self: *CodeEmitter, reg: Reg) {
+        let r = @intFromEnum(reg)
+        if r >= 8 { self.emit8(0x41) }
+        self.emit8(0xFF)
+        self.emit8(0xD0 + (r & 7))
+    }
+
+    /// ret
+    fn ret(self: *CodeEmitter) {
+        self.emit8(0xC3)
+    }
+
+    /// nop
+    fn nop(self: *CodeEmitter) {
+        self.emit8(0x90)
+    }
+
+    /// int3 (breakpoint)
+    fn int3(self: *CodeEmitter) {
+        self.emit8(0xCC)
+    }
+
+    /// xor reg, reg
+    fn xorRegReg(self: *CodeEmitter, a: Reg, b: Reg) {
+        let ra = @intFromEnum(a)
+        let rb = @intFromEnum(b)
+        var rex: u8 = 0x48
+        if ra >= 8 { rex |= 0x04 }
+        if rb >= 8 { rex |= 0x01 }
+        self.emit8(rex)
+        self.emit8(0x31)
+        self.emit8(0xC0 | ((rb & 7) << 3) | (ra & 7))
+    }
+
+    /// lea reg, [rip+disp32]
+    fn leaRipRelative(self: *CodeEmitter, dst: Reg, disp: i32) {
+        let d = @intFromEnum(dst)
+        var rex: u8 = 0x48
+        if d >= 8 { rex |= 0x04 }
+        self.emit8(rex)
+        self.emit8(0x8D)
+        self.emit8(0x05 | ((d & 7) << 3))
+        self.emit32(@bitCast(disp))
+    }
+
+    /// mov rax, [rax] (load pointer)
+    fn loadPtr(self: *CodeEmitter) {
+        self.emit8(0x48)
+        self.emit8(0x8B)
+        self.emit8(0x00)
+    }
+
+    /// syscall
+    fn syscall(self: *CodeEmitter) {
+        self.emit8(0x0F)
+        self.emit8(0x05)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Code Generator
+// ════════════════════════════════════════════════════════════════════════════
+
+struct CodeGen {
+    emitter: CodeEmitter
+    allocator: *Allocator
+    stack_offset: i32
+    local_vars: HashMap(string, i32)
+    string_literals: ArrayList(string)
+    label_counter: u32
+
+    fn init(alloc: *Allocator) -> CodeGen {
+        CodeGen {
+            emitter: CodeEmitter.init(alloc)
+            allocator: alloc
+            stack_offset: 0
+            local_vars: HashMap(string, i32).init(alloc)
+            string_literals: ArrayList(string).init(alloc)
+            label_counter: 0
+        }
+    }
+
+    fn newLabel(self: *CodeGen) -> string {
+        self.label_counter += 1
+        // Generate label name like ".L1", ".L2", etc.
+        var buf: [16]u8
+        buf[0] = '.'
+        buf[1] = 'L'
+        var v = self.label_counter
+        var pos: u64 = 2
+        if v == 0 {
+            buf[2] = '0'
+            pos = 3
+        } else {
+            var temp: [10]u8
+            var count: u64 = 0
+            while v > 0 {
+                temp[count] = (v % 10 + '0') as u8
+                v /= 10
+                count += 1
+            }
+            var i: u64 = 0
+            while i < count {
+                buf[pos] = temp[count - 1 - i]
+                pos += 1
+                i += 1
+            }
+        }
+        string { ptr: &buf, len: pos }
+    }
+
+    // ── Prologue/Epilogue ────────────────────────────────────────────
+
+    fn emitPrologue(self: *CodeGen, stack_size: u32) {
+        self.emitter.push(Reg.rbp)
+        self.emitter.movRegReg(Reg.rbp, Reg.rsp)
+        if stack_size > 0 {
+            self.emitter.subRsp(stack_size)
+        }
+    }
+
+    fn emitEpilogue(self: *CodeGen, stack_size: u32) {
+        self.emitter.movRegReg(Reg.rsp, Reg.rbp)
+        self.emitter.pop(Reg.rbp)
+        self.emitter.ret()
+    }
+
+    // ── Function Codegen ─────────────────────────────────────────────
+
+    fn emitFn(self: *CodeGen, name: string, param_count: u32) {
+        self.emitter.putLabel(name)
+
+        // Save callee-saved registers
+        self.emitter.push(Reg.rbp)
+        self.emitter.movRegReg(Reg.rbp, Reg.rsp)
+
+        // Allocate stack for locals
+        self.stack_offset = 0
+
+        // Move params from registers to stack
+        var i: u64 = 0
+        while i < param_count and i < 6 {
+            self.stack_offset -= 8
+            self.emitter.movMemReg(Reg.rbp, self.stack_offset, ARG_REGS[i])
+            i += 1
+        }
+
+        // Store param names
+        i = 0
+        while i < param_count {
+            // Would store param names in local_vars
+            i += 1
+        }
+    }
+
+    fn emitFnEnd(self: *CodeGen) {
+        // Default return 0
+        self.emitter.xorRegReg(Reg.rax, Reg.rax)
+        self.emitter.movRegReg(Reg.rsp, Reg.rbp)
+        self.emitter.pop(Reg.rbp)
+        self.emitter.ret()
+    }
+
+    // ── Syscall Wrappers ─────────────────────────────────────────────
+
+    fn emitWrite(self: *CodeEmitter, fd: u64, msg_offset: u32, len: u64) {
+        // syscall_write(fd, msg, len)
+        self.movReg64Imm64(Reg.rax, SYS_write)
+        self.movReg64Imm64(Reg.rdi, fd)
+        // Load address from rodata using lea
+        self.leaRipRelative(Reg.rsi, 0) // placeholder
+        self.movReg64Imm64(Reg.rdx, len)
+        self.syscall()
+    }
+
+    fn emitExit(self: *CodeEmitter, code: u64) {
+        self.movReg64Imm64(Reg.rax, SYS_exit)
+        self.movReg64Imm64(Reg.rdi, code)
+        self.syscall()
+    }
+
+    // ── ELF Generation ───────────────────────────────────────────────
+
+    fn generateELF(self: *CodeGen) -> ArrayList(u8) {
+        var output = ArrayList(u8).init(self.allocator)
+
+        // ELF Header (64 bytes)
+        // e_ident
+        output.push(0x7F) // magic
+        output.push('E')
+        output.push('L')
+        output.push('F')
+        output.push(ELFCLASS64)  // 64-bit
+        output.push(1)           // little-endian
+        output.push(1)           // ELF version
+        output.push(0)           // OS/ABI
+        output.push(0)           // padding (8 bytes)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+
+        // e_type: ET_EXEC
+        output.push(2)
+        output.push(0)
+
+        // e_machine: EM_X86_64
+        output.push(62)
+        output.push(0)
+
+        // e_version
+        output.push(1)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+
+        // e_entry (placeholder — will be fixed up)
+        let entry_offset: u32 = @intCast(output.len())
+        output.push(0) // e_entry
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+
+        // e_phoff (program header offset)
+        output.push(64) // after ELF header
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+
+        // e_shoff (section header offset — 0 for now)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+
+        // e_flags
+        output.push(0)
+        output.push(0)
+        output.push(0)
+        output.push(0)
+
+        // e_ehsize (64)
+        output.push(64)
+        output.push(0)
+
+        // e_phentsize (56)
+        output.push(56)
+        output.push(0)
+
+        // e_phnum (2)
+        output.push(2)
+        output.push(0)
+
+        // e_shentsize (64)
+        output.push(64)
+        output.push(0)
+
+        // e_shnum (0)
+        output.push(0)
+        output.push(0)
+
+        // e_shstrndx (0)
+        output.push(0)
+        output.push(0)
+
+        // Program Headers
+        let code_vaddr: u64 = 0x400000
+        let total_size = self.emitter.code.len() + self.emitter.rodata.len()
+
+        // PT_LOAD for code
+        self.emitProgramHeader(&output, PT_LOAD, SHF_ALLOC | SHF_EXECINSTR,
+            64 + 112, // offset after headers
+            code_vaddr,
+            self.emitter.code.len() as u64,
+            self.emitter.code.len() as u64 + self.emitter.rodata.len() as u64,
+            5) // r-x
+
+        // PT_GNU_STACK
+        self.emitStackHeader(&output)
+
+        // Code section
+        output.pushSlice(self.emitter.code.items.ptr, self.emitter.code.len())
+
+        // Read-only data (strings)
+        output.pushSlice(self.emitter.rodata.items.ptr, self.emitter.rodata.len())
+
+        output
+    }
+
+    fn emitProgramHeader(self: *output: *ArrayList(u8), p_type: u32, p_flags: u64,
+        p_offset: u64, p_vaddr: u64, p_filesz: u64, p_memsz: u64, flags: u32) {
+        // p_type
+        self.push32(output, p_type)
+        // p_flags
+        self.push32(output, @truncate(p_flags))
+        // p_offset
+        self.push64(output, p_offset)
+        // p_vaddr
+        self.push64(output, p_vaddr)
+        // p_paddr
+        self.push64(output, p_vaddr)
+        // p_filesz
+        self.push64(output, p_filesz)
+        // p_memsz
+        self.push64(output, p_memsz)
+        // p_align
+        self.push64(output, 0x1000)
+    }
+
+    fn emitStackHeader(self, output: *ArrayList(u8)) {
+        // PT_GNU_STACK with execute permission
+        self.push32(output, PT_GNU_STACK)
+        self.push32(output, 7)  // RWX
+        self.push64(output, 0)  // offset
+        self.push64(output, 0)  // vaddr
+        self.push64(output, 0)  // paddr
+        self.push64(output, 0)  // filesz
+        self.push64(output, 0)  // memsz
+        self.push64(output, 8)  // align
+    }
+
+    fn push32(self, output: *ArrayList(u8), val: u32) {
+        output.push(@truncate(val))
+        output.push(@truncate(val >> 8))
+        output.push(@truncate(val >> 16))
+        output.push(@truncate(val >> 24))
+    }
+
+    fn push64(self, output: *ArrayList(u8), val: u64) {
+        output.push(@truncate(val))
+        output.push(@truncate(val >> 8))
+        output.push(@truncate(val >> 16))
+        output.push(@truncate(val >> 24))
+        output.push(@truncate(val >> 32))
+        output.push(@truncate(val >> 40))
+        output.push(@truncate(val >> 48))
+        output.push(@truncate(val >> 56))
+    }
+
+    // ── Write ELF to file ────────────────────────────────────────────
+
+    fn writeFile(self: *CodeGen, path: string) -> bool {
+        let elf = self.generateELF()
+        let file = File.open(path, FileMode.WriteCreate)
+        if file.isErr() { return false }
+        let f = file.unwrap()
+        let written = f.write(string { ptr: elf.items.ptr, len: elf.len() })
+        f.close()
+        written as u64 == elf.len()
+    }
+}

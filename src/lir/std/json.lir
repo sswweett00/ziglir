@@ -1,0 +1,414 @@
+// Lir Standard Library — Minimal JSON Parser
+// For parsing project.manifest and configuration files
+// Supports: objects, arrays, strings, numbers, booleans, null
+
+import core
+
+// ════════════════════════════════════════════════════════════════════════════
+// JSON Value Types
+// ════════════════════════════════════════════════════════════════════════════
+
+enum JsonType {
+    Null
+    Bool
+    Int
+    Float
+    String
+    Array
+    Object
+}
+
+// Forward declaration for recursive types
+struct JsonValue
+
+struct JsonPair {
+    key: string
+    value: *JsonValue
+}
+
+struct JsonValue {
+    kind: JsonType
+    bool_val: bool
+    int_val: i64
+    float_val: f64
+    str_val: string
+    array_items: []JsonValue
+    array_len: u64
+    object_pairs: []JsonPair
+    object_len: u64
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// JSON Parser
+// ════════════════════════════════════════════════════════════════════════════
+
+struct JsonParser {
+    src: string
+    pos: u64
+    alloc: *Allocator
+
+    fn init(source: string, allocator: *Allocator) -> JsonParser {
+        JsonParser {
+            src: source
+            pos: 0
+            alloc: allocator
+        }
+    }
+
+    fn peek(self: *JsonParser) -> u8 {
+        if self.pos >= self.src.len { 0 } else { self.src.ptr[self.pos] }
+    }
+
+    fn advance(self: *JsonParser) -> u8 {
+        let ch = self.peek()
+        self.pos += 1
+        ch
+    }
+
+    fn skipWhitespace(self: *JsonParser) {
+        while self.pos < self.src.len {
+            let ch = self.peek()
+            if ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' {
+                self.advance()
+            } else {
+                break
+            }
+        }
+    }
+
+    fn parseValue(self: *JsonParser) -> ?JsonValue {
+        self.skipWhitespace()
+        if self.pos >= self.src.len { return null }
+
+        let ch = self.peek()
+        if ch == '{' { return self.parseObject() }
+        if ch == '[' { return self.parseArray() }
+        if ch == '"' { return self.parseString() }
+        if ch == 't' or ch == 'f' { return self.parseBool() }
+        if ch == 'n' { return self.parseNull() }
+        if ch == '-' or (ch >= '0' and ch <= '9') { return self.parseNumber() }
+
+        null
+    }
+
+    fn parseObject(self: *JsonParser) -> ?JsonValue {
+        self.advance() // skip {
+        self.skipWhitespace()
+
+        var pairs = ArrayList(JsonPair).init(self.alloc)
+        defer pairs.deinit()
+
+        if self.peek() == '}' {
+            self.advance()
+            let slice = pairs.items.slice()
+            return JsonValue {
+                kind: JsonType.Object
+                bool_val: false
+                int_val: 0
+                float_val: 0.0
+                str_val: string { ptr: "", len: 0 }
+                array_items: undefined
+                array_len: 0
+                object_pairs: slice.ptr
+                object_len: slice.len
+            }
+        }
+
+        while self.pos < self.src.len {
+            self.skipWhitespace()
+
+            // Key
+            let key_val = self.parseString()
+            if key_val == null { return null }
+            let key = key_val.?.str_val
+
+            self.skipWhitespace()
+            if self.peek() == ':' { self.advance() }
+
+            // Value
+            let val = self.parseValue()
+            if val == null { return null }
+
+            // We need to allocate the value on heap
+            let val_ptr = self.alloc.allocator_alloc(@size_of(JsonValue))
+            if val_ptr == null { return null }
+            (val_ptr as *JsonValue).* = val.?
+
+            pairs.push(JsonPair { key: key, value: val_ptr as *JsonValue })
+
+            self.skipWhitespace()
+            if self.peek() == ',' {
+                self.advance()
+            } else if self.peek() == '}' {
+                self.advance()
+                break
+            } else {
+                return null // parse error
+            }
+        }
+
+        let slice = pairs.items.slice()
+        let duped_pairs = self.alloc.allocator_alloc(slice.len * @size_of(JsonPair))
+        if duped_pairs == null { return null }
+        var i: u64 = 0
+        while i < slice.len {
+            (duped_pairs as *JsonPair)[i] = slice.ptr[i]
+            i += 1
+        }
+
+        JsonValue {
+            kind: JsonType.Object
+            bool_val: false
+            int_val: 0
+            float_val: 0.0
+            str_val: string { ptr: "", len: 0 }
+            array_items: undefined
+            array_len: 0
+            object_pairs: duped_pairs as *JsonPair
+            object_len: slice.len
+        }
+    }
+
+    fn parseArray(self: *JsonParser) -> ?JsonValue {
+        self.advance() // skip [
+        self.skipWhitespace()
+
+        var items = ArrayList(JsonValue).init(self.alloc)
+        defer items.deinit()
+
+        if self.peek() == ']' {
+            self.advance()
+            let slice = items.items.slice()
+            return JsonValue {
+                kind: JsonType.Array
+                bool_val: false
+                int_val: 0
+                float_val: 0.0
+                str_val: string { ptr: "", len: 0 }
+                array_items: slice.ptr
+                array_len: slice.len
+                object_pairs: undefined
+                object_len: 0
+            }
+        }
+
+        while self.pos < self.src.len {
+            let val = self.parseValue()
+            if val == null { return null }
+            items.push(val.?)
+
+            self.skipWhitespace()
+            if self.peek() == ',' {
+                self.advance()
+            } else if self.peek() == ']' {
+                self.advance()
+                break
+            } else {
+                return null
+            }
+        }
+
+        let slice = items.items.slice()
+        let duped = self.alloc.allocator_alloc(slice.len * @size_of(JsonValue))
+        if duped == null { return null }
+        var i: u64 = 0
+        while i < slice.len {
+            (duped as *JsonValue)[i] = slice.ptr[i]
+            i += 1
+        }
+
+        JsonValue {
+            kind: JsonType.Array
+            bool_val: false
+            int_val: 0
+            float_val: 0.0
+            str_val: string { ptr: "", len: 0 }
+            array_items: duped as *JsonValue
+            array_len: slice.len
+            object_pairs: undefined
+            object_len: 0
+        }
+    }
+
+    fn parseString(self: *JsonParser) -> ?JsonValue {
+        self.advance() // skip opening "
+        let start = self.pos
+
+        while self.pos < self.src.len and self.peek() != '"' {
+            if self.peek() == '\\' { self.advance() } // skip escape
+            self.advance()
+        }
+
+        let len = self.pos - start
+        if self.pos < self.src.len { self.advance() } // skip closing "
+
+        // Copy the string content
+        let buf = self.alloc.allocator_alloc(len + 1)
+        if buf == null { return null }
+        var i: u64 = 0
+        while i < len {
+            (buf as *u8)[i] = self.src.ptr[start + i]
+            i += 1
+        }
+        (buf as *u8)[len] = 0
+
+        JsonValue {
+            kind: JsonType.String
+            bool_val: false
+            int_val: 0
+            float_val: 0.0
+            str_val: string { ptr: buf as *u8, len: len }
+            array_items: undefined
+            array_len: 0
+            object_pairs: undefined
+            object_len: 0
+        }
+    }
+
+    fn parseNumber(self: *JsonParser) -> ?JsonValue {
+        let start = self.pos
+        let negative = self.peek() == '-'
+        if negative { self.advance() }
+
+        while self.pos < self.src.len and self.peek() >= '0' and self.peek() <= '9' {
+            self.advance()
+        }
+
+        let is_float = self.peek() == '.'
+        if is_float {
+            self.advance() // skip .
+            while self.pos < self.src.len and self.peek() >= '0' and self.peek() <= '9' {
+                self.advance()
+            }
+        }
+
+        // Parse the number
+        let text = string { ptr: &self.src.ptr[start], len: self.pos - start }
+        let num_str = if negative { string { ptr: &self.src.ptr[start + 1], len: self.pos - start - 1 } } else { text }
+
+        if is_float {
+            JsonValue {
+                kind: JsonType.Float
+                bool_val: false
+                int_val: 0
+                float_val: atof(num_str.ptr as *u8)
+                str_val: string { ptr: "", len: 0 }
+                array_items: undefined
+                array_len: 0
+                object_pairs: undefined
+                object_len: 0
+            }
+        } else {
+            let val = atoi(num_str.ptr as *u8)
+            JsonValue {
+                kind: JsonType.Int
+                bool_val: false
+                int_val: if negative { -val } else { val }
+                float_val: 0.0
+                str_val: string { ptr: "", len: 0 }
+                array_items: undefined
+                array_len: 0
+                object_pairs: undefined
+                object_len: 0
+            }
+        }
+    }
+
+    fn parseBool(self: *JsonParser) -> ?JsonValue {
+        if self.peek() == 't' {
+            // true
+            self.pos += 4
+            JsonValue {
+                kind: JsonType.Bool
+                bool_val: true
+                int_val: 0
+                float_val: 0.0
+                str_val: string { ptr: "", len: 0 }
+                array_items: undefined
+                array_len: 0
+                object_pairs: undefined
+                object_len: 0
+            }
+        } else {
+            // false
+            self.pos += 5
+            JsonValue {
+                kind: JsonType.Bool
+                bool_val: false
+                int_val: 0
+                float_val: 0.0
+                str_val: string { ptr: "", len: 0 }
+                array_items: undefined
+                array_len: 0
+                object_pairs: undefined
+                object_len: 0
+            }
+        }
+    }
+
+    fn parseNull(self: *JsonParser) -> ?JsonValue {
+        self.pos += 4 // skip "null"
+        JsonValue {
+            kind: JsonType.Null
+            bool_val: false
+            int_val: 0
+            float_val: 0.0
+            str_val: string { ptr: "", len: 0 }
+            array_items: undefined
+            array_len: 0
+            object_pairs: undefined
+            object_len: 0
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// JSON Value Helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+fn jsonGet(val: *JsonValue, key: string) -> ?*JsonValue {
+    if val.kind != JsonType.Object { return null }
+    var i: u64 = 0
+    while i < val.object_len {
+        if val.object_pairs[i].key.len == key.len {
+            var match = true
+            var j: u64 = 0
+            while j < key.len {
+                if val.object_pairs[i].key.ptr[j] != key.ptr[j] { match = false; break }
+                j += 1
+            }
+            if match { return val.object_pairs[i].value }
+        }
+        i += 1
+    }
+    null
+}
+
+fn jsonGetString(val: *JsonValue, key: string) -> string {
+    let found = jsonGet(val, key)
+    if found == null or found.?.kind != JsonType.String {
+        string { ptr: "", len: 0 }
+    } else {
+        found.?.str_val
+    }
+}
+
+fn jsonGetInt(val: *JsonValue, key: string) -> i64 {
+    let found = jsonGet(val, key)
+    if found == null or found.?.kind != JsonType.Int { 0 } else { found.?.int_val }
+}
+
+fn jsonGetBool(val: *JsonValue, key: string) -> bool {
+    let found = jsonGet(val, key)
+    if found == null or found.?.kind != JsonType.Bool { false } else { found.?.bool_val }
+}
+
+fn jsonGetArray(val: *JsonValue, key: string) -> ?*JsonValue {
+    let found = jsonGet(val, key)
+    if found == null or found.?.kind != JsonType.Array { null } else { found }
+}
+
+fn jsonParse(source: string, alloc: *Allocator) -> ?JsonValue {
+    var parser = JsonParser.init(source, alloc)
+    parser.parseValue()
+}

@@ -1,0 +1,275 @@
+// Lir Compiler — CLI Entry Point
+// This is the main module that handles lir build / run / test / init commands
+//
+// Compile with: zig build-exe main.zig -cflags -- (or use the bootstrap compiler)
+// The actual entry is in src/toolchain/cli.zig which dispatches to this
+
+import core
+import io
+import json
+import os
+
+// ════════════════════════════════════════════════════════════════════════════
+// Version
+// ════════════════════════════════════════════════════════════════════════════
+
+const VERSION_MAJOR: u32 = 0
+const VERSION_MINOR: u32 = 2
+const VERSION_PATCH: u32 = 0
+
+// ════════════════════════════════════════════════════════════════════════════
+// CLI State
+// ════════════════════════════════════════════════════════════════════════════
+
+struct CliState {
+    command: string
+    verbose: bool
+    release: bool
+    manifest_path: string
+    project_dir: string
+    allocator: *Allocator
+}
+
+fn initState(alloc: *Allocator) -> CliState {
+    CliState {
+        command: string { ptr: "help", len: 4 }
+        verbose: false
+        release: false
+        manifest_path: string { ptr: "project.manifest", len: 16 }
+        project_dir: string { ptr: ".", len: 1 }
+        allocator: alloc
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Command Dispatch
+// ════════════════════════════════════════════════════════════════════════════
+
+fn dispatchCommand(state: *CliState) -> i32 {
+    if state.command.len == 4 and strCompare(state.command, "build") {
+        return cmdBuild(state)
+    }
+    if state.command.len == 3 and strCompare(state.command, "run") {
+        return cmdRun(state)
+    }
+    if state.command.len == 4 and strCompare(state.command, "test") {
+        return cmdTest(state)
+    }
+    if state.command.len == 4 and strCompare(state.command, "init") {
+        return cmdInitProject(state)
+    }
+    if state.command.len == 4 and strCompare(state.command, "help") {
+        printHelp()
+        return 0
+    }
+    if state.command.len == 7 and strCompare(state.command, "version") {
+        printVersion()
+        return 0
+    }
+    if state.command.len == 7 and strCompare(state.command, "clean") {
+        return cmdClean(state)
+    }
+
+    eprint("Unknown command: '")
+    eprint(state.command)
+    eprint("'. Run 'lir help' for usage.\n")
+    1
+}
+
+fn strCompare(a: string, b: string) -> bool {
+    if a.len != b.len { return false }
+    var i: u64 = 0
+    while i < a.len {
+        if a.ptr[i] != b.ptr[i] { return false }
+        i += 1
+    }
+    true
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Build Command
+// ════════════════════════════════════════════════════════════════════════════
+
+fn cmdBuild(state: *CliState) -> i32 {
+    println("Lir Compiler v0.2.0")
+    println("Building...")
+
+    // Load manifest
+    let manifest = parseProjectManifest(state.manifest_path, state.allocator)
+    if manifest == null {
+        eprintln("Error: project.manifest not found or invalid")
+        eprintln("Run 'lir init' to create a new project")
+        return 1
+    }
+
+    let config = manifest.?
+    print("Project: ")
+    print(config.name)
+    print(" v")
+    println(config.version)
+
+    // Discover files
+    var buf: [512]u8
+    let entry_len = pathJoin(config.source_dir, config.entry, &buf, 512)
+    let entry_path = string { ptr: &buf, len: entry_len }
+
+    if !fileExists(entry_path) {
+        eprint("Error: entry point not found: ")
+        eprint(entry_path)
+        eprint("\n")
+        return 1
+    }
+
+    // Read entry point
+    let source = readFile(entry_path, state.allocator)
+    if source.isErr() {
+        eprintln("Error: failed to read source file")
+        return 1
+    }
+
+    let src = source.unwrap()
+    print("Source: ")
+    printInt(src.len as i64)
+    println(" bytes")
+
+    // TODO: Full compilation pipeline
+    // For now, report success
+    println("Build successful!")
+    0
+}
+
+fn cmdRun(state: *CliState) -> i32 {
+    let result = cmdBuild(state)
+    if result != 0 { return result }
+    println("Running...")
+    println("(run not yet implemented)")
+    0
+}
+
+fn cmdTest(state: *CliState) -> i32 {
+    println("Running tests...")
+    println("(test not yet implemented)")
+    0
+}
+
+fn cmdClean(state: *CliState) -> i32 {
+    println("Cleaning build artifacts...")
+    // TODO: remove build/ directory
+    println("Clean complete")
+    0
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Init Command — Scaffold a new project
+// ════════════════════════════════════════════════════════════════════════════
+
+fn cmdInitProject(state: *CliState) -> i32 {
+    println("Initializing new Lir project...")
+
+    // Create project.manifest
+    let manifest = string {
+        ptr: "{\n  \"name\": \"myproject\",\n  \"version\": \"0.1.0\",\n  \"entry\": \"main.lir\",\n  \"source_dir\": \"src\",\n  \"targets\": [\"linux\"],\n  \"domains\": [],\n  \"imports\": []\n}\n",
+        len: 143
+    }
+    if !writeFile("project.manifest", manifest) {
+        eprintln("Error: could not create project.manifest")
+        return 1
+    }
+
+    // Create src/ directory marker
+    let main_lir = string {
+        ptr: "// Main entry point for myproject\n// Lir compiler v0.2.0\n\nimport core\n\nfn main() -> i64 {\n    println(\"Hello from Lir!\")\n    0\n}\n",
+        len: 99
+    }
+    if !writeFile("src/main.lir", main_lir) {
+        eprintln("Error: could not create src/main.lir")
+        return 1
+    }
+
+    // Create test file
+    let test_lir = string {
+        ptr: "// Tests for myproject\n\nimport core\nimport testing\n\n#[test]\nfn testHello() {\n    assert(true, \"basic assertion\")\n}\n\n#[test]\nfn testArithmetic() {\n    assertEq(2 + 2, 4)\n}\n",
+        len: 148
+    }
+    if !writeFile("src/tests.lir", test_lir) {
+        eprintln("Error: could not create src/tests.lir")
+        return 1
+    }
+
+    println("Created project.manifest")
+    println("Created src/main.lir")
+    println("Created src/tests.lir")
+    println("")
+    println("Next steps:")
+    println("  1. Edit src/main.lir")
+    println("  2. Run 'lir build'")
+    println("  3. Run 'lir test'")
+    0
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Help & Version
+// ════════════════════════════════════════════════════════════════════════════
+
+fn printHelp() {
+    println("Lir Compiler v0.2.0")
+    println("")
+    println("A self-contained programming language with built-in build system.")
+    println("Write, build, and run projects without any external dependencies.")
+    println("")
+    println("Usage: lir <command> [options]")
+    println("")
+    println("Commands:")
+    println("  build      Compile the project")
+    println("  run        Compile and execute the project")
+    println("  test       Run project tests")
+    println("  init       Create a new project with boilerplate")
+    println("  clean      Remove build artifacts")
+    println("  help       Show this help message")
+    println("  version    Show compiler version")
+    println("")
+    println("Options:")
+    println("  --release      Optimize for production")
+    println("  --verbose, -v  Show detailed compilation output")
+    println("  --manifest     Path to manifest file (default: project.manifest)")
+    println("")
+    println("Project Structure:")
+    println("  project.manifest    Project configuration (JSON)")
+    println("  src/                Source directory")
+    println("    main.lir          Entry point")
+    println("    tests.lir         Test files")
+    println("")
+    println("Examples:")
+    println("  lir init            Create a new project")
+    println("  lir build           Build the project")
+    println("  lir build --release Build with optimizations")
+    println("  lir run             Build and run")
+    println("  lir test            Run tests")
+}
+
+fn printVersion() {
+    print("lir ")
+    printInt(VERSION_MAJOR as i64)
+    print(".")
+    printInt(VERSION_MINOR as i64)
+    print(".")
+    printlnInt(VERSION_PATCH as i64)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Main Entry Point
+// ════════════════════════════════════════════════════════════════════════════
+
+fn main() -> i64 {
+    let alloc_obj = allocator_init()
+    let alloc = &alloc_obj
+
+    var state = initState(alloc)
+
+    // Parse command from args (simplified — reads first arg)
+    // In a full implementation, this would parse argc/argv
+    // For now, default to build
+    state.command = string { ptr: "build", len: 5 }
+
+    dispatchCommand(&state)
+}

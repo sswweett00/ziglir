@@ -1,0 +1,11 @@
+{
+  "name": "web-server",
+  "version": "0.1.0",
+  "entry": "main.lir",
+  "source_dir": "src",
+  "targets": ["linux"],
+  "domains": ["network", "io"],
+  "imports": [],
+  "permissions": ["network", "filesystem"],
+  "description": "A minimal HTTP server written in Lir"
+}

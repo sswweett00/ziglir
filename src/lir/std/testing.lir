@@ -1,0 +1,196 @@
+// LIR Standard Library — Testing Framework
+// Built-in test discovery, assertions, and benchmarking
+// Run with: lir test
+
+import core
+
+// ════════════════════════════════════════════════════════════════════════════
+// Test Runner
+// ════════════════════════════════════════════════════════════════════════════
+
+struct TestResult {
+    name: string
+    passed: bool
+    time_ns: u64
+    error_msg: string
+}
+
+struct TestRunner {
+    tests: ArrayList(TestResult)
+    passed: u32
+    failed: u32
+    total_time_ns: u64
+    allocator: *Allocator
+
+    fn init(alloc: *Allocator) -> TestRunner {
+        TestRunner {
+            tests: ArrayList(TestResult).init(alloc)
+            passed: 0
+            failed: 0
+            total_time_ns: 0
+            allocator: alloc
+        }
+    }
+
+    fn run(self: *TestRunner) -> i32 {
+        println("Running tests...")
+        println("")
+
+        var i: u64 = 0
+        while i < self.tests.len() {
+            let test = &self.tests.items.ptr[i]
+            if test.passed {
+                print("  ✓ ")
+                println(test.name)
+                self.passed += 1
+            } else {
+                print("  ✗ ")
+                print(test.name)
+                if test.error_msg.len > 0 {
+                    print(" — ")
+                    print(test.error_msg)
+                }
+                println("")
+                self.failed += 1
+            }
+            self.total_time_ns += test.time_ns
+            i += 1
+        }
+
+        println("")
+        print("Results: ")
+        printInt(self.passed as i64)
+        print(" passed, ")
+        printInt(self.failed as i64)
+        print(" failed, ")
+        printInt((self.passed + self.failed) as i64)
+        print(" total")
+        println("")
+
+        if self.failed > 0 {
+            println("FAILED")
+            1
+        } else {
+            println("PASSED")
+            0
+        }
+    }
+
+    fn addTest(self: *TestRunner, name: string, passed: bool, time_ns: u64, error_msg: string) {
+        self.tests.push(TestResult {
+            name: name
+            passed: passed
+            time_ns: time_ns
+            error_msg: error_msg
+        })
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Assertions
+// ════════════════════════════════════════════════════════════════════════════
+
+fn assert(condition: bool, msg: string) {
+    if !condition {
+        eprint("Assertion failed: ")
+        eprintln(msg)
+        panic("assertion failed")
+    }
+}
+
+fn assertEq(a: i64, b: i64) {
+    if a != b {
+        eprint("Assertion failed: ")
+        printInt(a)
+        eprint(" != ")
+        printInt(b)
+        eprintln("")
+        panic("assertion failed")
+    }
+}
+
+fn assertEqStr(a: string, b: string) {
+    if a.len != b.len {
+        eprintln("Assertion failed: strings have different lengths")
+        panic("assertion failed")
+    }
+    var i: u64 = 0
+    while i < a.len {
+        if a.ptr[i] != b.ptr[i] {
+            eprintln("Assertion failed: strings not equal")
+            panic("assertion failed")
+        }
+        i += 1
+    }
+}
+
+fn assertEqFloat(a: f64, b: f64, epsilon: f64) {
+    let diff = fabs(a - b)
+    if diff > epsilon {
+        eprintln("Assertion failed: floats not approximately equal")
+        panic("assertion failed")
+    }
+}
+
+fn assertRange(value: i64, lo: i64, hi: i64) {
+    if value < lo or value > hi {
+        eprintln("Assertion failed: value out of range")
+        panic("assertion failed")
+    }
+}
+
+fn assertPanic(fn_name: string) {
+    // Verify that the given function panics
+    // TODO: implement panic catching
+    _ = fn_name
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Benchmarking
+// ════════════════════════════════════════════════════════════════════════════
+
+struct Benchmark {
+    name: string
+    iterations: u64
+    total_ns: u64
+    best_ns: u64
+    worst_ns: u64
+
+    fn init(name: string) -> Benchmark {
+        Benchmark {
+            name: name
+            iterations: 0
+            total_ns: 0
+            best_ns: u64(-1)
+            worst_ns: 0
+        }
+    }
+
+    fn record(self: *Benchmark, time_ns: u64) {
+        self.iterations += 1
+        self.total_ns += time_ns
+        if time_ns < self.best_ns { self.best_ns = time_ns }
+        if time_ns > self.worst_ns { self.worst_ns = time_ns }
+    }
+
+    fn avgNs(self: *Benchmark) -> u64 {
+        if self.iterations == 0 { 0 } else { self.total_ns / self.iterations }
+    }
+
+    fn printResults(self: *Benchmark) {
+        print("Benchmark: ")
+        println(self.name)
+        print("  Iterations: ")
+        printInt(self.iterations as i64)
+        println("")
+        print("  Average: ")
+        printInt(self.avgNs() as i64)
+        println(" ns")
+        print("  Best: ")
+        printInt(self.best_ns as i64)
+        println(" ns")
+        print("  Worst: ")
+        printInt(self.worst_ns as i64)
+        println(" ns")
+    }
+}

@@ -1,0 +1,988 @@
+// LIR Compiler — Parser
+// Recursive descent parser with Pratt parsing for expressions
+// Produces a typed AST ready for semantic analysis
+
+import core
+
+// ════════════════════════════════════════════════════════════════════════════
+// AST Node Types
+// ════════════════════════════════════════════════════════════════════════════
+
+enum NodeKind {
+    // Top-level
+    SourceFile FnDecl StructDecl EnumDecl ImplBlock TraitDecl
+    TypeAlias PullDecl ImportDecl ModDecl ExternDecl ConstDecl
+
+    // Statements
+    Block ExprStmt LetStmt ReturnStmt IfStmt WhileStmt ForStmt
+    AssignStmt BreakStmt ContinueStmt DeferStmt UnsafeBlock
+    MatchStmt ComptimeBlock GoStmt
+
+    // Expressions
+    BinaryExpr UnaryExpr CallExpr MethodCallExpr IndexExpr
+    FieldAccess Identifier IntLiteral FloatLiteral StringLiteral
+    CharLiteral BoolLiteral NullLiteral ArrayLiteral StructLiteral
+    LambdaExpr IfExpr TryExpr RecoverExpr PipeExpr RangeExpr
+    BlockExpr
+
+    // Patterns
+    PatternWildcard PatternIdentifier PatternLiteral PatternDestructure
+
+    // Types
+    PointerType OptionalType SliceType ArrayType FnType
+    ResultType TupleType NamedType
+
+    // Misc
+    ErrorNode
+}
+
+struct ASTNode {
+    kind: NodeKind
+    line: u32
+    col: u32
+    data0: u64
+    data1: u64
+    data2: u64
+    data3: u64
+    text_start: u32
+    text_len: u32
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// AST Builder
+// ════════════════════════════════════════════════════════════════════════════
+
+struct AST {
+    nodes: ArrayList(ASTNode)
+    allocator: *Allocator
+
+    fn init(alloc: *Allocator) -> AST {
+        AST {
+            nodes: ArrayList(ASTNode).init(alloc)
+            allocator: alloc
+        }
+    }
+
+    fn addNode(self: *AST, kind: NodeKind, line: u32) -> u32 {
+        let idx = self.nodes.len() as u32
+        self.nodes.push(ASTNode {
+            kind: kind
+            line: line
+            col: 0
+            data0: 0
+            data1: 0
+            data2: 0
+            data3: 0
+            text_start: 0
+            text_len: 0
+        })
+        idx
+    }
+
+    fn getNode(self: *AST, idx: u32) -> ASTNode {
+        self.nodes.items.ptr[idx]
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Parser
+// ════════════════════════════════════════════════════════════════════════════
+
+struct Parser {
+    tokens: ArrayList(Token)
+    pos: u32
+    ast: *AST
+    allocator: *Allocator
+    errors: ArrayList(ParseError)
+    has_error: bool
+
+    struct ParseError {
+        msg: string
+        line: u32
+        col: u32
+    }
+
+    fn init(alloc: *Allocator, tokens: ArrayList(Token), ast: *AST) -> Parser {
+        Parser {
+            tokens: tokens
+            pos: 0
+            ast: ast
+            allocator: alloc
+            errors: ArrayList(ParseError).init(alloc)
+            has_error: false
+        }
+    }
+
+    // ── Token Helpers ────────────────────────────────────────────────
+
+    fn peek(self: *Parser) -> Token {
+        if self.pos >= self.tokens.len() {
+            Token { kind: TokenKind.EOF, start: 0, len: 0, line: 0, col: 0 }
+        } else {
+            self.tokens.items.ptr[self.pos]
+        }
+    }
+
+    fn peekAt(self: *Parser, offset: u32) -> Token {
+        let idx = self.pos + offset
+        if idx >= self.tokens.len() {
+            Token { kind: TokenKind.EOF, start: 0, len: 0, line: 0, col: 0 }
+        } else {
+            self.tokens.items.ptr[idx]
+        }
+    }
+
+    fn advance(self: *Parser) -> Token {
+        let tok = self.peek()
+        if tok.kind != TokenKind.EOF {
+            self.pos += 1
+        }
+        tok
+    }
+
+    fn expect(self: *Parser, kind: TokenKind) -> Token {
+        let tok = self.peek()
+        if tok.kind != kind {
+            self.reportError("unexpected token", tok.line, tok.col)
+        }
+        self.advance()
+    }
+
+    fn matchToken(self: *Parser, kind: TokenKind) -> bool {
+        self.peek().kind == kind
+    }
+
+    fn skipNewlines(self: *Parser) {
+        while self.matchToken(TokenKind.Newline) {
+            self.advance()
+        }
+    }
+
+    fn reportError(self: *Parser, msg: string, line: u32, col: u32) {
+        self.errors.push(ParseError { msg: msg, line: line, col: col })
+        self.has_error = true
+    }
+
+    // ── Main Parse Entry ─────────────────────────────────────────────
+
+    fn parse(self: *Parser) -> u32 {
+        let root = self.ast.addNode(NodeKind.SourceFile, 0)
+
+        while !self.matchToken(TokenKind.EOF) {
+            self.skipNewlines()
+            if self.matchToken(TokenKind.EOF) { break }
+            self.parseTopLevel()
+        }
+
+        root
+    }
+
+    // ── Top-Level Declarations ───────────────────────────────────────
+
+    fn parseTopLevel(self: *Parser) {
+        self.skipNewlines()
+        if self.matchToken(TokenKind.EOF) { return }
+
+        // Attributes
+        if self.matchToken(TokenKind.Hash) or self.matchToken(TokenKind.At) {
+            self.parseAttribute()
+            self.skipNewlines()
+        }
+
+        // Doc comments
+        // (handled by lexer as separate tokens)
+
+        // pub modifier
+        if self.matchToken(TokenKind.KwPub) {
+            self.advance()
+            self.skipNewlines()
+        }
+
+        // Comptime block
+        if self.matchToken(TokenKind.KwComptime) {
+            self.parseComptimeBlock()
+            return
+        }
+
+        // const declaration
+        if self.matchToken(TokenKind.KwConst) {
+            self.parseConstDecl()
+            return
+        }
+
+        // fn declaration
+        if self.matchToken(TokenKind.KwFn) {
+            self.parseFnDecl()
+            return
+        }
+
+        // extern fn
+        if self.matchToken(TokenKind.KwExtern) {
+            self.parseExternFn()
+            return
+        }
+
+        // struct
+        if self.matchToken(TokenKind.KwStruct) {
+            self.parseStructDecl()
+            return
+        }
+
+        // enum
+        if self.matchToken(TokenKind.KwEnum) {
+            self.parseEnumDecl()
+            return
+        }
+
+        // trait
+        if self.matchToken(TokenKind.KwTrait) {
+            self.parseTraitDecl()
+            return
+        }
+
+        // impl
+        if self.matchToken(TokenKind.KwImpl) {
+            self.parseImplBlock()
+            return
+        }
+
+        // type alias
+        if self.matchToken(TokenKind.KwType) {
+            self.parseTypeAlias()
+            return
+        }
+
+        // import
+        if self.matchToken(TokenKind.KwImport) {
+            self.parseImport()
+            return
+        }
+
+        // mod
+        if self.matchToken(TokenKind.KwMod) {
+            self.parseModDecl()
+            return
+        }
+
+        // Expression statement
+        self.parseExprStmt()
+    }
+
+    // ── Attribute ────────────────────────────────────────────────────
+
+    fn parseAttribute(self: *Parser) {
+        if self.matchToken(TokenKind.Hash) {
+            self.advance()
+            if self.matchToken(TokenKind.LBracket) {
+                self.advance()
+                while !self.matchToken(TokenKind.RBracket) and !self.matchToken(TokenKind.EOF) {
+                    self.advance()
+                }
+                if self.matchToken(TokenKind.RBracket) { self.advance() }
+            }
+        } elif self.matchToken(TokenKind.At) {
+            self.advance()
+            if self.peek().kind == TokenKind.Ident {
+                self.advance()
+            }
+            if self.matchToken(TokenKind.LParen) {
+                var depth: u32 = 1
+                self.advance()
+                while depth > 0 and !self.matchToken(TokenKind.EOF) {
+                    if self.matchToken(TokenKind.LParen) { depth += 1 }
+                    elif self.matchToken(TokenKind.RParen) { depth -= 1 }
+                    self.advance()
+                }
+            }
+        }
+    }
+
+    // ── Function Declaration ─────────────────────────────────────────
+
+    fn parseFnDecl(self: *Parser) {
+        let tok = self.advance() // fn
+
+        // Name
+        let name = self.expect(TokenKind.Ident)
+
+        // Generic parameters
+        if self.matchToken(TokenKind.LBracket) {
+            self.advance()
+            while !self.matchToken(TokenKind.RBracket) and !self.matchToken(TokenKind.EOF) {
+                self.advance()
+            }
+            if self.matchToken(TokenKind.RBracket) { self.advance() }
+        }
+
+        // Parameters
+        self.expect(TokenKind.LParen)
+        while !self.matchToken(TokenKind.RParen) and !self.matchToken(TokenKind.EOF) {
+            if !self.matchToken(TokenKind.LParen) { self.expect(TokenKind.Comma) }
+            if self.matchToken(TokenKind.KwSelf) { self.advance() }
+            else {
+                let pname = self.expect(TokenKind.Ident)
+                self.expect(TokenKind.Colon)
+                self.parseType()
+            }
+        }
+        self.expect(TokenKind.RParen)
+
+        // Return type
+        if self.matchToken(TokenKind.Arrow) {
+            self.advance()
+            self.parseType()
+        }
+
+        // Body
+        self.skipNewlines()
+        if self.matchToken(TokenKind.Assign) {
+            self.advance()
+            self.parseExpression()
+            self.skipNewlines()
+        } else {
+            self.parseBlock()
+        }
+
+        self.ast.addNode(NodeKind.FnDecl, tok.line)
+    }
+
+    // ── Struct Declaration ───────────────────────────────────────────
+
+    fn parseStructDecl(self: *Parser) {
+        let tok = self.advance() // struct
+        let name = self.expect(TokenKind.Ident)
+
+        // Generic parameters
+        if self.matchToken(TokenKind.LBracket) {
+            self.advance()
+            while !self.matchToken(TokenKind.RBracket) and !self.matchToken(TokenKind.EOF) {
+                self.advance()
+            }
+            if self.matchToken(TokenKind.RBracket) { self.advance() }
+        }
+
+        self.expect(TokenKind.LBrace)
+        self.skipNewlines()
+
+        while !self.matchToken(TokenKind.RBrace) and !self.matchToken(TokenKind.EOF) {
+            if self.matchToken(TokenKind.KwPub) { self.advance() }
+            let fname = self.expect(TokenKind.Ident)
+            self.expect(TokenKind.Colon)
+            self.parseType()
+            self.skipNewlines()
+        }
+
+        self.expect(TokenKind.RBrace)
+        self.ast.addNode(NodeKind.StructDecl, tok.line)
+    }
+
+    // ── Enum Declaration ─────────────────────────────────────────────
+
+    fn parseEnumDecl(self: *Parser) {
+        let tok = self.advance() // enum
+        let name = self.expect(TokenKind.Ident)
+
+        self.expect(TokenKind.LBrace)
+        self.skipNewlines()
+
+        while !self.matchToken(TokenKind.RBrace) and !self.matchToken(TokenKind.EOF) {
+            let vname = self.expect(TokenKind.Ident)
+
+            // Tuple variant
+            if self.matchToken(TokenKind.LParen) {
+                self.advance()
+                while !self.matchToken(TokenKind.RParen) and !self.matchToken(TokenKind.EOF) {
+                    if !self.matchToken(TokenKind.LParen) { self.expect(TokenKind.Comma) }
+                    self.parseType()
+                }
+                self.expect(TokenKind.RParen)
+            }
+
+            // Struct variant
+            if self.matchToken(TokenKind.LBrace) {
+                self.advance()
+                while !self.matchToken(TokenKind.RBrace) and !self.matchToken(TokenKind.EOF) {
+                    let ffield = self.expect(TokenKind.Ident)
+                    self.expect(TokenKind.Colon)
+                    self.parseType()
+                    self.skipNewlines()
+                }
+                self.expect(TokenKind.RBrace)
+            }
+
+            if self.matchToken(TokenKind.Comma) { self.advance() }
+            self.skipNewlines()
+        }
+
+        self.expect(TokenKind.RBrace)
+        self.ast.addNode(NodeKind.EnumDecl, tok.line)
+    }
+
+    // ── Trait Declaration ────────────────────────────────────────────
+
+    fn parseTraitDecl(self: *Parser) {
+        let tok = self.advance() // trait
+        let name = self.expect(TokenKind.Ident)
+
+        if self.matchToken(TokenKind.Colon) {
+            self.advance()
+            while !self.matchToken(TokenKind.LBrace) and !self.matchToken(TokenKind.EOF) {
+                self.advance()
+            }
+        }
+
+        self.expect(TokenKind.LBrace)
+        self.skipNewlines()
+
+        while !self.matchToken(TokenKind.RBrace) and !self.matchToken(TokenKind.EOF) {
+            if self.matchToken(TokenKind.KwFn) {
+                self.parseFnDecl()
+            } else {
+                self.advance()
+            }
+            self.skipNewlines()
+        }
+
+        self.expect(TokenKind.RBrace)
+        self.ast.addNode(NodeKind.TraitDecl, tok.line)
+    }
+
+    // ── Impl Block ───────────────────────────────────────────────────
+
+    fn parseImplBlock(self: *Parser) {
+        let tok = self.advance() // impl
+        self.parseType()
+
+        if self.matchToken(TokenKind.KwFor) {
+            self.advance()
+            self.parseType()
+        }
+
+        self.expect(TokenKind.LBrace)
+        self.skipNewlines()
+
+        while !self.matchToken(TokenKind.RBrace) and !self.matchToken(TokenKind.EOF) {
+            if self.matchToken(TokenKind.KwPub) { self.advance() }
+            if self.matchToken(TokenKind.KwFn) {
+                self.parseFnDecl()
+            } else {
+                self.advance()
+            }
+            self.skipNewlines()
+        }
+
+        self.expect(TokenKind.RBrace)
+        self.ast.addNode(NodeKind.ImplBlock, tok.line)
+    }
+
+    // ── Block ────────────────────────────────────────────────────────
+
+    fn parseBlock(self: *Parser) -> u32 {
+        let tok = self.expect(TokenKind.LBrace)
+        self.skipNewlines()
+
+        while !self.matchToken(TokenKind.RBrace) and !self.matchToken(TokenKind.EOF) {
+            self.skipNewlines()
+            if self.matchToken(TokenKind.RBrace) { break }
+
+            // Return
+            if self.matchToken(TokenKind.KwReturn) {
+                self.advance()
+                if !self.matchToken(TokenKind.Newline) and !self.matchToken(TokenKind.RBrace) {
+                    self.parseExpression()
+                }
+                self.skipNewlines()
+                continue
+            }
+
+            // If
+            if self.matchToken(TokenKind.KwIf) {
+                self.parseIf()
+                self.skipNewlines()
+                continue
+            }
+
+            // While
+            if self.matchToken(TokenKind.KwWhile) {
+                self.advance()
+                self.parseExpression()
+                self.parseBlock()
+                self.skipNewlines()
+                continue
+            }
+
+            // For
+            if self.matchToken(TokenKind.KwFor) {
+                self.parseFor()
+                self.skipNewlines()
+                continue
+            }
+
+            // Let
+            if self.matchToken(TokenKind.KwLet) or self.matchToken(TokenKind.KwMut) {
+                self.parseLet()
+                self.skipNewlines()
+                continue
+            }
+
+            // Match
+            if self.matchToken(TokenKind.KwMatch) {
+                self.parseMatch()
+                self.skipNewlines()
+                continue
+            }
+
+            // Defer
+            if self.matchToken(TokenKind.KwDefer) {
+                self.advance()
+                self.parseExpression()
+                self.skipNewlines()
+                continue
+            }
+
+            // Break / Continue
+            if self.matchToken(TokenKind.KwBreak) or self.matchToken(TokenKind.KwContinue) {
+                self.advance()
+                self.skipNewlines()
+                continue
+            }
+
+            // Expression or assignment
+            self.parseExpression()
+            self.skipNewlines()
+        }
+
+        self.expect(TokenKind.RBrace)
+        self.ast.addNode(NodeKind.Block, tok.line)
+    }
+
+    // ── Let Statement ────────────────────────────────────────────────
+
+    fn parseLet(self: *Parser) {
+        let tok = if self.matchToken(TokenKind.KwMut) { self.advance() } else { self.advance() }
+        let name = self.expect(TokenKind.Ident)
+
+        if self.matchToken(TokenKind.Colon) {
+            self.advance()
+            self.parseType()
+        }
+
+        if self.matchToken(TokenKind.Assign) {
+            self.advance()
+            self.parseExpression()
+        }
+
+        self.ast.addNode(NodeKind.LetStmt, tok.line)
+    }
+
+    // ── If Statement ─────────────────────────────────────────────────
+
+    fn parseIf(self: *Parser) {
+        let tok = self.advance() // if
+        self.parseExpression()
+        self.parseBlock()
+        if self.matchToken(TokenKind.KwElse) {
+            self.advance()
+            if self.matchToken(TokenKind.KwIf) {
+                self.parseIf()
+            } else {
+                self.parseBlock()
+            }
+        }
+        self.ast.addNode(NodeKind.IfStmt, tok.line)
+    }
+
+    // ── For Statement ────────────────────────────────────────────────
+
+    fn parseFor(self: *Parser) {
+        let tok = self.advance() // for
+
+        // for i, item in iterable
+        if self.peekAt(1).kind == TokenKind.Comma {
+            let index = self.expect(TokenKind.Ident)
+            self.expect(TokenKind.Comma)
+        }
+        let iter = self.expect(TokenKind.Ident)
+        self.expect(TokenKind.KwIn)
+        self.parseExpression()
+        self.parseBlock()
+
+        self.ast.addNode(NodeKind.ForStmt, tok.line)
+    }
+
+    // ── Match Statement ──────────────────────────────────────────────
+
+    fn parseMatch(self: *Parser) {
+        let tok = self.advance() // match
+        self.parseExpression()
+        self.expect(TokenKind.LBrace)
+        self.skipNewlines()
+
+        while !self.matchToken(TokenKind.RBrace) and !self.matchToken(TokenKind.EOF) {
+            self.parseMatchPattern()
+            if self.matchToken(TokenKind.KwIf) {
+                self.advance()
+                self.parseExpression()
+            }
+            self.expect(TokenKind.FatArrow)
+            if self.matchToken(TokenKind.LBrace) {
+                self.parseBlock()
+            } else {
+                self.parseExpression()
+            }
+            self.skipNewlines()
+        }
+
+        self.expect(TokenKind.RBrace)
+        self.ast.addNode(NodeKind.MatchStmt, tok.line)
+    }
+
+    fn parseMatchPattern(self: *Parser) {
+        if self.matchToken(TokenKind.Underscore) or self.matchToken(TokenKind.Minus) or
+           self.matchToken(TokenKind.TrueLit) or self.matchToken(TokenKind.FalseLit) or
+           self.matchToken(TokenKind.IntLit) or self.matchToken(TokenKind.StringLit) {
+            self.advance()
+        } elif self.matchToken(TokenKind.Ident) {
+            self.advance()
+            if self.matchToken(TokenKind.LParen) {
+                self.advance()
+                while !self.matchToken(TokenKind.RParen) and !self.matchToken(TokenKind.EOF) {
+                    self.parseMatchPattern()
+                    if self.matchToken(TokenKind.Comma) { self.advance() }
+                }
+                self.expect(TokenKind.RParen)
+            }
+        }
+    }
+
+    // ── Comptime Block ───────────────────────────────────────────────
+
+    fn parseComptimeBlock(self: *Parser) {
+        let tok = self.advance() // comptime
+        self.parseBlock()
+        self.ast.addNode(NodeKind.ComptimeBlock, tok.line)
+    }
+
+    // ── Const Declaration ────────────────────────────────────────────
+
+    fn parseConstDecl(self: *Parser) {
+        let tok = self.advance() // const
+        let name = self.expect(TokenKind.Ident)
+        if self.matchToken(TokenKind.ColonColon) or self.matchToken(TokenKind.Assign) {
+            self.advance()
+        }
+        self.parseExpression()
+        self.ast.addNode(NodeKind.ConstDecl, tok.line)
+    }
+
+    // ── Extern Function ──────────────────────────────────────────────
+
+    fn parseExternFn(self: *Parser) {
+        let tok = self.advance() // extern
+        if self.matchToken(TokenKind.StringLit) { self.advance() }
+        if self.matchToken(TokenKind.KwFn) { self.advance() }
+        let name = self.expect(TokenKind.Ident)
+        self.expect(TokenKind.LParen)
+        while !self.matchToken(TokenKind.RParen) and !self.matchToken(TokenKind.EOF) {
+            if !self.matchToken(TokenKind.LParen) { self.expect(TokenKind.Comma) }
+            let pname = self.expect(TokenKind.Ident)
+            self.expect(TokenKind.Colon)
+            self.parseType()
+        }
+        self.expect(TokenKind.RParen)
+        if self.matchToken(TokenKind.Arrow) {
+            self.advance()
+            self.parseType()
+        }
+        self.ast.addNode(NodeKind.ExternDecl, tok.line)
+    }
+
+    // ── Type Alias ───────────────────────────────────────────────────
+
+    fn parseTypeAlias(self: *Parser) {
+        let tok = self.advance() // type
+        let name = self.expect(TokenKind.Ident)
+        self.expect(TokenKind.Assign)
+        self.parseType()
+        self.ast.addNode(NodeKind.TypeAlias, tok.line)
+    }
+
+    // ── Import ───────────────────────────────────────────────────────
+
+    fn parseImport(self: *Parser) {
+        let tok = self.advance() // import
+        while !self.matchToken(TokenKind.Newline) and !self.matchToken(TokenKind.EOF) {
+            self.advance()
+        }
+        self.ast.addNode(NodeKind.ImportDecl, tok.line)
+    }
+
+    // ── Mod Declaration ──────────────────────────────────────────────
+
+    fn parseModDecl(self: *Parser) {
+        let tok = self.advance() // mod
+        let name = self.expect(TokenKind.Ident)
+        self.parseBlock()
+        self.ast.addNode(NodeKind.ModDecl, tok.line)
+    }
+
+    // ── Expression Statement ─────────────────────────────────────────
+
+    fn parseExprStmt(self: *Parser) {
+        self.parseExpression()
+        self.ast.addNode(NodeKind.ExprStmt, self.peek().line)
+    }
+
+    // ── Type Parsing ─────────────────────────────────────────────────
+
+    fn parseType(self: *Parser) {
+        // Pointer type: *Type or *mut Type
+        if self.matchToken(TokenKind.Star) {
+            self.advance()
+            if self.matchToken(TokenKind.KwMut) { self.advance() }
+            self.parseType()
+            return
+        }
+
+        // Optional type: ?Type
+        if self.matchToken(TokenKind.Question) {
+            self.advance()
+            self.parseType()
+            return
+        }
+
+        // Slice type: []Type
+        if self.matchToken(TokenKind.LBracket) {
+            self.advance()
+            if self.matchToken(TokenKind.RBracket) {
+                self.advance()
+                self.parseType()
+                return
+            }
+            // Array type: [Type; N]
+            self.parseType()
+            if self.matchToken(TokenKind.Semicolon) {
+                self.advance()
+                self.parseExpression()
+            }
+            self.expect(TokenKind.RBracket)
+            return
+        }
+
+        // Function type: fn(Args) -> Ret
+        if self.matchToken(TokenKind.KwFn) {
+            self.advance()
+            self.expect(TokenKind.LParen)
+            while !self.matchToken(TokenKind.RParen) and !self.matchToken(TokenKind.EOF) {
+                if !self.matchToken(TokenKind.LParen) { self.expect(TokenKind.Comma) }
+                self.parseType()
+            }
+            self.expect(TokenKind.RParen)
+            if self.matchToken(TokenKind.Arrow) {
+                self.advance()
+                self.parseType()
+            }
+            return
+        }
+
+        // Named type
+        if self.matchToken(TokenKind.Ident) {
+            self.advance()
+            // Generic: Type<T>
+            if self.matchToken(TokenKind.LBracket) {
+                self.advance()
+                while !self.matchToken(TokenKind.RBracket) and !self.matchToken(TokenKind.EOF) {
+                    if !self.matchToken(TokenKind.LBracket) { self.expect(TokenKind.Comma) }
+                    self.parseType()
+                }
+                self.expect(TokenKind.RBracket)
+            }
+            return
+        }
+
+        // Tuple type: (Type, Type, ...)
+        if self.matchToken(TokenKind.LParen) {
+            self.advance()
+            while !self.matchToken(TokenKind.RParen) and !self.matchToken(TokenKind.EOF) {
+                if !self.matchToken(TokenKind.LParen) { self.expect(TokenKind.Comma) }
+                self.parseType()
+            }
+            self.expect(TokenKind.RParen)
+            return
+        }
+
+        // Result type: !Type
+        if self.matchToken(TokenKind.Bang) {
+            self.advance()
+            self.parseType()
+            return
+        }
+
+        // Skip unknown
+        self.advance()
+    }
+
+    // ── Expression Parsing (Pratt) ───────────────────────────────────
+
+    fn parseExpression(self: *Parser) {
+        self.parseBinary(0)
+    }
+
+    fn parseBinary(self: *Parser, min_prec: u32) {
+        self.parseUnary()
+
+        while true {
+            let op_prec = self.binOpPrec(self.peek().kind)
+            if op_prec < min_prec { break }
+
+            let op = self.advance() // operator
+            self.parseBinary(op_prec + 1)
+        }
+    }
+
+    fn parseUnary(self: *Parser) {
+        if self.matchToken(TokenKind.Minus) or self.matchToken(TokenKind.Bang) or
+           self.matchToken(TokenKind.Star) or self.matchToken(TokenKind.Amp) {
+            self.advance()
+            self.parseUnary()
+            return
+        }
+        if self.matchToken(TokenKind.KwTry) {
+            self.advance()
+            self.parseUnary()
+            return
+        }
+        self.parsePostfix()
+    }
+
+    fn parsePostfix(self: *Parser) {
+        self.parsePrimary()
+
+        while true {
+            if self.matchToken(TokenKind.LParen) {
+                // Function call
+                self.advance()
+                while !self.matchToken(TokenKind.RParen) and !self.matchToken(TokenKind.EOF) {
+                    if !self.matchToken(TokenKind.LParen) { self.expect(TokenKind.Comma) }
+                    self.parseExpression()
+                }
+                self.expect(TokenKind.RParen)
+            } elif self.matchToken(TokenKind.Dot) {
+                self.advance()
+                let field = self.expect(TokenKind.Ident)
+            } elif self.matchToken(TokenKind.LBracket) {
+                self.advance()
+                self.parseExpression()
+                self.expect(TokenKind.RBracket)
+            } elif self.matchToken(TokenKind.LParen) {
+                // Second call (chained)
+                self.advance()
+                while !self.matchToken(TokenKind.RParen) and !self.matchToken(TokenKind.EOF) {
+                    if !self.matchToken(TokenKind.LParen) { self.expect(TokenKind.Comma) }
+                    self.parseExpression()
+                }
+                self.expect(TokenKind.RParen)
+            } else {
+                break
+            }
+        }
+    }
+
+    fn parsePrimary(self: *Parser) {
+        // Literals
+        if self.matchToken(TokenKind.IntLit) or self.matchToken(TokenKind.FloatLit) or
+           self.matchToken(TokenKind.StringLit) or self.matchToken(TokenKind.CharLit) or
+           self.matchToken(TokenKind.TrueLit) or self.matchToken(TokenKind.FalseLit) or
+           self.matchToken(TokenKind.NullLit) {
+            self.advance()
+            return
+        }
+
+        // Identifier
+        if self.matchToken(TokenKind.Ident) or self.matchToken(TokenKind.KwSelf) {
+            self.advance()
+            return
+        }
+
+        // Parenthesized expression
+        if self.matchToken(TokenKind.LParen) {
+            self.advance()
+            self.parseExpression()
+            self.expect(TokenKind.RParen)
+            return
+        }
+
+        // Array literal
+        if self.matchToken(TokenKind.LBracket) {
+            self.advance()
+            if !self.matchToken(TokenKind.RBracket) {
+                self.parseExpression()
+                while self.matchToken(TokenKind.Comma) {
+                    self.advance()
+                    if self.matchToken(TokenKind.RBracket) { break }
+                    self.parseExpression()
+                }
+            }
+            self.expect(TokenKind.RBracket)
+            return
+        }
+
+        // Block expression
+        if self.matchToken(TokenKind.LBrace) {
+            self.parseBlock()
+            return
+        }
+
+        // Lambda: |x, y| expr
+        if self.matchToken(TokenKind.Pipe) {
+            self.advance()
+            while !self.matchToken(TokenKind.Pipe) and !self.matchToken(TokenKind.EOF) {
+                self.expect(TokenKind.Ident)
+                if self.matchToken(TokenKind.Comma) { self.advance() }
+            }
+            self.expect(TokenKind.Pipe)
+            if self.matchToken(TokenKind.LBrace) {
+                self.parseBlock()
+            } else {
+                self.parseExpression()
+            }
+            return
+        }
+
+        // If expression
+        if self.matchToken(TokenKind.KwIf) {
+            self.parseIf()
+            return
+        }
+
+        // Skip unknown token
+        self.advance()
+    }
+
+    // ── Operator Precedence ──────────────────────────────────────────
+
+    fn binOpPrec(self: *TokenKind) -> u32 {
+        match self {
+            TokenKind.Pipe => 1       // |>
+            TokenKind.FatArrow => 1   // =>
+            TokenKind.OrOr => 2       // ||
+            TokenKind.AndAnd => 3     // &&
+            TokenKind.Eq => 4         // ==
+            TokenKind.Ne => 4         // !=
+            TokenKind.Lt => 4         // <
+            TokenKind.Gt => 4         // >
+            TokenKind.Le => 4         // <=
+            TokenKind.Ge => 4         // >=
+            TokenKind.Plus => 5       // +
+            TokenKind.Minus => 5      // -
+            TokenKind.Star => 6       // *
+            TokenKind.Slash => 6      // /
+            TokenKind.Percent => 6    // %
+            TokenKind.DotDot => 7     // ..
+            TokenKind.DotDotEq => 7   // ..=
+            TokenKind.PlusPlus => 8   // ++
+            TokenKind.StarStar => 8   // **
+            else => 0
+        }
+    }
+}

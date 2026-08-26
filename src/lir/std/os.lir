@@ -1,0 +1,139 @@
+// Lir Standard Library — OS Interface
+// Environment variables, process execution, platform detection
+
+import core
+
+// ════════════════════════════════════════════════════════════════════════════
+// Environment Variables
+// ════════════════════════════════════════════════════════════════════════════
+
+fn getEnv(name: string) -> ?string {
+    // Linux: read /proc/self/environ
+    let file = File.open("/proc/self/environ", FileMode.Read)
+    if file.isErr() { return null }
+    let f = file.unwrap()
+
+    let buf_size: u64 = 65536
+    let buf = alloc.allocator_alloc(buf_size)
+    if buf == null { f.close(); return null }
+
+    let n = f.read(buf as *u8, buf_size)
+    f.close()
+
+    if n <= 0 { alloc.allocator_free(buf, buf_size); return null }
+
+    // Search for NAME=VALUE in environ
+    var i: u64 = 0
+    while i < n as u64 {
+        // Check if this entry starts with our name
+        var match = true
+        var j: u64 = 0
+        while j < name.len and i + j < n as u64 {
+            if (buf as *u8)[i + j] != name.ptr[j] { match = false; break }
+            j += 1
+        }
+
+        if match and j == name.len and (buf as *u8)[i + name.len] == '=' {
+            // Found it — extract value after '='
+            let val_start = i + name.len + 1
+            var val_end = val_start
+            while val_end < n as u64 and (buf as *u8)[val_end] != 0 {
+                val_end += 1
+            }
+            let result = string { ptr: &((buf as *u8)[val_start]), len: val_end - val_start }
+            alloc.allocator_free(buf, buf_size)
+            return result
+        }
+
+        // Skip to next entry (null-terminated)
+        while i < n as u64 and (buf as *u8)[i] != 0 { i += 1 }
+        i += 1 // skip null terminator
+    }
+
+    alloc.allocator_free(buf, buf_size)
+    null
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Process Execution
+// ════════════════════════════════════════════════════════════════════════════
+
+struct ProcessResult {
+    exit_code: i32
+    stdout: string
+    stderr: string
+}
+
+fn execCommand(cmd: string) -> ProcessResult {
+    // Use fork + exec via syscalls
+    // For now, simplified: write command to a temp file and use system()
+    ProcessResult {
+        exit_code: -1
+        stdout: string { ptr: "", len: 0 }
+        stderr: string { ptr: "exec not implemented", len: 20 }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Platform Detection
+// ════════════════════════════════════════════════════════════════════════════
+
+enum Platform {
+    Linux
+    MacOS
+    Windows
+    Unknown
+}
+
+enum Arch {
+    X86_64
+    AArch64
+    Riscv64
+    Wasm32
+    Unknown
+}
+
+struct PlatformInfo {
+    os: Platform
+    arch: Arch
+    name: string
+}
+
+fn detectPlatform() -> PlatformInfo {
+    // Try reading /proc/version for Linux detection
+    let file = File.open("/proc/version", FileMode.Read)
+    if file.isOk() {
+        let f = file.unwrap()
+        f.close()
+        return PlatformInfo {
+            os: Platform.Linux
+            arch: Arch.X86_64  // assume x86_64 for now
+            name: "linux"
+        }
+    }
+
+    PlatformInfo {
+        os: Platform.Unknown
+        arch: Arch.Unknown
+        name: "unknown"
+    }
+}
+
+fn platformName(p: Platform) -> string {
+    match p {
+        Platform.Linux => "linux"
+        Platform.MacOS => "macos"
+        Platform.Windows => "windows"
+        Platform.Unknown => "unknown"
+    }
+}
+
+fn archName(a: Arch) -> string {
+    match a {
+        Arch.X86_64 => "x86_64"
+        Arch.AArch64 => "aarch64"
+        Arch.Riscv64 => "riscv64"
+        Arch.Wasm32 => "wasm32"
+        Arch.Unknown => "unknown"
+    }
+}

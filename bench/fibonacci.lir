@@ -1,0 +1,124 @@
+// LIR Benchmark — Fibonacci
+// Measures: function call overhead, integer arithmetic, branch prediction
+// Compare with: Rust, Zig, C, Go
+
+import core
+import testing
+
+// ════════════════════════════════════════════════════════════════════════════
+// Recursive Fibonacci (naive)
+// ════════════════════════════════════════════════════════════════════════════
+
+fn fib_recursive(n: u64) -> u64 {
+    if n <= 1 { return n }
+    fib_recursive(n - 1) + fib_recursive(n - 2)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Iterative Fibonacci
+// ════════════════════════════════════════════════════════════════════════════
+
+fn fib_iterative(n: u64) -> u64 {
+    if n <= 1 { return n }
+    var a: u64 = 0
+    var b: u64 = 1
+    var i: u64 = 2
+    while i <= n {
+        let temp = a + b
+        a = b
+        b = temp
+        i += 1
+    }
+    b
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Matrix Multiplication
+// ════════════════════════════════════════════════════════════════════════════
+
+const MATRIX_SIZE: u64 = 64
+
+fn matrixMultiply(a: *[MATRIX_SIZE][MATRIX_SIZE]f64, b: *[MATRIX_SIZE][MATRIX_SIZE]f64, c: *[MATRIX_SIZE][MATRIX_SIZE]f64) {
+    var i: u64 = 0
+    while i < MATRIX_SIZE {
+        var j: u64 = 0
+        while j < MATRIX_SIZE {
+            var sum: f64 = 0.0
+            var k: u64 = 0
+            while k < MATRIX_SIZE {
+                sum += a[i][k] * b[k][j]
+                k += 1
+            }
+            c[i][j] = sum
+            j += 1
+        }
+        i += 1
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// String Operations
+// ════════════════════════════════════════════════════════════════════════════
+
+fn stringConcat(n: u64) -> u64 {
+    var total_len: u64 = 0
+    var i: u64 = 0
+    while i < n {
+        let s = "hello"
+        total_len += s.len
+        i += 1
+    }
+    total_len
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Main Benchmark Runner
+// ════════════════════════════════════════════════════════════════════════════
+
+fn main() -> i64 {
+    println("LIR Performance Benchmarks")
+    println("==========================")
+    println("")
+
+    // Benchmark 1: Recursive Fibonacci
+    var bench1 = Benchmark.init("fib_recursive(40)")
+    var iter: u64 = 0
+    while iter < 10 {
+        let start = now()
+        let result = fib_recursive(40)
+        let elapsed = timestampDiff(start, now())
+        bench1.record(elapsed)
+        iter += 1
+    }
+    bench1.printResults()
+    println("")
+
+    // Benchmark 2: Iterative Fibonacci
+    var bench2 = Benchmark.init("fib_iterative(1000)")
+    iter = 0
+    while iter < 1000 {
+        let start = now()
+        let result = fib_iterative(1000)
+        let elapsed = timestampDiff(start, now())
+        bench2.record(elapsed)
+        iter += 1
+    }
+    bench2.printResults()
+    println("")
+
+    // Benchmark 3: String operations
+    var bench3 = Benchmark.init("string_concat(1000000)")
+    iter = 0
+    while iter < 10 {
+        let start = now()
+        let result = stringConcat(1000000)
+        let elapsed = timestampDiff(start, now())
+        bench3.record(elapsed)
+        iter += 1
+    }
+    bench3.printResults()
+    println("")
+
+    println("Benchmark complete!")
+    0
+}

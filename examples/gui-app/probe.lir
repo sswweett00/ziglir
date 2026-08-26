@@ -1,0 +1,27 @@
+// Probe5 — GUI yerleşikleri ve aritmetik
+fn main() {
+    let a: i32 = 17
+    let b: i32 = 5
+    printInt(a * b)
+    print("\n")
+    printInt(a / b)
+    print("\n")
+    printInt(a % b)
+    print("\n")
+
+    let ts: i32 = term_size()
+    printInt(ts / 65536)
+    print("x")
+    printInt(ts % 65536)
+    print("\n")
+
+    set_raw_mode(1)
+    let k1: i32 = read_key()
+    let k2: i32 = read_key()
+    set_raw_mode(0)
+    printInt(k1)
+    print(",")
+    printInt(k2)
+    print("\n")
+    exit(0)
+}

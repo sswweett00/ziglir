@@ -1,0 +1,43 @@
+// Hello World — Minimal Lir program
+// Demonstrates: println, string literals, function calls
+
+import core
+
+fn main() -> i64 {
+    println("Hello, World!")
+    println("Welcome to Lir v0.2.0")
+
+    // String interpolation
+    let name = "Lir"
+    let version = "0.2.0"
+    print("Language: ")
+    println(name)
+    print("Version: ")
+    println(version)
+
+    // Basic arithmetic
+    let x = 42
+    let y = 58
+    let sum = x + y
+    print("42 + 58 = ")
+    printInt(sum)
+    println("")
+
+    // Conditional
+    if sum == 100 {
+        println("Math checks out!")
+    } else {
+        println("Something is wrong...")
+    }
+
+    // Loop
+    var i: i64 = 0
+    while i < 5 {
+        print("Count: ")
+        printInt(i)
+        println("")
+        i += 1
+    }
+
+    0
+}

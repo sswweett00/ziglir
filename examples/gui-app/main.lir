@@ -1,0 +1,270 @@
+// ════════════════════════════════════════════════════════════════════════════
+// LirPad — Pure Lir GUI Application
+//
+// Bu uygulama %100 Lir dilinde yazılmıştır. Hiçbir yabancı dil (Zig, C vb.)
+// kullanılmamıştır. Doğrudan Linux sistem çağrıları üzerine kurulu Lir
+// bootstrap derleyicisi ile statik ELF ikili dosyasına derlenir.
+//
+// Build:  ../../src/bootstrap/lir-bootstrap build main.lir -o lirpad
+// Run:    ./lirpad
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Yardımcı çizim fonksiyonları ────────────────────────────────────────────
+
+// n adet boşluk bas
+fn sp(n: i32) {
+    let i: i32 = 0
+    while i < n {
+        print(" ")
+        i = i + 1
+    }
+}
+
+// n adet yatay çizgi karakteri bas
+fn hline(n: i32) {
+    let i: i32 = 0
+    while i < n {
+        print("─")
+        i = i + 1
+    }
+}
+
+// n adet dolu blok bas (progress bar dolu kısım)
+fn bar(n: i32) {
+    let i: i32 = 0
+    while i < n {
+        print("█")
+        i = i + 1
+    }
+}
+
+// n adet boş blok bas (progress bar boş kısım)
+fn shade(n: i32) {
+    let i: i32 = 0
+    while i < n {
+        print("░")
+        i = i + 1
+    }
+}
+
+// ── Ana uygulama ────────────────────────────────────────────────────────────
+
+fn main() {
+    // Terminal GUI kurulumu: alternatif ekran buffer'a geç, ekranı temizle,
+    // imleci gizle
+    print("\x1b[?1049h\x1b[2J\x1b[H")
+    print("\x1b[?25l")
+
+    // ══ Pencere üst kenarı ══
+    print("\x1b[38;5;61m╭")
+    hline(78)
+    print("╮\x1b[0m\n")
+
+    // ══ Başlık çubuğu ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    print("\x1b[48;5;24m\x1b[38;5;255m")
+    print(" ● ")
+    print("\x1b[38;5;220m● ")
+    print("\x1b[38;5;203m●")
+    print("\x1b[0m\x1b[48;5;24m\x1b[38;5;255m")
+    print("  ◆ LirPad — Pure Lir GUI  v1.0")
+    sp(45)
+    print("\x1b[0m")
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Başlık altı ayırıcı ══
+    print("\x1b[38;5;61m├")
+    hline(78)
+    print("┤\x1b[0m\n")
+
+    // ══ Menü satırı ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(2)
+    print("\x1b[48;5;24m\x1b[38;5;51m [ Dashboard ] \x1b[0m")
+    sp(1)
+    print("\x1b[38;5;245m[ Notes ]\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;245m[ Settings ]\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;245m[ About ]\x1b[0m")
+    sp(28)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Boş satır ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(78)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ İstatistik kartları başlığı ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;250mSYSTEM OVERVIEW\x1b[0m")
+    sp(62)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Kart üst kenarları (3 kart yan yana) ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;39m╭─ CPU ──────────────╮\x1b[0m")
+    sp(1)
+    print("\x1b[38;5;176m╭─ MEM ──────────────╮\x1b[0m")
+    sp(1)
+    print("\x1b[38;5;114m╭─ DISK ─────────────╮\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Kart değerleri ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;39m│\x1b[0m")
+    print("\x1b[38;5;255m  ")
+    printInt(42)
+    print("%              ")
+    print("\x1b[38;5;39m│\x1b[0m")
+    sp(1)
+    print("\x1b[38;5;176m│\x1b[0m")
+    print("\x1b[38;5;255m  ")
+    printInt(67)
+    print("%              ")
+    print("\x1b[38;5;176m│\x1b[0m")
+    sp(1)
+    print("\x1b[38;5;114m│\x1b[0m")
+    print("\x1b[38;5;255m  ")
+    printInt(54)
+    print("%              ")
+    print("\x1b[38;5;114m│\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Kart progress bar'ları ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;39m│\x1b[0m   ")
+    print("\x1b[38;5;39m")
+    bar(8)
+    print("\x1b[38;5;238m")
+    shade(12)
+    print("\x1b[0m  ")
+    print("\x1b[38;5;39m│\x1b[0m")
+    sp(1)
+    print("\x1b[38;5;176m│\x1b[0m   ")
+    print("\x1b[38;5;176m")
+    bar(13)
+    print("\x1b[38;5;238m")
+    shade(7)
+    print("\x1b[0m  ")
+    print("\x1b[38;5;176m│\x1b[0m")
+    sp(1)
+    print("\x1b[38;5;114m│\x1b[0m   ")
+    print("\x1b[38;5;114m")
+    bar(11)
+    print("\x1b[38;5;238m")
+    shade(9)
+    print("\x1b[0m  ")
+    print("\x1b[38;5;114m│\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Kart alt kenarları ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;39m╰────────────────────╯\x1b[0m")
+    sp(1)
+    print("\x1b[38;5;176m╰────────────────────╯\x1b[0m")
+    sp(1)
+    print("\x1b[38;5;114m╰────────────────────╯\x1b[0m")
+    sp(2)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Boş satır ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(78)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Grafik paneli ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;250mCPU HISTORY\x1b[0m")
+    sp(63)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;238m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\x1b[0m")
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // Dalga formu satırı
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;39m")
+    print("      ▄█▌                        ▄██▌                       ▄█▌      ")
+    print("\x1b[0m")
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;39m")
+    print("  ▄▄███▙▄▄      ▄▄▄▄▄▄▄▄▄▄████████▙▄▄▄     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄████▙▄▄     ")
+    print("\x1b[0m")
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;33m")
+    print(" ████████████████████████████████████████████████████████████████████ ")
+    print("\x1b[0m")
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Boş satır ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(78)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Bilgi satırları ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;245mUptime    :\x1b[0m ")
+    print("\x1b[38;5;114m")
+    printInt(142)
+    print("h ")
+    printInt(32)
+    print("m\x1b[0m")
+    sp(52)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;245mProcesses :\x1b[0m ")
+    print("\x1b[38;5;114m")
+    printInt(247)
+    print("\x1b[0m")
+    sp(59)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(3)
+    print("\x1b[38;5;245mLanguage  :\x1b[0m ")
+    print("\x1b[38;5;220mLir v1.0 (pure, zero foreign code)\x1b[0m")
+    sp(41)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Boş satır ══
+    print("\x1b[38;5;61m│\x1b[0m")
+    sp(78)
+    print("\x1b[38;5;61m│\x1b[0m\n")
+
+    // ══ Alt kenar ══
+    print("\x1b[38;5;61m╰")
+    hline(78)
+    print("╯\x1b[0m\n")
+
+    // ══ Durum çubuğu ══
+    print("\x1b[38;5;243m  ■ Online \x1b[0m")
+    print("\x1b[38;5;243m│ Compiled with lir-bootstrap (static ELF, no libc)\x1b[0m")
+    print("\n\n")
+
+    // Terminal eski haline dönsün
+    print("\x1b[?25h\x1b[?1049l")
+
+    exit(0)
+}

@@ -1,0 +1,10 @@
+{
+  "name": "hello-world",
+  "version": "1.0.0",
+  "entry": "main.lir",
+  "source_dir": "src",
+  "targets": ["linux"],
+  "domains": [],
+  "imports": [],
+  "description": "A minimal Lir program that prints Hello World"
+}

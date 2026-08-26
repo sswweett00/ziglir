@@ -1,0 +1,315 @@
+// Lir Standard Library — File I/O
+// Provides file read/write, directory operations, and path manipulation
+// Uses Linux syscalls for zero-dependency I/O
+
+import core
+
+// ════════════════════════════════════════════════════════════════════════════
+// File Operations
+// ════════════════════════════════════════════════════════════════════════════
+
+enum FileError {
+    NotFound
+    PermissionDenied
+    AlreadyExists
+    NotADirectory
+    IsADirectory
+    TooManyOpen
+    OutOfMemory
+    IoError
+    InvalidPath
+}
+
+enum FileMode {
+    Read
+    Write
+    ReadWrite
+    WriteCreate
+    WriteAppend
+    WriteTruncate
+}
+
+struct File {
+    fd: i64
+    mode: FileMode
+    path: string
+
+    fn open(path: string, mode: FileMode) -> Result(File, FileError) {
+        let flags: i64 = match mode {
+            FileMode.Read => 0,          // O_RDONLY
+            FileMode.Write => 1,         // O_WRONLY
+            FileMode.ReadWrite => 2,     // O_RDWR
+            FileMode.WriteCreate => 65,  // O_WRONLY | O_CREAT | O_TRUNC
+            FileMode.WriteAppend => 1089,// O_WRONLY | O_APPEND | O_CREAT
+            FileMode.WriteTruncate => 577,// O_WRONLY | O_CREAT | O_TRUNC
+        }
+        let perm: i64 = 0o644  // rw-r--r--
+        let fd = syscall_open(path.ptr as *u8, flags, perm)
+        if fd < 0 {
+            Result(File, FileError).Err(match (-fd) {
+                2 => FileError.NotFound,
+                13 => FileError.PermissionDenied,
+                17 => FileError.AlreadyExists,
+                20 => FileError.NotADirectory,
+                21 => FileError.IsADirectory,
+                24 => FileError.TooManyOpen,
+                12 => FileError.OutOfMemory,
+                else => FileError.IoError,
+            })
+        } else {
+            Result(File, FileError).Ok(File {
+                fd: fd
+                mode: mode
+                path: path
+            })
+        }
+    }
+
+    fn close(self: *File) -> bool {
+        if self.fd < 0 { return false }
+        let result = syscall_close(self.fd as u64)
+        self.fd = -1
+        result == 0
+    }
+
+    fn read(self: *File, buf: *u8, buf_size: u64) -> i64 {
+        let n = syscall_read(self.fd as u64, buf, buf_size)
+        if n > 0 { n as i64 } else { -1 }
+    }
+
+    fn write(self: *File, data: string) -> i64 {
+        let n = syscall_write(self.fd as u64, data.ptr, data.len)
+        if n > 0 { n as i64 } else { -1 }
+    }
+
+    fn readAll(self: *File, alloc: *Allocator) -> Result(string, FileError) {
+        // Read entire file into allocated buffer
+        let cap: u64 = 4096
+        let buf = alloc.allocator_alloc(cap * @size_of(u8))
+        if buf == null {
+            return Result(string, FileError).Err(FileError.OutOfMemory)
+        }
+        let total = self.read(buf as *u8, cap)
+        if total < 0 {
+            alloc.allocator_free(buf, cap * @size_of(u8))
+            return Result(string, FileError).Err(FileError.IoError)
+        }
+        Result(string, FileError).Ok(string { ptr: buf as *u8, len: total as u64 })
+    }
+}
+
+// Convenience functions
+fn readFile(path: string, alloc: *Allocator) -> Result(string, FileError) {
+    let file = File.open(path, FileMode.Read)
+    if file.isErr() {
+        return Result(string, FileError).Err(file.err())
+    }
+    let f = file.unwrap()
+    let result = f.readAll(alloc)
+    f.close()
+    result
+}
+
+fn writeFile(path: string, data: string) -> bool {
+    let file = File.open(path, FileMode.WriteCreate)
+    if file.isErr() { return false }
+    let f = file.unwrap()
+    let written = f.write(data)
+    f.close()
+    written as u64 == data.len
+}
+
+fn fileExists(path: string) -> bool {
+    let fd = syscall_open(path.ptr as *u8, 0, 0)  // O_RDONLY
+    if fd >= 0 {
+        syscall_close(fd as u64)
+        true
+    } else {
+        false
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Path Manipulation
+// ════════════════════════════════════════════════════════════════════════════
+
+fn pathJoin(a: string, b: string, buf: *u8, buf_size: u64) -> u64 {
+    var pos: u64 = 0
+
+    // Copy first path
+    var i: u64 = 0
+    while i < a.len and pos < buf_size - 1 {
+        buf[pos] = a.ptr[i]
+        pos += 1
+        i += 1
+    }
+
+    // Add separator if needed
+    if pos > 0 and buf[pos - 1] != '/' {
+        if pos < buf_size - 1 {
+            buf[pos] = '/'
+            pos += 1
+        }
+    }
+
+    // Copy second path
+    i = 0
+    while i < b.len and pos < buf_size - 1 {
+        buf[pos] = b.ptr[i]
+        pos += 1
+        i += 1
+    }
+
+    buf[pos] = 0
+    pos
+}
+
+fn pathDirname(path: string) -> string {
+    // Find last '/'
+    var last_sep: i64 = -1
+    var i: u64 = 0
+    while i < path.len {
+        if path.ptr[i] == '/' {
+            last_sep = i as i64
+        }
+        i += 1
+    }
+    if last_sep < 0 {
+        string { ptr: "." , len: 1 }
+    } else {
+        string { ptr: path.ptr, len: last_sep as u64 }
+    }
+}
+
+fn pathBasename(path: string) -> string {
+    var last_sep: i64 = -1
+    var i: u64 = 0
+    while i < path.len {
+        if path.ptr[i] == '/' {
+            last_sep = i as i64
+        }
+        i += 1
+    }
+    let start = if last_sep < 0 { 0 } else { (last_sep + 1) as u64 }
+    string { ptr: &path.ptr[start], len: path.len - start }
+}
+
+fn pathExt(path: string) -> string {
+    // Find last '.'
+    var last_dot: i64 = -1
+    var i: u64 = 0
+    while i < path.len {
+        if path.ptr[i] == '.' {
+            last_dot = i as i64
+        }
+        i += 1
+    }
+    if last_dot < 0 or last_dot as u64 == path.len - 1 {
+        string { ptr: "", len: 0 }
+    } else {
+        string { ptr: &path.ptr[(last_dot + 1) as u64], len: path.len - (last_dot + 1) as u64 }
+    }
+}
+
+fn pathStem(path: string) -> string {
+    let ext = pathExt(path)
+    if ext.len == 0 { return path }
+    string { ptr: path.ptr, len: path.len - ext.len - 1 }
+}
+
+fn pathIsAbsolute(path: string) -> bool {
+    path.len > 0 and path.ptr[0] == '/'
+}
+
+fn pathRelative(from: string, to: string, buf: *u8, buf_size: u64) -> u64 {
+    // Simple: if to starts with from, strip the prefix
+    if to.len >= from.len {
+        var match = true
+        var i: u64 = 0
+        while i < from.len {
+            if from.ptr[i] != to.ptr[i] { match = false; break }
+            i += 1
+        }
+        if match {
+            // Strip prefix
+            let rest = string { ptr: &to.ptr[from.len], len: to.len - from.len }
+            // Skip leading separator
+            var start: u64 = 0
+            if rest.len > 0 and rest.ptr[0] == '/' { start = 1 }
+            var i2: u64 = start
+            var pos: u64 = 0
+            while i2 < rest.len and pos < buf_size - 1 {
+                buf[pos] = rest.ptr[i2]
+                pos += 1
+                i2 += 1
+            }
+            buf[pos] = 0
+            return pos
+        }
+    }
+    // Fallback: just copy 'to'
+    var i: u64 = 0
+    while i < to.len and i < buf_size - 1 {
+        buf[i] = to.ptr[i]
+        i += 1
+    }
+    buf[i] = 0
+    i
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// String Builder (for constructing output)
+// ════════════════════════════════════════════════════════════════════════════
+
+struct StringBuilder {
+    buf: *u8
+    len: u64
+    capacity: u64
+    allocator: *Allocator
+
+    fn init(alloc: *Allocator, cap: u64) -> ?StringBuilder {
+        let ptr = alloc.allocator_alloc(cap)
+        if ptr == null { return null }
+        StringBuilder {
+            buf: ptr as *u8
+            len: 0
+            capacity: cap
+            allocator: alloc
+        }
+    }
+
+    fn append(self: *StringBuilder, data: string) -> bool {
+        if self.len + data.len >= self.capacity { return false }
+        var i: u64 = 0
+        while i < data.len {
+            self.buf[self.len] = data.ptr[i]
+            self.len += 1
+            i += 1
+        }
+        true
+    }
+
+    fn appendByte(self: *StringBuilder, ch: u8) -> bool {
+        if self.len >= self.capacity { return false }
+        self.buf[self.len] = ch
+        self.len += 1
+        true
+    }
+
+    fn appendLine(self: *StringBuilder, data: string) -> bool {
+        if !self.append(data) { return false }
+        self.appendByte('\n')
+    }
+
+    fn toString(self: *StringBuilder) -> string {
+        string { ptr: self.buf, len: self.len }
+    }
+
+    fn reset(self: *StringBuilder) {
+        self.len = 0
+    }
+
+    fn deinit(self: *StringBuilder) {
+        self.allocator.allocator_free(self.buf as *anyopaque, self.capacity)
+    }
+}
