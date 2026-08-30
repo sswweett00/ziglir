@@ -1,0 +1,4 @@
+fn main() {
+    let s = @string_new("Hello, World!", 13)
+    printInt(@string_len(s))
+}

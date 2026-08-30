@@ -1,0 +1,66 @@
+// Threading and Mutex Demo in LIR
+
+fn worker(counter: i64) -> i64 {
+    let i = 0
+    while i < 100000 {
+        let cur = *counter
+        *counter = cur + 1
+        i = i + 1
+    }
+    return 0
+}
+
+fn mutex_worker(mtx: i64) -> i64 {
+    let i = 0
+    while i < 100000 {
+        @mutex_lock(mtx)
+        let cur = *mtx
+        *mtx = cur + 1
+        @mutex_unlock(mtx)
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() {
+    println("=== Thread Demo ===")
+
+    // Part 1: Race condition (no mutex)
+    let counter = @malloc(16)
+    *counter = 0
+
+    let t1 = @thread_create("worker", counter)
+    let t2 = @thread_create("worker", counter)
+    let t3 = @thread_create("worker", counter)
+    let t4 = @thread_create("worker", counter)
+
+    @thread_join(t1)
+    @thread_join(t2)
+    @thread_join(t3)
+    @thread_join(t4)
+
+    print("Without mutex: ")
+    printInt(*counter)
+    println(" (expected 400000, likely less due to races)")
+
+    // Part 2: Mutex-protected
+    let mtx = @mutex_create()
+    *mtx = 0
+
+    let m1 = @thread_create("mutex_worker", mtx)
+    let m2 = @thread_create("mutex_worker", mtx)
+    let m3 = @thread_create("mutex_worker", mtx)
+    let m4 = @thread_create("mutex_worker", mtx)
+
+    @thread_join(m1)
+    @thread_join(m2)
+    @thread_join(m3)
+    @thread_join(m4)
+
+    print("With mutex:    ")
+    printInt(*mtx)
+    println(" (expected 400000)")
+
+    println("Thread demo complete!")
+    exit(0)
+}

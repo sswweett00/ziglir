@@ -1,0 +1,54 @@
+# LIR v2 language features demo
+
+fn main() -> i64 {
+    # for-range loops
+    let mut total = 0
+    for i in 0..10 {
+        total += i
+    }
+    printInt(total)          # 45
+
+    # nested range loop with break/continue
+    let mut hits = 0
+    for a in 0..5 {
+        for b in 0..5 {
+            if b > a { continue }
+            if a == 4 { break }
+            hits += 1
+        }
+    }
+    printInt(hits)           # 1+2+3+4 = 10
+
+    # arrays with indexing syntax
+    let arr = @array_new(8, 8)
+    for i in 0..5 {
+        arr[i] = i * i
+    }
+    arr[2] += 100            # 4 + 100 = 104
+    printInt(arr[2])         # 104
+    printInt(arr[4])         # 16
+
+    # for-in over array
+    let mut sum = 0
+    for v in arr {
+        sum += v
+    }
+    printInt(sum)            # 0+1+104+9+16 = 130
+
+    # ternary expressions
+    let x = 7
+    let label = x > 5 ? 1 : 0
+    printInt(label)          # 1
+    printInt(x % 2 == 0 ? 111 : 222)  # 222
+
+    # string concatenation with +
+    let greeting = "Hello, " + "LIR"
+    println(greeting)        # Hello, LIR
+    println("v" + "2")
+
+    # string equality with == / !=
+    if greeting == "Hello, LIR" { printInt(1) } else { printInt(0) }
+    if "abc" != "abd" { printInt(1) } else { printInt(0) }
+
+    0
+}

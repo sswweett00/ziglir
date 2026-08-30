@@ -1,0 +1,64 @@
+// TCP Echo Server using raw Linux syscalls
+// Binds to port 8080, echoes back any data received
+
+fn main() {
+    // Create socket: socket(AF_INET=2, SOCK_STREAM=1, 0)
+    let sockfd = @syscall(41, 2, 1, 0)
+    printInt(sockfd)
+
+    // Build sockaddr_in (16 bytes) on heap
+    let addr = @malloc(64)
+    @memset(addr, 0, 64)
+
+    // sin_family = AF_INET (2) at offset 0 (i64 store, LE bytes: 02 00 ...)
+    let p0 = @ptr_add(addr, 0)
+    *p0 = 2
+
+    // sin_port = 8080 in network byte order at offset 2
+    // 8080 = 0x1F90. Big-endian bytes: 0x1F, 0x90
+    // On little-endian i64 store: value 0x901F gives bytes 1F, 90
+    // 0x901F = 36895 in decimal
+    let p2 = @ptr_add(addr, 2)
+    *p2 = 36895
+
+    // sin_addr = INADDR_ANY (0) at offset 4 — already zeroed
+
+    // Bind: bind(sockfd, addr, 16)
+    let br = @syscall(49, sockfd, addr, 16)
+    printInt(br)
+
+    // Listen: listen(sockfd, 5)
+    let lr = @syscall(50, sockfd, 5, 0)
+    printInt(lr)
+
+    println("Server listening on port 8080...")
+
+    // Accept loop
+    while 1 {
+        let client_fd = @syscall(43, sockfd, 0, 0)
+        printInt(client_fd)
+
+        if client_fd > 0 {
+            println("Client connected!")
+            handle_client(client_fd)
+            @syscall(3, client_fd, 0, 0)
+            println("Client disconnected.")
+        }
+    }
+
+    exit(0)
+}
+
+fn handle_client(fd: i64) {
+    let buf = @malloc(1024)
+
+    while 1 {
+        // read(fd, buf, 1024)
+        let n = @syscall(0, fd, buf, 1024)
+        if n <= 0 {
+            return
+        }
+        // echo back: write(fd, buf, n)
+        @syscall(1, fd, buf, n)
+    }
+}

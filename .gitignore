@@ -1,0 +1,6 @@
+.zig-cache/
+zig-out/
+*.lir.bin
+lir_test*
+test_file*
+hello

@@ -1,0 +1,55 @@
+// File I/O Demo using @open, @read, @write, @close, @stat
+fn main() {
+    // --- Write a file ---
+    // @open("test_output.txt", O_WRONLY|O_CREAT|O_TRUNC=0x241, 0644=0x1A4)
+    let fd = @open("test_output.txt", 577, 420)
+    printInt(fd)
+
+    // @write(fd, "Hello from LIR!\n", 16)
+    let msg = "Hello from LIR!\n"
+    let written = @write(fd, msg, 16)
+    printInt(written)
+
+    // @close(fd)
+    @close(fd)
+
+    // --- Read the file back ---
+    let fd2 = @open("test_output.txt", 0, 0)
+    printInt(fd2)
+
+    let buf = @malloc(256)
+    let n = @read(fd2, buf, 256)
+    printInt(n)
+
+    // Print what we read
+    @write(1, buf, n)
+
+    @close(fd2)
+
+    // --- Stat a file ---
+    let st = @malloc(144) // sizeof(struct stat)
+    let sr = @stat("test_output.txt", st)
+    printInt(sr)
+
+    // st_size is at offset 48 in struct stat on x86-64
+    let size_ptr = @ptr_add(st, 48)
+    printInt(*size_ptr)
+
+    // --- Overwrite with different content ---
+    let fd3 = @open("test_output.txt", 577, 420)
+    let msg2 = "LIR is awesome!\n"
+    @write(fd3, msg2, 16)
+    @close(fd3)
+
+    // Read it back
+    let fd4 = @open("test_output.txt", 0, 0)
+    let n2 = @read(fd4, buf, 256)
+    @write(1, buf, n2)
+    @close(fd4)
+
+    // Cleanup
+    // In LIR we can't unlink yet, so the file stays.
+    println("File I/O demo complete!")
+
+    exit(0)
+}

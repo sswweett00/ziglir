@@ -1,0 +1,7 @@
+fn main() {
+    let s = @string_new("Hello, World!", 13)
+    let sub = @string_sub(s, 7, 5)
+    let world = @string_new("World", 5)
+    if @string_eq(sub, world) { printInt(1) }
+    else { printInt(0) }
+}

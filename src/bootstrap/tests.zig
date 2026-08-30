@@ -12,9 +12,14 @@ fn compileSource(source: []const u8) ![]u8 {
     var parser = main.Parser{ .lex = &lexer, .pos = 0, .ast = &ast, .src = source };
     parser.parse();
 
+    // Phase 2.5: Optimize the AST
+    var optimizer = main.Optimizer.init(&ast, source);
+    optimizer.optimize();
+
     var cg = main.Codegen.init(source, &ast);
     cg.compile();
     cg.patchStrings();
+    cg.peepholeOptimize();
 
     var output: [262144]u8 = undefined;
     const size = cg.generateELF(&output);
@@ -46,9 +51,9 @@ test "lexer recognizes all operator tokens" {
     lexer.tokenize();
 
     const expected = [_]main.TokenKind{
-        .plus,     .minus, .star,   .slash,   .percent,
-        .eq,       .ne,    .lt,     .gt,      .le,
-        .ge,       .assign, .plus_eq, .minus_eq, .star_eq,
+        .plus,     .minus,   .star,      .slash,    .percent,
+        .eq,       .ne,      .lt,        .gt,       .le,
+        .ge,       .assign,  .plus_eq,   .minus_eq, .star_eq,
         .slash_eq, .and_and, .pipe_pipe, .bang,
     };
     for (expected, 0..) |k, i| {
@@ -129,4 +134,163 @@ test "variables, loops and functions compile" {
     // ELF magic + entry point present
     try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
     try std.testing.expect(elf.len > 200);
+}
+
+test "string operations compile" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    let s = @string_new("Hello, World!", 13)
+        \\    let len = @string_len(s)
+        \\    printInt(len)
+        \\    let sub = @string_sub(s, 7, 5)
+        \\    printInt(@string_len(sub))
+        \\    if @string_eq(sub, "World") { printInt(1) }
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expect(elf.len > 500);
+}
+
+test "array operations compile" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    let arr = @array_new(5, 8)
+        \\    @array_set(arr, 0, 10)
+        \\    @array_set(arr, 1, 20)
+        \\    @array_set(arr, 2, 30)
+        \\    printInt(@array_len(arr))
+        \\    printInt(@array_get(arr, 0))
+        \\    printInt(@array_get(arr, 2))
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expect(elf.len > 500);
+}
+
+test "struct declaration compiles" {
+    const elf = try compileSource(
+        \\struct Point {
+        \\    x: i64
+        \\    y: i64
+        \\}
+        \\
+        \\fn main() {
+        \\    printInt(42)
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expect(elf.len > 100);
+}
+
+test "optimizer: constant folding compiles" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    let x = 3 + 4
+        \\    let y = 10 * 2
+        \\    let z = 100 / 5
+        \\    printInt(x + y + z)
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
+}
+
+test "optimizer: algebraic simplification compiles" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    let x = 42
+        \\    let a = x + 0
+        \\    let b = 0 + x
+        \\    let c = x * 1
+        \\    let d = 1 * x
+        \\    let e = x - 0
+        \\    let f = x * 0
+        \\    printInt(a + b + c + d + e + f)
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
+}
+
+test "optimizer: dead code elimination compiles" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    return 0
+        \\    let x = 999
+        \\    let y = 888
+        \\    printInt(x + y)
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
+}
+
+test "optimizer: boolean simplification compiles" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    let x = 42
+        \\    let a = true and x > 0
+        \\    let b = false or x > 0
+        \\    let c = true or x > 0
+        \\    let d = false and x > 0
+        \\    if a { printInt(1) }
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
+}
+
+test "optimizer: ternary simplification compiles" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    let x = true ? 42 : 99
+        \\    let y = false ? 42 : 99
+        \\    printInt(x + y)
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
+}
+
+test "optimizer: if-condition constant folding compiles" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    if true {
+        \\        printInt(42)
+        \\    }
+        \\    if false {
+        \\        printInt(99)
+        \\    } else {
+        \\        printInt(0)
+        \\    }
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
+}
+
+test "optimizer: strength reduction compiles" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    let x = 5
+        \\    let a = x * 8
+        \\    let b = x * 4
+        \\    printInt(a + b)
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
+}
+
+test "optimizer: while false eliminated compiles" {
+    const elf = try compileSource(
+        \\fn main() {
+        \\    while false {
+        \\        printInt(999)
+        \\    }
+        \\    printInt(42)
+        \\}
+    );
+    defer std.testing.allocator.free(elf);
+    try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
 }
