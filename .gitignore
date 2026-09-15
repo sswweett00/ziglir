@@ -5,3 +5,8 @@ lir_test*
 test_file*
 hello
 .kilo/
+.freebuff/
+node_modules/
+target/
+zig-out/
+zig-cache/
