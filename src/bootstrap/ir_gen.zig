@@ -70,19 +70,15 @@ pub const IRGen = struct {
     pending_structs: [128]parser.StructDef = undefined,
     pending_struct_count: u32 = 0,
 
-    pub fn init(source: []const u8, tree: *const AST) IRGen {
-        return .{
-            .src = source,
-            .ast = tree,
-            .mod = IRModule.init(),
-            .cur_fn = undefined,
-            .cur_block_idx = 0,
-            .next_vreg = 1, // vreg 0 = unused
-            .locals = undefined,
-            .local_count = 0,
-            .loops = undefined,
-            .loop_depth = 0,
-        };
+    pub fn init(self: *IRGen, source: []const u8, tree: *const AST) void {
+        self.src = source;
+        self.ast = tree;
+        self.mod.init();
+        self.cur_block_idx = 0;
+        self.next_vreg = 1;
+        self.local_count = 0;
+        self.hidden_count = 0;
+        self.loop_depth = 0;
     }
 
     // ── Emit helpers ────────────────────────────────────────────

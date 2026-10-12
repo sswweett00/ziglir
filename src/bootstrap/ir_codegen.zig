@@ -97,34 +97,23 @@ pub const IRCodegen = struct {
     jump_patches_fn: [256]JumpPatch = undefined,
     patch_count_fn: u32 = 0,
 
-    pub fn init(source: []const u8, module: *const IRModule) IRCodegen {
-        return .{
-            .code = undefined,
-            .code_len = 0,
-            .rodata = undefined,
-            .rodata_len = 0,
-            .string_patches = undefined,
-            .patch_count = 0,
-            .string_offsets = undefined,
-            .string_lens = undefined,
-            .string_count = 0,
-            .src = source,
-            .ir = module,
-            .fns = undefined,
-            .fn_count = 0,
-            .call_patches = undefined,
-            .call_patch_count = 0,
-            .printint_patches = undefined,
-            .printint_patch_count = 0,
-            .printint_offset = 0,
-            .current_fn_idx = 0,
-            .in_main = false,
-            .total_locals = 0,
-            .vreg_slots = undefined,
-            .vreg_count = 0,
-            .block_offsets = undefined,
-            .block_count = 0,
-        };
+    pub fn init(self: *IRCodegen, source: []const u8, module: *const IRModule) void {
+        self.code_len = 0;
+        self.rodata_len = 0;
+        self.patch_count = 0;
+        self.string_count = 0;
+        self.src = source;
+        self.ir = module;
+        self.fn_count = 0;
+        self.call_patch_count = 0;
+        self.printint_patch_count = 0;
+        self.printint_offset = 0;
+        self.current_fn_idx = 0;
+        self.in_main = false;
+        self.total_locals = 0;
+        self.vreg_count = 0;
+        self.block_count = 0;
+        self.patch_count_fn = 0;
     }
 
     // ═══════════════════════════════════════════════════════════
