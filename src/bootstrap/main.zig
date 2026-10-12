@@ -378,6 +378,9 @@ const Compiler_ = struct {
         // Phase 3.5: Patch references
         ir_cg.patchStrings();
 
+        // Phase 3.75: Optimize emitted machine code (redundant moves and short jumps).
+        ir_cg.peepholeOptimize();
+
         // Phase 4: Generate ELF
         // Allocate exactly the ELF size once: no oversized scratch buffer and
         // no second allocation/copy of the final executable.
