@@ -294,3 +294,41 @@ test "optimizer: while false eliminated compiles" {
     defer std.testing.allocator.free(elf);
     try std.testing.expectEqual(@as(u8, 0x7F), elf[0]);
 }
+
+
+test "codegen uses disp32 for stack slots beyond signed disp8 range" {
+    const source =
+        \\fn main() {
+        \\    let v0 = 1
+        \\    let v1 = v0 + 1
+        \\    let v2 = v1 + 1
+        \\    let v3 = v2 + 1
+        \\    let v4 = v3 + 1
+        \\    let v5 = v4 + 1
+        \\    let v6 = v5 + 1
+        \\    let v7 = v6 + 1
+        \\    let v8 = v7 + 1
+        \\    let v9 = v8 + 1
+        \\    let v10 = v9 + 1
+        \\    let v11 = v10 + 1
+        \\    let v12 = v11 + 1
+        \\    let v13 = v12 + 1
+        \\    let v14 = v13 + 1
+        \\    let v15 = v14 + 1
+        \\    let v16 = v15 + 1
+        \\    let v17 = v16 + 1
+        \\    let v18 = v17 + 1
+        \\    let v19 = v18 + 1
+        \\    let v20 = v19 + 1
+        \\    printInt(v20)
+        \\}
+    ;
+    const elf = try compileSource(source);
+    defer std.testing.allocator.free(elf);
+
+    // Slot 17 is at rbp-136, which cannot be encoded as a signed disp8.
+    const store_disp32 = [_]u8{ 0x48, 0x89, 0x85, 0x78, 0xFF, 0xFF, 0xFF };
+    const load_disp32 = [_]u8{ 0x48, 0x8B, 0x85, 0x78, 0xFF, 0xFF, 0xFF };
+    try std.testing.expect(std.mem.indexOf(u8, elf, &store_disp32) != null);
+    try std.testing.expect(std.mem.indexOf(u8, elf, &load_disp32) != null);
+}
