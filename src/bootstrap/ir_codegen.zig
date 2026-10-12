@@ -136,6 +136,21 @@ pub const IRCodegen = struct {
     }
 
     fn mov64imm(self: *IRCodegen, dst: u8, imm: u64) void {
+        // Prefer the shortest correct x86-64 encoding. Zeroing a register with
+        // XOR is 3 bytes instead of a 10-byte movabs, and C7 /0 sign-extends
+        // an imm32 to 64 bits when the value fits in signed 32-bit range.
+        if (imm == 0) {
+            self.xorReg(dst, dst);
+            return;
+        }
+        const signed_imm: i64 = @bitCast(imm);
+        if (signed_imm >= std.math.minInt(i32) and signed_imm <= std.math.maxInt(i32)) {
+            self.emit8(if (dst >= 8) 0x49 else 0x48);
+            self.emit8(0xC7);
+            self.emit8(0xC0 | (dst & 7)); // mov r/m64, imm32; mod=11, /0
+            self.emit32(@bitCast(@as(i32, @intCast(signed_imm))));
+            return;
+        }
         self.emit8(if (dst >= 8) 0x49 else 0x48);
         self.emit8(0xB8 + (dst & 7));
         self.emit64(imm);
