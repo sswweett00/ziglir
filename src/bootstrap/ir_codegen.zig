@@ -699,7 +699,12 @@ pub const IRCodegen = struct {
         // Emit prologue
         self.emit8(0x55); // push rbp
         self.movRegReg(5, 4); // mov rbp, rsp
-        const stack_size = (ir_fn.total_locals + 64) * 8;
+        // Reserve stack space for every local AND every virtual register
+        // used by this function. A fixed +64 silently under-allocates when
+        // codegen emits more than 64 vregs, corrupting the caller's stack.
+        const max_vreg = self.maxVRegInFn(ir_fn);
+        const stack_slots = ir_fn.total_locals + max_vreg;
+        const stack_size = stack_slots * 8;
         const aligned = (stack_size + 15) & ~@as(u32, 15);
         if (aligned > 0) {
             self.subRspImm(@intCast(aligned));
@@ -737,6 +742,26 @@ pub const IRCodegen = struct {
             const disp: i32 = @intCast(@as(i64, @intCast(target)) - @as(i64, @intCast(jp.patch_pos + 4)));
             std.mem.writeInt(i32, self.code[jp.patch_pos..][0..4], disp, .little);
         }
+    }
+
+    /// Return the largest virtual-register ID referenced by this function.
+    /// Vregs are spilled to stack slots, so the prologue must reserve space for
+    /// the highest slot before any instruction executes.
+    fn maxVRegInFn(ir_fn: *const IRFn) u32 {
+        var max_vreg: u32 = 0;
+        for (0..ir_fn.block_count) |bi| {
+            const block = &ir_fn.blocks[bi];
+            for (0..block.inst_count) |ii| {
+                const inst = block.insts[ii];
+                max_vreg = @max(max_vreg, inst.dest);
+                max_vreg = @max(max_vreg, inst.src1);
+                max_vreg = @max(max_vreg, inst.src2);
+                for (0..inst.arg_count) |ai| {
+                    max_vreg = @max(max_vreg, inst.args[ai]);
+                }
+            }
+        }
+        return max_vreg;
     }
 
     fn getVregSlot(self: *IRCodegen, vreg: u32) u32 {
