@@ -326,6 +326,30 @@ pub const IRCodegen = struct {
         }
     }
 
+    // Load a stack slot directly into any x86-64 general-purpose register.
+    // This avoids temporary push/pop and register-swap instructions in the IR
+    // arithmetic path. The encoding uses rbp-relative addressing just like
+    // loadSlotToRax, including the compact disp8 form for nearby slots.
+    fn loadSlotToReg(self: *IRCodegen, reg: u8, slot: u32) void {
+        const disp: i32 = -@as(i32, @intCast(slot)) * 8;
+        var rex: u8 = 0x48;
+        if (reg >= 8) rex |= 0x04;
+        self.emit8(rex);
+        self.emit8(0x8B);
+        if (disp >= -128 and disp <= 127) {
+            self.emit8(0x45 | ((reg & 7) << 3));
+            self.emit8(@intCast(disp & 0xFF));
+        } else {
+            self.emit8(0x85 | ((reg & 7) << 3));
+            self.emit32(@bitCast(disp));
+        }
+    }
+
+    fn loadVregToReg(self: *IRCodegen, vreg: u32, reg: u8) void {
+        if (vreg == 0) return;
+        self.loadSlotToReg(reg, self.getVregSlot(vreg));
+    }
+
     fn storeRegToSlot(self: *IRCodegen, reg: u8, slot: u32) void {
         const disp: i32 = -@as(i32, @intCast(slot)) * 8;
         var rex: u8 = 0x48;
@@ -770,28 +794,11 @@ pub const IRCodegen = struct {
 
             // ── Arithmetic ──
             .add, .sub, .mul, .div, .@"mod", .shl, .shr, .cmp_eq, .cmp_ne, .cmp_lt, .cmp_le, .cmp_gt, .cmp_ge => {
-                self.loadVreg(inst.src1); // rax = lhs
-                self.emit8(0x50); // push rax
-                self.loadVreg(inst.src2); // rax = rhs
-                self.emit8(0x59); // pop rcx → rcx = lhs
-                // Now: rax=rhs, rcx=lhs. We want: rax=lhs OP rhs
-                // For commutative ops: swap
-                // For non-commutative: need to swap operands
-                switch (inst.op) {
-                    .sub, .div, .@"mod", .shr, .cmp_gt, .cmp_lt => {
-                        // rax OP= rcx → need rax=lhs, rcx=rhs
-                        // swap: rax ↔ rcx
-                        self.emit8(0x48);
-                        self.emit8(0x87);
-                        self.emit8(0xC1); // xchg rax, rcx
-                    },
-                    else => {
-                        // commutative: rax = rcx OP rax, or swap and do rax OP= rcx
-                        self.emit8(0x48);
-                        self.emit8(0x87);
-                        self.emit8(0xC1); // xchg rax, rcx
-                    },
-                }
+                // Keep lhs in rax and load rhs directly into rcx. The previous
+                // sequence used push/pop plus xchg for every operation; this
+                // removes three instructions and avoids touching the stack.
+                self.loadVreg(inst.src1);
+                self.loadVregToReg(inst.src2, 1); // rcx = rhs
                 self.emitArith(inst.op);
                 self.storeVreg(inst.dest);
             },
