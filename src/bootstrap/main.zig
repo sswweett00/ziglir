@@ -379,15 +379,15 @@ const Compiler_ = struct {
         ir_cg.patchStrings();
 
         // Phase 4: Generate ELF
-        const output = std.heap.page_allocator.alloc(u8, 262144) catch return error.OutOfMemory;
-        defer std.heap.page_allocator.free(output);
+        // Allocate exactly the ELF size once: no oversized scratch buffer and
+        // no second allocation/copy of the final executable.
+        const output_size = ir_cg.requiredOutputSize();
+        const output = std.heap.page_allocator.alloc(u8, output_size) catch return error.OutOfMemory;
         const size = ir_cg.generateELF(output);
-
-        // Keep the generated ELF in a correctly sized, independently owned
-        // allocation. This avoids returning a page-allocator resize whose
-        // backing-page behavior is not suitable for this raw syscall writer.
-        const result = std.heap.page_allocator.alloc(u8, size) catch return error.OutOfMemory;
-        @memcpy(result, output[0..size]);
-        return result;
+        if (size != output.len) {
+            std.heap.page_allocator.free(output);
+            return error.InvalidELFSize;
+        }
+        return output;
     }
 };

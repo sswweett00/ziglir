@@ -1351,6 +1351,15 @@ pub const IRCodegen = struct {
         return null;
     }
 
+    pub fn requiredOutputSize(self: *const IRCodegen) usize {
+        const header_size: usize = 64;
+        const phdr_size: usize = 56;
+        const num_phdrs: usize = 2;
+        const raw_offset = header_size + phdr_size * num_phdrs;
+        const code_file_offset = (raw_offset + 0xFFF) & ~@as(usize, 0xFFF);
+        return code_file_offset + @as(usize, self.code_len) + @as(usize, self.rodata_len);
+    }
+
     pub fn generateELF(self: *IRCodegen, output: []u8) usize {
         var pos: usize = 0;
         const header_size: u64 = 64;
