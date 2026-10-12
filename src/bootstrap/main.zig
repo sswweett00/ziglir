@@ -352,6 +352,7 @@ const Compiler_ = struct {
         // Phase 1: Lex
         var lexer = lex.Lexer.init(self.source);
         lexer.tokenize();
+        if (lexer.overflowed) return error.TooManyTokens;
 
         // Phase 2: Parse
         var ast = AST.init();
