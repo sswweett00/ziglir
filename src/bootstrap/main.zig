@@ -126,20 +126,12 @@ fn cmdBuild(args: []const [*:0]const u8) void {
         }
     }
 
-    const src_buf = std.heap.page_allocator.alloc(u8, 1024 * 1024) catch {
-        printErr("Error: out of memory\n");
+    const source_buf = util.readFileAlloc(std.heap.page_allocator, input_file) catch {
+        printErr("Error: cannot read source file or allocate its contents\n");
         sysExit(1);
     };
-    defer std.heap.page_allocator.free(src_buf);
-
-    const src_len = readFile(input_file, src_buf) orelse {
-        printErr("Error: cannot read '");
-        printErr(input_file);
-        printErr("'\n");
-        sysExit(1);
-    };
-    const source = src_buf[0..src_len];
-
+    defer std.heap.page_allocator.free(source_buf);
+    const source = source_buf;
     var compiler = Compiler.init(source, input_file);
     const result = compiler.compile() catch |err| {
         printErr("Compilation error: ");
@@ -171,20 +163,12 @@ fn cmdRun(args: []const [*:0]const u8) void {
     const input_file = std.mem.span(args[0]);
     const tmp_out = "/tmp/lir_out";
 
-    const src_buf = std.heap.page_allocator.alloc(u8, 1024 * 1024) catch {
-        printErr("Error: out of memory\n");
+    const source_buf = util.readFileAlloc(std.heap.page_allocator, input_file) catch {
+        printErr("Error: cannot read source file or allocate its contents\n");
         sysExit(1);
     };
-    defer std.heap.page_allocator.free(src_buf);
-
-    const src_len = readFile(input_file, src_buf) orelse {
-        printErr("Error: cannot read '");
-        printErr(input_file);
-        printErr("'\n");
-        sysExit(1);
-    };
-    const source = src_buf[0..src_len];
-
+    defer std.heap.page_allocator.free(source_buf);
+    const source = source_buf;
     var compiler = Compiler.init(source, input_file);
     const result = compiler.compile() catch |err| {
         printErr("Compilation error: ");
@@ -301,20 +285,24 @@ fn getHomeDir(buf: []u8) ?[]const u8 {
     return null;
 }
 
-fn cmdInstall() void {
     var self_buf: [4096]u8 = undefined;
     const n = util.sysReadLink("/proc/self/exe", &self_buf) orelse {
         printErr("Error: cannot locate current executable\n");
         sysExit(1);
     };
+    if (n >= self_buf.len) {
+        printErr("Error: executable path is too long\n");
+        sysExit(1);
+    }
     self_buf[n] = 0;
     const exe_data = self_buf[0..n];
 
-    var bin_buf: [10 * 1024 * 1024]u8 = undefined;
-    const read_len = util.readFile(exe_data, &bin_buf) orelse {
-        printErr("Error: cannot read executable\n");
+    const bin_buf = util.readFileAlloc(std.heap.page_allocator, exe_data) catch {
+        printErr("Error: cannot read executable or allocate its contents\n");
         sysExit(1);
     };
+    defer std.heap.page_allocator.free(bin_buf);
+    const read_len = bin_buf.len;
 
     const target_path = "/usr/local/bin/lir";
     if (util.writeFile(target_path, bin_buf[0..read_len])) {
