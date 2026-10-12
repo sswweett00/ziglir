@@ -112,6 +112,44 @@ pub fn readFile(path: []const u8, buf: []u8) ?usize {
     return total;
 }
 
+pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var path_z: [1024]u8 = undefined;
+    if (path.len >= path_z.len) return error.PathTooLong;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    const fd = sysOpen(path_z[0..].ptr, 0, 0);
+    if (fd < 0) return error.OpenFailed;
+    const file_fd: u64 = @intCast(fd);
+    const size = sysLseek(file_fd, 0, 2);
+    if (size < 0) {
+        sysClose(file_fd);
+        return error.SeekFailed;
+    }
+    if (sysLseek(file_fd, 0, 0) < 0) {
+        sysClose(file_fd);
+        return error.SeekFailed;
+    }
+
+    const len: usize = @intCast(size);
+    const data = allocator.alloc(u8, len) catch {
+        sysClose(file_fd);
+        return error.OutOfMemory;
+    };
+    var total: usize = 0;
+    while (total < len) {
+        const n = sysRead(file_fd, data.ptr + total, len - total);
+        if (n <= 0) {
+            allocator.free(data);
+            sysClose(file_fd);
+            return error.ReadFailed;
+        }
+        total += @intCast(n);
+    }
+    sysClose(file_fd);
+    return data;
+}
+
 pub fn writeFile(path: []const u8, data: []const u8) bool {
     var path_z: [1024]u8 = undefined;
     if (path.len >= 1024) return false;
