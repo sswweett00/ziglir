@@ -284,6 +284,7 @@ fn getHomeDir(buf: []u8) ?[]const u8 {
     return null;
 }
 
+fn cmdInstall() void {
     var self_buf: [4096]u8 = undefined;
     const n = util.sysReadLink("/proc/self/exe", &self_buf) orelse {
         printErr("Error: cannot locate current executable\n");
