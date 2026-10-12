@@ -39,8 +39,8 @@ const FnInfo = struct {
 };
 
 const CallPatch = struct {
-    name_start: u32,
-    name_len: u32,
+    name_buf: [64]u8,
+    name_len: u8,
     patch_pos: u32,
 };
 
@@ -246,11 +246,13 @@ pub const IRCodegen = struct {
     fn callNamed(self: *IRCodegen, name: []const u8) void {
         self.emit8(0xE8);
         if (self.call_patch_count < self.call_patches.len) {
-            self.call_patches[self.call_patch_count] = .{
-                .name_start = @intCast(name.ptr - self.src.ptr),
-                .name_len = @intCast(name.len),
+            var patch = CallPatch{
+                .name_buf = undefined,
+                .name_len = @intCast(@min(name.len, 64)),
                 .patch_pos = self.code_len,
             };
+            @memcpy(patch.name_buf[0..patch.name_len], name[0..patch.name_len]);
+            self.call_patches[self.call_patch_count] = patch;
             self.call_patch_count += 1;
         }
         self.emit32(0); // placeholder
@@ -633,7 +635,7 @@ pub const IRCodegen = struct {
         self.emitTlsInit();
 
         // Compile main first (so it gets the lowest address)
-        var compiled: [128]bool = @splat(false);
+        var compiled: [128]bool = .{false} ** 128;
         var main_found = false;
         for (0..self.fn_count) |i| {
             if (eql(self.irFnName(@intCast(i)), "main")) {
@@ -1099,11 +1101,30 @@ pub const IRCodegen = struct {
                 }
             },
             .call_string_new => {
+                self.pushReg(12);
+                self.pushReg(13);
                 self.loadVreg(inst.args[0]); // ptr
                 self.pushReg(0);
                 self.loadVreg(inst.args[1]); // len
-                self.movRegReg(6, 0); // rsi = len
-                self.popReg(7); // rdi = ptr
+                self.emit8(0x49); self.emit8(0x89); self.emit8(0xC4); // mov r12, rax
+                self.emit8(0x48); self.emit8(0x8D); self.emit8(0x70); self.emit8(0x08); // lea rsi, [rax+8]
+                self.mov64imm(0, 9); // sys_mmap
+                self.xorReg(7, 7);
+                self.mov64imm(2, 3);
+                self.mov64imm(10, 0x22);
+                self.mov64imm(8, 0xFFFFFFFFFFFFFFFF);
+                self.xorReg(9, 9);
+                self.syscallInst();
+                self.emit8(0x49); self.emit8(0x89); self.emit8(0xC5); // mov r13, rax
+                self.emit8(0x44); self.emit8(0x89); self.emit8(0x20); // mov [rax], r12d
+                self.emit8(0x48); self.emit8(0x8D); self.emit8(0x78); self.emit8(0x08); // lea rdi, [rax+8]
+                self.popReg(6); // rsi = ptr
+                self.movRegReg(1, 12); // rcx = len
+                self.emitByteCopy();
+                self.emit8(0x4C); self.emit8(0x89); self.emit8(0xE8); // mov rax, r13
+                self.emit8(0x48); self.emit8(0x83); self.emit8(0xC0); self.emit8(0x08); // add rax, 8
+                self.popReg(13);
+                self.popReg(12);
                 if (inst.dest != 0) self.storeVreg(inst.dest);
             },
             .call_string_len => {
@@ -1112,26 +1133,117 @@ pub const IRCodegen = struct {
                 self.emit8(0x48); self.emit8(0x0F); self.emit8(0xB6); self.emit8(0xC0); // movzx rax, eax
                 if (inst.dest != 0) self.storeVreg(inst.dest);
             },
-            .call_string_sub, .call_string_eq, .call_string_concat, .call_string_split => {
-                // Simplified stubs - call the helper
-                for (0..inst.arg_count) |ai| {
-                    self.loadVreg(inst.args[ai]);
-                    self.pushReg(0);
-                }
-                var ri: usize = inst.arg_count;
-                while (ri > 0) {
-                    ri -= 1;
-                    self.popReg(ARG_REGS[ri]);
-                }
-                const name = switch (inst.op) {
-                    .call_string_sub => "@string_sub",
-                    .call_string_eq => "@string_eq",
-                    .call_string_concat => "@string_concat",
-                    .call_string_split => "@string_split",
-                    else => unreachable,
-                };
-                self.callNamed(name);
+            .call_string_sub => {
+                self.pushReg(12);
+                self.pushReg(13);
+                self.loadVreg(inst.args[0]); // str
+                self.pushReg(0);
+                self.loadVreg(inst.args[1]); // start
+                self.pushReg(0);
+                self.loadVreg(inst.args[2]); // sub_len
+                self.emit8(0x49); self.emit8(0x89); self.emit8(0xC4); // mov r12, rax
+                self.emit8(0x48); self.emit8(0x8D); self.emit8(0x70); self.emit8(0x08); // lea rsi, [rax+8]
+                self.mov64imm(0, 9); // sys_mmap
+                self.xorReg(7, 7);
+                self.mov64imm(2, 3);
+                self.mov64imm(10, 0x22);
+                self.mov64imm(8, 0xFFFFFFFFFFFFFFFF);
+                self.xorReg(9, 9);
+                self.syscallInst();
+                self.emit8(0x49); self.emit8(0x89); self.emit8(0xC5); // mov r13, rax
+                self.emit8(0x44); self.emit8(0x89); self.emit8(0x20); // mov [rax], r12d
+                self.emit8(0x48); self.emit8(0x8D); self.emit8(0x78); self.emit8(0x08); // lea rdi, [rax+8]
+                self.popReg(2); // rdx = start
+                self.popReg(6); // rsi = str
+                self.emit8(0x48); self.emit8(0x01); self.emit8(0xD6); // add rsi, rdx
+                self.movRegReg(1, 12); // rcx = sub_len
+                self.emitByteCopy();
+                self.emit8(0x4C); self.emit8(0x89); self.emit8(0xE8); // mov rax, r13
+                self.emit8(0x48); self.emit8(0x83); self.emit8(0xC0); self.emit8(0x08); // add rax, 8
+                self.popReg(13);
+                self.popReg(12);
                 if (inst.dest != 0) self.storeVreg(inst.dest);
+            },
+            .call_string_concat => {
+                self.pushReg(12);
+                self.pushReg(13);
+                self.pushReg(14);
+                self.pushReg(15);
+                self.loadVreg(inst.args[0]); // a
+                self.pushReg(0);
+                self.loadVreg(inst.args[1]); // b
+                self.pushReg(0); // [rsp]=b, [rsp+8]=a
+                self.emit8(0x48); self.emit8(0x8B); self.emit8(0x44); self.emit8(0x24); self.emit8(0x08); // mov rax, [rsp+8] = a
+                self.emit8(0x8B); self.emit8(0x48); self.emit8(0xF8); // mov ecx, [rax-8] = len_a
+                self.pushReg(1); // [rsp]=len_a, [rsp+8]=b, [rsp+16]=a
+                self.emit8(0x48); self.emit8(0x8B); self.emit8(0x44); self.emit8(0x24); self.emit8(0x08); // mov rax, [rsp+8] = b
+                self.emit8(0x8B); self.emit8(0x50); self.emit8(0xF8); // mov edx, [rax-8] = len_b
+                self.pushReg(2); // [rsp]=len_b, [rsp+8]=len_a, [rsp+16]=b, [rsp+24]=a
+                self.emit8(0x01); self.emit8(0xD1); // add ecx, edx
+                self.emit8(0x83); self.emit8(0xC1); self.emit8(0x08); // add ecx, 8
+                self.pushReg(1); // [rsp]=total...
+                self.emit8(0x48); self.emit8(0x8B); self.emit8(0x34); self.emit8(0x24); // mov rsi, [rsp] = total
+                self.xorReg(7, 7);
+                self.mov64imm(2, 3);
+                self.mov64imm(10, 0x22);
+                self.mov64imm(8, 0xFFFFFFFFFFFFFFFF);
+                self.xorReg(9, 9);
+                self.mov64imm(0, 9); // sys_mmap
+                self.syscallInst();
+                self.emit8(0x48); self.emit8(0x83); self.emit8(0xC4); self.emit8(0x08); // add rsp, 8
+                self.emit8(0x8B); self.emit8(0x4C); self.emit8(0x24); self.emit8(0x00); // mov ecx, [rsp] = len_b
+                self.emit8(0x03); self.emit8(0x4C); self.emit8(0x24); self.emit8(0x08); // add ecx, [rsp+8] = len_a
+                self.emit8(0x89); self.emit8(0x08); // mov [rax], ecx
+                self.pushReg(0); // [rsp]=base
+                self.emit8(0x48); self.emit8(0x8D); self.emit8(0x78); self.emit8(0x08); // lea rdi, [rax+8]
+                self.emit8(0x8B); self.emit8(0x4C); self.emit8(0x24); self.emit8(0x10); // mov ecx, [rsp+16] = len_a
+                self.emit8(0x48); self.emit8(0x8B); self.emit8(0x74); self.emit8(0x24); self.emit8(0x20); // mov rsi, [rsp+32] = a
+                self.emitByteCopy();
+                self.emit8(0x8B); self.emit8(0x4C); self.emit8(0x24); self.emit8(0x08); // mov ecx, [rsp+8] = len_b
+                self.emit8(0x48); self.emit8(0x8B); self.emit8(0x74); self.emit8(0x24); self.emit8(0x18); // mov rsi, [rsp+24] = b
+                self.emitByteCopy();
+                self.emit8(0x48); self.emit8(0x8B); self.emit8(0x04); self.emit8(0x24); // mov rax, [rsp] = base
+                self.emit8(0x48); self.emit8(0x83); self.emit8(0xC0); self.emit8(0x08); // add rax, 8
+                self.emit8(0x48); self.emit8(0x83); self.emit8(0xC4); self.emit8(0x28); // add rsp, 40
+                self.popReg(15);
+                self.popReg(14);
+                self.popReg(13);
+                self.popReg(12);
+                if (inst.dest != 0) self.storeVreg(inst.dest);
+            },
+            .call_string_eq => {
+                self.loadVreg(inst.args[0]); // a
+                self.pushReg(0);
+                self.loadVreg(inst.args[1]); // b
+                self.popReg(6); // rsi = a
+                self.movRegReg(7, 0); // rdi = b
+                self.emit8(0x8B); self.emit8(0x4E); self.emit8(0xF8); // mov ecx, [rsi-8] = len_a
+                self.emit8(0x3B); self.emit8(0x4F); self.emit8(0xF8); // cmp ecx, [rdi-8] = len_b
+                const not_eq = self.emitJne();
+                const eq_loop = self.code_len;
+                self.emit8(0x85); self.emit8(0xC9); // test ecx, ecx
+                const eq_done = self.emitJe();
+                self.emit8(0x8A); self.emit8(0x06); // mov al, [rsi]
+                self.emit8(0x3A); self.emit8(0x07); // cmp al, [rdi]
+                const neq_byte = self.emitJne();
+                self.emit8(0x48); self.emit8(0xFF); self.emit8(0xC6); // inc rsi
+                self.emit8(0x48); self.emit8(0xFF); self.emit8(0xC7); // inc rdi
+                self.emit8(0xFF); self.emit8(0xC9); // dec ecx
+                self.emitJmpTo(eq_loop);
+                self.patchJump(eq_done);
+                self.mov64imm(0, 1);
+                const eq_end = self.emitJmp();
+                self.patchJump(not_eq);
+                self.patchJump(neq_byte);
+                self.xorReg(0, 0);
+                self.patchJump(eq_end);
+                if (inst.dest != 0) self.storeVreg(inst.dest);
+            },
+            .call_string_split => {
+                if (inst.dest != 0) {
+                    self.xorReg(0, 0);
+                    self.storeVreg(inst.dest);
+                }
             },
             .call_printptr => {
                 self.loadVreg(inst.args[0]);
@@ -1149,24 +1261,54 @@ pub const IRCodegen = struct {
                     self.storeVreg(inst.dest);
                 }
             },
-            .call_open, .call_read, .call_write, .call_close => {
-                for (0..inst.arg_count) |ai| {
-                    self.loadVreg(inst.args[ai]);
-                    self.pushReg(0);
+            .call_open => {
+                self.loadVreg(inst.args[0]); // path
+                self.pushReg(0);
+                self.loadVreg(inst.args[1]); // flags
+                self.pushReg(0);
+                if (inst.arg_count >= 3) {
+                    self.loadVreg(inst.args[2]); // mode
+                    self.movRegReg(2, 0); // rdx = mode
+                } else {
+                    self.mov64imm(2, 0o644);
                 }
-                var ri: usize = inst.arg_count;
-                while (ri > 0) {
-                    ri -= 1;
-                    self.popReg(ARG_REGS[ri]);
-                }
-                const name = switch (inst.op) {
-                    .call_open => "@open",
-                    .call_read => "@read",
-                    .call_write => "@write",
-                    .call_close => "@close",
-                    else => unreachable,
-                };
-                self.callNamed(name);
+                self.popReg(6); // rsi = flags
+                self.popReg(7); // rdi = path
+                self.mov64imm(0, 2); // sys_open
+                self.syscallInst();
+                if (inst.dest != 0) self.storeVreg(inst.dest);
+            },
+            .call_read => {
+                self.loadVreg(inst.args[0]); // fd
+                self.pushReg(0);
+                self.loadVreg(inst.args[1]); // buf
+                self.pushReg(0);
+                self.loadVreg(inst.args[2]); // count
+                self.movRegReg(2, 0); // rdx = count
+                self.popReg(6); // rsi = buf
+                self.popReg(7); // rdi = fd
+                self.mov64imm(0, 0); // sys_read
+                self.syscallInst();
+                if (inst.dest != 0) self.storeVreg(inst.dest);
+            },
+            .call_write => {
+                self.loadVreg(inst.args[0]); // fd
+                self.pushReg(0);
+                self.loadVreg(inst.args[1]); // buf
+                self.pushReg(0);
+                self.loadVreg(inst.args[2]); // count
+                self.movRegReg(2, 0); // rdx = count
+                self.popReg(6); // rsi = buf
+                self.popReg(7); // rdi = fd
+                self.mov64imm(0, 1); // sys_write
+                self.syscallInst();
+                if (inst.dest != 0) self.storeVreg(inst.dest);
+            },
+            .call_close => {
+                self.loadVreg(inst.args[0]); // fd
+                self.movRegReg(7, 0); // rdi = fd
+                self.mov64imm(0, 3); // sys_close
+                self.syscallInst();
                 if (inst.dest != 0) self.storeVreg(inst.dest);
             },
 
@@ -1186,7 +1328,7 @@ pub const IRCodegen = struct {
     fn patchCalls(self: *IRCodegen) void {
         for (0..self.call_patch_count) |i| {
             const p = self.call_patches[i];
-            const name = self.src[p.name_start..][0..p.name_len];
+            const name = p.name_buf[0..p.name_len];
             const fi = self.findFn(name) orelse {
                 printErr("IRCodegen error: call to undefined function '");
                 printErr(name);
@@ -1229,7 +1371,7 @@ pub const IRCodegen = struct {
         const raw_offset = header_size + phdr_size * num_phdrs;
         const code_file_offset = (raw_offset + 0xFFF) & ~@as(u64, 0xFFF);
         const code_vaddr: u64 = 0x400000;
-        const entry = code_vaddr;
+        const entry = code_vaddr + code_file_offset;
 
         // ELF Header
         output[0..16].* = .{ 0x7F, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -1251,11 +1393,11 @@ pub const IRCodegen = struct {
         // PT_LOAD
         write32(output[pos..][0..4], 1); pos += 4;
         write32(output[pos..][0..4], 5); pos += 4;
-        write64(output[pos..][0..8], code_file_offset); pos += 8;
+        write64(output[pos..][0..8], 0); pos += 8;
         write64(output[pos..][0..8], code_vaddr); pos += 8;
         write64(output[pos..][0..8], code_vaddr); pos += 8;
-        write64(output[pos..][0..8], total_size); pos += 8;
-        write64(output[pos..][0..8], total_size + 0x10000); pos += 8;
+        write64(output[pos..][0..8], code_file_offset + total_size); pos += 8;
+        write64(output[pos..][0..8], code_file_offset + total_size + 0x10000); pos += 8;
         write64(output[pos..][0..8], 0x1000); pos += 8;
 
         // PT_GNU_STACK
@@ -1307,7 +1449,7 @@ pub const IRCodegen = struct {
         if (self.code_len == 0) return;
 
         // Phase 1: mark jumps that can be shortened to rel8 ───────────
-        var convert: [65536]bool = @splat(false);
+        var convert: [65536]bool = .{false} ** 65536;
         var shift: i32 = 0;
         var i: u32 = 0;
         while (i < self.code_len) {
@@ -1373,7 +1515,7 @@ pub const IRCodegen = struct {
         if (shift == 0) return;
 
         // Phase 2: compute shift_at[i] = cumulative bytes removed before position i
-        var shift_at: [65537]i32 = @splat(0);
+        var shift_at: [65537]i32 = .{@as(i32, 0)} ** 65537;
         shift = 0;
         i = 0;
         while (i <= self.code_len) {

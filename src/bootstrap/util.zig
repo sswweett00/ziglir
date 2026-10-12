@@ -38,6 +38,13 @@ pub fn sysRead(fd: u64, buf: [*]u8, len: u64) i64 {
     return @bitCast(syscall3(SYS_read, fd, @intFromPtr(buf), len));
 }
 
+pub fn sysReadLink(path: []const u8, buf: []u8) ?usize {
+    const res = syscall3(89, @intFromPtr(path.ptr), @intFromPtr(buf.ptr), buf.len);
+    const n: i64 = @bitCast(res);
+    if (n <= 0) return null;
+    return @intCast(n);
+}
+
 pub fn sysLseek(fd: u64, offset: i64, whence: u64) i64 {
     return @bitCast(syscall3(SYS_lseek, fd, @as(u64, @bitCast(offset)), whence));
 }

@@ -92,9 +92,13 @@ pub fn main() !void {
             sysExit(1);
         }
         cmdRun(args[2..arg_count]);
+    } else if (eql(command, "test")) {
+        cmdTest();
     } else if (eql(command, "init")) {
         const name = if (arg_count >= 3) args[2] else "myproject";
         cmdInit(name);
+    } else if (eql(command, "install")) {
+        cmdInstall();
     } else {
         printErr("Unknown command: ");
         printErr(command);
@@ -112,7 +116,9 @@ fn printUsage() void {
         \\Commands:
         \\  build <file.lir>    Compile LIR source to native executable
         \\  run <file.lir>      Compile and run
+        \\  test [file.lir]     Run tests
         \\  init [name]         Create a new project
+        \\  install             Install lir binary to system PATH
         \\  help                Show this help
         \\  version             Show version
         \\
@@ -120,6 +126,7 @@ fn printUsage() void {
         \\  lir build main.lir
         \\  lir run main.lir
         \\  lir init myproject
+        \\  lir install
         \\
     );
 }
@@ -257,6 +264,87 @@ fn cmdInit(name: []const u8) void {
     }
 
     printStr("Created project.manifest\nCreated src/main.lir\n\nNext: lir build src/main.lir\n");
+}
+
+fn cmdTest() void {
+    const test_path = if (util.sysOpen("src/tests.lir", 0, 0) >= 0) "src/tests.lir" else if (util.sysOpen("src/main.lir", 0, 0) >= 0) "src/main.lir" else "test.lir";
+    printStr("Running tests in ");
+    printStr(test_path);
+    printStr("...\n");
+    cmdRun(&[_][]const u8{test_path});
+}
+
+fn getHomeDir(buf: []u8) ?[]const u8 {
+    var env_buf: [4096]u8 = undefined;
+    const fd = sysOpen("/proc/self/environ", 0, 0);
+    if (fd < 0) return null;
+    const n = sysRead(@intCast(fd), &env_buf, 4096);
+    sysClose(@intCast(fd));
+    if (n <= 0) return null;
+
+    const env_data = env_buf[0..@intCast(n)];
+    var start: usize = 0;
+    for (env_data, 0..) |b, idx| {
+        if (b == 0) {
+            const entry = env_data[start..idx];
+            if (entry.len >= 5 and eql(entry[0..5], "HOME=")) {
+                const home = entry[5..];
+                if (home.len <= buf.len) {
+                    @memcpy(buf[0..home.len], home);
+                    return buf[0..home.len];
+                }
+            }
+            start = idx + 1;
+        }
+    }
+    return null;
+}
+
+fn cmdInstall() void {
+    var self_buf: [4096]u8 = undefined;
+    const n = util.sysReadLink("/proc/self/exe", &self_buf) orelse {
+        printErr("Error: cannot locate current executable\n");
+        sysExit(1);
+    };
+    self_buf[n] = 0;
+    const exe_data = self_buf[0..n];
+
+    var bin_buf: [10 * 1024 * 1024]u8 = undefined;
+    const read_len = util.readFile(exe_data, &bin_buf) orelse {
+        printErr("Error: cannot read executable\n");
+        sysExit(1);
+    };
+
+    const target_path = "/usr/local/bin/lir";
+    if (util.writeFile(target_path, bin_buf[0..read_len])) {
+        _ = util.syscall3(0x5A, @intFromPtr(target_path.ptr), 0o755, 0);
+        printStr("Installed LIR to /usr/local/bin/lir\n");
+    } else {
+        var home_buf: [256]u8 = undefined;
+        if (getHomeDir(&home_buf)) |home| {
+            var user_bin_dir: [512]u8 = undefined;
+            var pos: usize = 0;
+            @memcpy(user_bin_dir[pos..][0..home.len], home); pos += home.len;
+            const suffix = "/.lir/bin";
+            @memcpy(user_bin_dir[pos..][0..suffix.len], suffix); pos += suffix.len;
+            user_bin_dir[pos] = 0;
+            _ = util.syscall3(83, @intFromPtr(user_bin_dir[0..pos].ptr), 0o755, 0); // mkdir -p
+
+            const exe_suffix = "/lir";
+            @memcpy(user_bin_dir[pos..][0..exe_suffix.len], exe_suffix); pos += exe_suffix.len;
+            user_bin_dir[pos] = 0;
+
+            if (util.writeFile(user_bin_dir[0..pos], bin_buf[0..read_len])) {
+                _ = util.syscall3(0x5A, @intFromPtr(user_bin_dir[0..pos].ptr), 0o755, 0);
+                printStr("Installed LIR to ");
+                printStr(user_bin_dir[0..pos]);
+                printStr("\n");
+                return;
+            }
+        }
+        printErr("Error: failed to install LIR binary\n");
+        sysExit(1);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -4,6 +4,9 @@ zig-out/
 lir_test*
 test_file*
 hello
+t_*
+mytest
+test_output.txt
 .kilo/
 .freebuff/
 node_modules/

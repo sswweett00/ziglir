@@ -83,7 +83,7 @@ pub const AST = struct {
     source_count: u32,
 
     pub fn init() AST {
-        var ast = AST{ .nodes = undefined, .count = 1, .stmt_chains = @splat(0), .struct_defs = undefined, .struct_count = 0, .sources = undefined, .source_count = 0 };
+        var ast = AST{ .nodes = undefined, .count = 1, .stmt_chains = .{@as(u32, 0)} ** 4096, .struct_defs = undefined, .struct_count = 0, .sources = undefined, .source_count = 0 };
         ast.nodes[0] = .{ .kind = .identifier, .line = 0 };
         return ast;
     }
@@ -123,7 +123,7 @@ pub const AST = struct {
 
     pub fn copySubtree(self: *AST, other: *const AST, root: u32, source_id: u32) u32 {
         if (root == 0 or root >= other.count) return 0;
-        var remap: [4096]u32 = @splat(0);
+        var remap: [4096]u32 = .{@as(u32, 0)} ** 4096;
         var queue: [4096]u32 = undefined;
         var qhead: u32 = 0;
         var qtail: u32 = 0;
