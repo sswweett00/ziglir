@@ -151,13 +151,12 @@ pub const IRModule = struct {
     sources: [32][]const u8,
     source_count: u32 = 0,
 
-    pub fn init() IRModule {
-        return .{
-            .fns = undefined,
-            .strings = undefined,
-            .struct_defs = undefined,
-            .sources = undefined,
-        };
+    pub fn init(self: *IRModule) void {
+        self.fn_count = 0;
+        self.string_len = 0;
+        self.string_count = 0;
+        self.struct_count = 0;
+        self.source_count = 0;
     }
 
     pub fn addString(self: *IRModule, str: []const u8) u32 {

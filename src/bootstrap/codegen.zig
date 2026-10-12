@@ -46,8 +46,8 @@ const FnInfo = struct {
 };
 
 const CallPatch = struct {
-    name_start: u32,
-    name_len: u32,
+    name_buf: [64]u8,
+    name_len: u8,
     patch_pos: u32,
 };
 
@@ -297,14 +297,16 @@ pub const Codegen = struct {
     /// call rel32 to a named user function, patched later
     fn callNamed(self: *Codegen, name: []const u8) void {
         self.emit8(0xE8);
-        const patch = self.code_len;
+        const patch_pos = self.code_len;
         self.emit32(0);
         if (self.call_patch_count < self.call_patches.len) {
-            self.call_patches[self.call_patch_count] = .{
-                .name_start = @intCast(name.ptr - self.src.ptr),
-                .name_len = @intCast(name.len),
-                .patch_pos = patch,
+            var patch = CallPatch{
+                .name_buf = undefined,
+                .name_len = @intCast(@min(name.len, 64)),
+                .patch_pos = patch_pos,
             };
+            @memcpy(patch.name_buf[0..patch.name_len], name[0..patch.name_len]);
+            self.call_patches[self.call_patch_count] = patch;
             self.call_patch_count += 1;
         }
     }
@@ -416,7 +418,7 @@ pub const Codegen = struct {
             i -= 1;
             const l = self.locals[i];
             const lname = if (l.is_hidden)
-                self.hidden_names[l.name_start][0..l.name_len]
+                self.hidden_names[@intCast(l.name_start)][0..l.name_len]
             else
                 self.src[l.name_start..][0..l.name_len];
             if (eql(lname, name)) return l.slot;
@@ -437,7 +439,7 @@ pub const Codegen = struct {
         }
         self.next_slot += 1;
         self.locals[self.local_count] = .{
-            .name_start = @intCast(name.ptr - self.src.ptr),
+            .name_start = @intCast(@intFromPtr(name.ptr) - @intFromPtr(self.src.ptr)),
             .name_len = @intCast(name.len),
             .slot = self.next_slot,
         };
@@ -469,7 +471,7 @@ pub const Codegen = struct {
             };
         } else {
             self.locals[self.local_count] = .{
-                .name_start = @intCast(name.ptr - self.src.ptr),
+                .name_start = @intCast(@intFromPtr(name.ptr) - @intFromPtr(self.src.ptr)),
                 .name_len = @intCast(name.len),
                 .slot = self.next_slot,
             };
@@ -583,7 +585,7 @@ pub const Codegen = struct {
         // Patch user-defined function calls
         for (0..self.call_patch_count) |i| {
             const p = self.call_patches[i];
-            const name = self.src[p.name_start..][0..p.name_len];
+            const name = p.name_buf[0..p.name_len];
             const fi = self.findFn(name) orelse {
                 printErr("Compile error: call to undefined function '");
                 printErr(name);
@@ -666,7 +668,7 @@ pub const Codegen = struct {
         self.emitTlsInit();
 
         // Compile all functions (main comes after init)
-        var compiled: [128]bool = @splat(false);
+        var compiled: [128]bool = .{false} ** 128;
         var main_found = false;
         for (0..self.fn_count) |i| {
             const f = self.fns[i];
@@ -711,7 +713,7 @@ pub const Codegen = struct {
             const pname = self.nodeText(pi);
             if (self.local_count >= self.locals.len) break;
             self.locals[self.local_count] = .{
-                .name_start = @intCast(pname.ptr - self.src.ptr),
+                .name_start = @intCast(@intFromPtr(pname.ptr) - @intFromPtr(self.src.ptr)),
                 .name_len = @intCast(pname.len),
                 .slot = self.local_count + 1,
             };
@@ -1076,7 +1078,7 @@ pub const Codegen = struct {
                     // lvalue assignment: *ptr = val or obj.field = val
                     self.compileLValue(node.child0); // rax = target address
                     self.pushReg(0); // save address
-                    const op_kind: TokenKind = @fromBackingInt(@intCast(node.op));
+                    const op_kind: TokenKind = @enumFromInt(node.op);
                     if (op_kind != .assign) {
                         self.emit8(0x48);
                         self.emit8(0x8B);
@@ -1102,7 +1104,7 @@ pub const Codegen = struct {
                         sysExit(1);
                     };
                     self.compileExpr(node.child0); // rhs → rax
-                    const op_kind: TokenKind = @fromBackingInt(@intCast(node.op));
+                    const op_kind: TokenKind = @enumFromInt(node.op);
                     if (op_kind != .assign) {
                         self.pushReg(0);
                         self.loadSlotToRax(slot);
@@ -1658,7 +1660,7 @@ pub const Codegen = struct {
             },
             .unary_expr => {
                 self.compileExpr(node.child0);
-                const op_kind: TokenKind = @fromBackingInt(@intCast(node.op));
+                const op_kind: TokenKind = @enumFromInt(node.op);
                 if (op_kind == .minus) {
                     self.emit8(0x48);
                     self.emit8(0xF7);
@@ -1675,7 +1677,7 @@ pub const Codegen = struct {
                 }
             },
             .binary_expr => {
-                const op_kind: TokenKind = @fromBackingInt(@intCast(node.op));
+                const op_kind: TokenKind = @enumFromInt(node.op);
                 if (op_kind == .and_and) {
                     self.compileLogicalAnd(node);
                     return;
@@ -2812,7 +2814,7 @@ pub const Codegen = struct {
         const raw_offset = header_size + phdr_size * num_phdrs;
         const code_file_offset = (raw_offset + 0xFFF) & ~@as(u64, 0xFFF); // round up to 4096
         const code_vaddr: u64 = 0x400000;
-        const entry = code_vaddr;
+        const entry = code_vaddr + code_file_offset;
 
         // ELF Header (64 bytes)
         output[0..16].* = .{ 0x7F, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -2836,15 +2838,15 @@ pub const Codegen = struct {
         pos += 4;
         write32(output[pos..][0..4], 5);
         pos += 4;
-        write64(output[pos..][0..8], code_file_offset);
+        write64(output[pos..][0..8], 0);
         pos += 8;
         write64(output[pos..][0..8], code_vaddr);
         pos += 8;
         write64(output[pos..][0..8], code_vaddr);
         pos += 8;
-        write64(output[pos..][0..8], total_size);
+        write64(output[pos..][0..8], code_file_offset + total_size);
         pos += 8;
-        write64(output[pos..][0..8], total_size + 0x10000);
+        write64(output[pos..][0..8], code_file_offset + total_size + 0x10000);
         pos += 8;
         write64(output[pos..][0..8], 0x1000);
         pos += 8;
@@ -2923,7 +2925,7 @@ pub const Codegen = struct {
         if (self.code_len == 0) return;
 
         // Phase 1: mark jumps that can be shortened to rel8 ───────────
-        var convert: [65536]bool = @splat(false);
+        var convert: [65536]bool = .{false} ** 65536;
         var shift: i32 = 0;
         var i: u32 = 0;
         while (i < self.code_len) {
@@ -2989,7 +2991,7 @@ pub const Codegen = struct {
         if (shift == 0) return;
 
         // Phase 2: compute shift_at[i] = cumulative bytes removed before position i
-        var shift_at: [65537]i32 = @splat(0);
+        var shift_at: [65537]i32 = .{@as(i32, 0)} ** 65537;
         shift = 0;
         i = 0;
         while (i <= self.code_len) {

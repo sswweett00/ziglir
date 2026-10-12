@@ -1,0 +1,7 @@
+.git
+.zig-cache
+zig-out
+tmp
+*.out
+mytest
+t_*

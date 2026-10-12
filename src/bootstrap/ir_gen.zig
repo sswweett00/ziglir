@@ -70,19 +70,15 @@ pub const IRGen = struct {
     pending_structs: [128]parser.StructDef = undefined,
     pending_struct_count: u32 = 0,
 
-    pub fn init(source: []const u8, tree: *const AST) IRGen {
-        return .{
-            .src = source,
-            .ast = tree,
-            .mod = IRModule.init(),
-            .cur_fn = undefined,
-            .cur_block_idx = 0,
-            .next_vreg = 1, // vreg 0 = unused
-            .locals = undefined,
-            .local_count = 0,
-            .loops = undefined,
-            .loop_depth = 0,
-        };
+    pub fn init(self: *IRGen, source: []const u8, tree: *const AST) void {
+        self.src = source;
+        self.ast = tree;
+        self.mod.init();
+        self.cur_block_idx = 0;
+        self.next_vreg = 1;
+        self.local_count = 0;
+        self.hidden_count = 0;
+        self.loop_depth = 0;
     }
 
     // ── Emit helpers ────────────────────────────────────────────
@@ -125,7 +121,7 @@ pub const IRGen = struct {
     fn defineLocal(self: *IRGen, name: []const u8) void {
         if (self.local_count >= self.locals.len) return;
         self.locals[self.local_count] = .{
-            .name_start = @intCast(name.ptr - self.src.ptr),
+            .name_start = @intCast(@intFromPtr(name.ptr) - @intFromPtr(self.src.ptr)),
             .name_len = @intCast(name.len),
             .slot = self.local_count + 1,
         };
@@ -181,7 +177,7 @@ pub const IRGen = struct {
                 var total_size: u32 = 0;
                 var fi: u32 = 0;
                 const info = &self.mod.struct_defs[self.mod.struct_count];
-                info.name_start = @intCast(name.ptr - self.src.ptr);
+                info.name_start = @intCast(@intFromPtr(name.ptr) - @intFromPtr(self.src.ptr));
                 info.name_len = @intCast(name.len);
                 info.field_count = 0;
                 var field_i = n.child0;
@@ -218,7 +214,7 @@ pub const IRGen = struct {
 
         const fi = self.mod.fn_count;
         const fn_ir = &self.mod.fns[fi];
-        fn_ir.name_start = @intCast(name.ptr - self.src.ptr);
+        fn_ir.name_start = @intCast(@intFromPtr(name.ptr) - @intFromPtr(self.src.ptr));
         fn_ir.name_len = @intCast(name.len);
         fn_ir.ast_idx = ast_idx;
         fn_ir.block_count = 0;
@@ -333,7 +329,7 @@ pub const IRGen = struct {
                 } else {
                     const name = self.nodeText(idx);
                     const slot = self.getSlot(name);
-                    const op_kind: TokenKind = @fromBackingInt(@intCast(node.op));
+                    const op_kind: TokenKind = @enumFromInt(node.op);
 
                     if (op_kind == .assign) {
                         const v = self.genExpr(node.child0);
@@ -659,7 +655,7 @@ pub const IRGen = struct {
             },
             .unary_expr => {
                 const operand_v = self.genExpr(node.child0);
-                const op_kind: TokenKind = @fromBackingInt(@intCast(node.op));
+                const op_kind: TokenKind = @enumFromInt(node.op);
                 const v = self.allocVreg();
                 if (op_kind == .minus) {
                     self.emit(.{ .op = .neg, .dest = v, .src1 = operand_v });
@@ -669,7 +665,7 @@ pub const IRGen = struct {
                 return v;
             },
             .binary_expr => {
-                const op_kind: TokenKind = @fromBackingInt(@intCast(node.op));
+                const op_kind: TokenKind = @enumFromInt(node.op);
                 if (op_kind == .and_and) {
                     return self.genLogicalAnd(node);
                 }

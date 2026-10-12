@@ -7,7 +7,7 @@ const std = @import("std");
 // Linux syscall numbers (x86-64)
 const SYS_read: u64 = 0;
 const SYS_write: u64 = 1;
-const SYS_open: u64 = 2;
+const SYS_openat: u64 = 257;
 const SYS_close: u64 = 3;
 const SYS_lseek: u64 = 8;
 const SYS_exit: u64 = 60;
@@ -19,6 +19,19 @@ pub fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) u64 {
           [a1] "{rdi}" (a1),
           [a2] "{rsi}" (a2),
           [a3] "{rdx}" (a3),
+        : "rcx", "r11", "memory"
+    );
+}
+
+pub fn syscall4(num: u64, a1: u64, a2: u64, a3: u64, a4: u64) u64 {
+    return asm volatile ("syscall"
+        : [ret] "={rax}" (-> u64),
+        : [num] "{rax}" (num),
+          [a1] "{rdi}" (a1),
+          [a2] "{rsi}" (a2),
+          [a3] "{rdx}" (a3),
+          [a4] "{r10}" (a4),
+        : "rcx", "r11", "memory"
     );
 }
 
@@ -27,7 +40,8 @@ pub fn sysWrite(fd: u64, buf: [*]const u8, len: u64) i64 {
 }
 
 pub fn sysOpen(path: [*]const u8, flags: u64, mode: u64) i64 {
-    return @bitCast(syscall3(SYS_open, @intFromPtr(path), flags, mode));
+    const AT_FDCWD: u64 = @bitCast(@as(i64, -100));
+    return @bitCast(syscall4(SYS_openat, AT_FDCWD, @intFromPtr(path), flags, mode));
 }
 
 pub fn sysClose(fd: u64) void {
@@ -36,6 +50,13 @@ pub fn sysClose(fd: u64) void {
 
 pub fn sysRead(fd: u64, buf: [*]u8, len: u64) i64 {
     return @bitCast(syscall3(SYS_read, fd, @intFromPtr(buf), len));
+}
+
+pub fn sysReadLink(path: []const u8, buf: []u8) ?usize {
+    const res = syscall3(89, @intFromPtr(path.ptr), @intFromPtr(buf.ptr), buf.len);
+    const n: i64 = @bitCast(res);
+    if (n <= 0) return null;
+    return @intCast(n);
 }
 
 pub fn sysLseek(fd: u64, offset: i64, whence: u64) i64 {
@@ -56,7 +77,12 @@ pub fn printErr(s: []const u8) void {
 }
 
 pub fn readFile(path: []const u8, buf: []u8) ?usize {
-    const fd: i64 = sysOpen(path.ptr, 0, 0);
+    var path_z: [1024]u8 = undefined;
+    if (path.len >= 1024) return null;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    const fd: i64 = sysOpen(path_z[0..].ptr, 0, 0);
     if (fd < 0) return null;
     const file_fd: u64 = @intCast(fd);
     const size = sysLseek(file_fd, 0, 2);
@@ -80,7 +106,12 @@ pub fn readFile(path: []const u8, buf: []u8) ?usize {
 }
 
 pub fn writeFile(path: []const u8, data: []const u8) bool {
-    const fd: i64 = sysOpen(path.ptr, 0x241, 0o644); // O_WRONLY|O_CREAT|O_TRUNC
+    var path_z: [1024]u8 = undefined;
+    if (path.len >= 1024) return false;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    const fd: i64 = sysOpen(path_z[0..].ptr, 0x241, 0o644); // O_WRONLY|O_CREAT|O_TRUNC
     if (fd < 0) return false;
     const file_fd: u64 = @intCast(fd);
     var written: u64 = 0;

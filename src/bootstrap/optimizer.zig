@@ -250,7 +250,7 @@ pub const Optimizer = struct {
         if (node.child0 == 0 or node.child1 == 0) return;
         const left = self.ast.nodes[node.child0];
         const right = self.ast.nodes[node.child1];
-        const op: TokenKind = @fromBackingInt(@intCast(node.op));
+        const op: TokenKind = @enumFromInt(node.op);
 
         // ── Full constant folding: int_literal OP int_literal ──
         if (left.kind == .int_literal and right.kind == .int_literal) {
@@ -474,7 +474,7 @@ pub const Optimizer = struct {
         const node = self.ast.nodes[idx];
         if (node.child0 == 0) return;
         const inner = self.ast.nodes[node.child0];
-        const op: TokenKind = @fromBackingInt(@intCast(node.op));
+        const op: TokenKind = @enumFromInt(node.op);
 
         // !int_literal or -int_literal
         if (inner.kind == .int_literal) {
@@ -490,7 +490,7 @@ pub const Optimizer = struct {
 
         // Double negation: !!x → x
         if (op == .bang and inner.kind == .unary_expr) {
-            const inner_op: TokenKind = @fromBackingInt(@intCast(inner.op));
+            const inner_op: TokenKind = @enumFromInt(inner.op);
             if (inner_op == .bang) {
                 self.replaceWithChild(idx, inner.child0, changed);
             }

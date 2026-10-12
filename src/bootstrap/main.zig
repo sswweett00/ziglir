@@ -47,54 +47,36 @@ const sysClose = util.sysClose;
 // ════════════════════════════════════════════════════════════════════════════
 
 pub fn main() !void {
-    const cmdline_fd: i64 = sysOpen("/proc/self/cmdline", 0, 0);
-    var cmdline: [2048]u8 = undefined;
-    var cmdline_len: usize = 0;
-    if (cmdline_fd >= 0) {
-        const n = sysRead(@intCast(cmdline_fd), &cmdline, 2048);
-        if (n > 0) cmdline_len = @intCast(n);
-        sysClose(@intCast(cmdline_fd));
-    }
-
-    var args: [16][]const u8 = undefined;
-    var arg_count: usize = 0;
-    var start: usize = 0;
-    var i: usize = 0;
-    while (i < cmdline_len and arg_count < 16) : (i += 1) {
-        if (cmdline[i] == 0) {
-            if (i > start) {
-                args[arg_count] = cmdline[start..i];
-                arg_count += 1;
-            }
-            start = i + 1;
-        }
-    }
-
-    if (arg_count < 2) {
+    const argv = std.os.argv;
+    if (argv.len < 2) {
         printUsage();
         return;
     }
 
-    const command = args[1];
+    const command = std.mem.span(argv[1]);
     if (eql(command, "help") or eql(command, "--help") or eql(command, "-h")) {
         printUsage();
     } else if (eql(command, "version") or eql(command, "--version") or eql(command, "-V")) {
         printStr("lir 2.1.0\n");
     } else if (eql(command, "build")) {
-        if (arg_count < 3) {
+        if (argv.len < 3) {
             printErr("Error: usage: lir build <file.lir> [-o output]\n");
             sysExit(1);
         }
-        cmdBuild(args[2..arg_count]);
+        cmdBuild(argv[2..]);
     } else if (eql(command, "run")) {
-        if (arg_count < 3) {
+        if (argv.len < 3) {
             printErr("Error: usage: lir run <file.lir>\n");
             sysExit(1);
         }
-        cmdRun(args[2..arg_count]);
+        cmdRun(argv[2..]);
+    } else if (eql(command, "test")) {
+        cmdTest();
     } else if (eql(command, "init")) {
-        const name = if (arg_count >= 3) args[2] else "myproject";
+        const name = if (argv.len >= 3) std.mem.span(argv[2]) else "myproject";
         cmdInit(name);
+    } else if (eql(command, "install")) {
+        cmdInstall();
     } else {
         printErr("Unknown command: ");
         printErr(command);
@@ -112,7 +94,9 @@ fn printUsage() void {
         \\Commands:
         \\  build <file.lir>    Compile LIR source to native executable
         \\  run <file.lir>      Compile and run
+        \\  test [file.lir]     Run tests
         \\  init [name]         Create a new project
+        \\  install             Install lir binary to system PATH
         \\  help                Show this help
         \\  version             Show version
         \\
@@ -120,6 +104,7 @@ fn printUsage() void {
         \\  lir build main.lir
         \\  lir run main.lir
         \\  lir init myproject
+        \\  lir install
         \\
     );
 }
@@ -128,20 +113,26 @@ fn printUsage() void {
 // Build Command
 // ════════════════════════════════════════════════════════════════════════════
 
-fn cmdBuild(args: []const []const u8) void {
-    const input_file = args[0];
+fn cmdBuild(args: []const [*:0]const u8) void {
+    const input_file = std.mem.span(args[0]);
     var output_file: []const u8 = "a.out";
 
     var idx: usize = 1;
     while (idx < args.len) : (idx += 1) {
-        if (eql(args[idx], "-o") and idx + 1 < args.len) {
-            output_file = args[idx + 1];
+        const arg = std.mem.span(args[idx]);
+        if (eql(arg, "-o") and idx + 1 < args.len) {
+            output_file = std.mem.span(args[idx + 1]);
             idx += 1;
         }
     }
 
-    var src_buf: [1024 * 1024]u8 = undefined;
-    const src_len = readFile(input_file, &src_buf) orelse {
+    const src_buf = std.heap.page_allocator.alloc(u8, 1024 * 1024) catch {
+        printErr("Error: out of memory\n");
+        sysExit(1);
+    };
+    defer std.heap.page_allocator.free(src_buf);
+
+    const src_len = readFile(input_file, src_buf) orelse {
         printErr("Error: cannot read '");
         printErr(input_file);
         printErr("'\n");
@@ -176,12 +167,17 @@ fn cmdBuild(args: []const []const u8) void {
     printStr(" bytes)\n");
 }
 
-fn cmdRun(args: []const []const u8) void {
-    const input_file = args[0];
+fn cmdRun(args: []const [*:0]const u8) void {
+    const input_file = std.mem.span(args[0]);
     const tmp_out = "/tmp/lir_out";
 
-    var src_buf: [1024 * 1024]u8 = undefined;
-    const src_len = readFile(input_file, &src_buf) orelse {
+    const src_buf = std.heap.page_allocator.alloc(u8, 1024 * 1024) catch {
+        printErr("Error: out of memory\n");
+        sysExit(1);
+    };
+    defer std.heap.page_allocator.free(src_buf);
+
+    const src_len = readFile(input_file, src_buf) orelse {
         printErr("Error: cannot read '");
         printErr(input_file);
         printErr("'\n");
@@ -259,6 +255,87 @@ fn cmdInit(name: []const u8) void {
     printStr("Created project.manifest\nCreated src/main.lir\n\nNext: lir build src/main.lir\n");
 }
 
+fn cmdTest() void {
+    const test_path: [*:0]const u8 = if (util.sysOpen("src/tests.lir", 0, 0) >= 0) "src/tests.lir" else if (util.sysOpen("src/main.lir", 0, 0) >= 0) "src/main.lir" else "test.lir";
+    printStr("Running tests in ");
+    printStr(std.mem.span(test_path));
+    printStr("...\n");
+    cmdRun(&[_][*:0]const u8{test_path});
+}
+
+fn getHomeDir(buf: []u8) ?[]const u8 {
+    var env_buf: [4096]u8 = undefined;
+    const fd = sysOpen("/proc/self/environ", 0, 0);
+    if (fd < 0) return null;
+    const n = sysRead(@intCast(fd), &env_buf, 4096);
+    sysClose(@intCast(fd));
+    if (n <= 0) return null;
+
+    const env_data = env_buf[0..@intCast(n)];
+    var start: usize = 0;
+    for (env_data, 0..) |b, idx| {
+        if (b == 0) {
+            const entry = env_data[start..idx];
+            if (entry.len >= 5 and eql(entry[0..5], "HOME=")) {
+                const home = entry[5..];
+                if (home.len <= buf.len) {
+                    @memcpy(buf[0..home.len], home);
+                    return buf[0..home.len];
+                }
+            }
+            start = idx + 1;
+        }
+    }
+    return null;
+}
+
+fn cmdInstall() void {
+    var self_buf: [4096]u8 = undefined;
+    const n = util.sysReadLink("/proc/self/exe", &self_buf) orelse {
+        printErr("Error: cannot locate current executable\n");
+        sysExit(1);
+    };
+    self_buf[n] = 0;
+    const exe_data = self_buf[0..n];
+
+    var bin_buf: [10 * 1024 * 1024]u8 = undefined;
+    const read_len = util.readFile(exe_data, &bin_buf) orelse {
+        printErr("Error: cannot read executable\n");
+        sysExit(1);
+    };
+
+    const target_path = "/usr/local/bin/lir";
+    if (util.writeFile(target_path, bin_buf[0..read_len])) {
+        _ = util.syscall3(0x5A, @intFromPtr(target_path.ptr), 0o755, 0);
+        printStr("Installed LIR to /usr/local/bin/lir\n");
+    } else {
+        var home_buf: [256]u8 = undefined;
+        if (getHomeDir(&home_buf)) |home| {
+            var user_bin_dir: [512]u8 = undefined;
+            var pos: usize = 0;
+            @memcpy(user_bin_dir[pos..][0..home.len], home); pos += home.len;
+            const suffix = "/.lir/bin";
+            @memcpy(user_bin_dir[pos..][0..suffix.len], suffix); pos += suffix.len;
+            user_bin_dir[pos] = 0;
+            _ = util.syscall3(83, @intFromPtr(user_bin_dir[0..pos].ptr), 0o755, 0); // mkdir -p
+
+            const exe_suffix = "/lir";
+            @memcpy(user_bin_dir[pos..][0..exe_suffix.len], exe_suffix); pos += exe_suffix.len;
+            user_bin_dir[pos] = 0;
+
+            if (util.writeFile(user_bin_dir[0..pos], bin_buf[0..read_len])) {
+                _ = util.syscall3(0x5A, @intFromPtr(user_bin_dir[0..pos].ptr), 0o755, 0);
+                printStr("Installed LIR to ");
+                printStr(user_bin_dir[0..pos]);
+                printStr("\n");
+                return;
+            }
+        }
+        printErr("Error: failed to install LIR binary\n");
+        sysExit(1);
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // COMPILER (orchestrates the pipeline)
 // ════════════════════════════════════════════════════════════════════════════
@@ -286,22 +363,24 @@ const Compiler_ = struct {
         optimizer.optimize();
 
         // Phase 2.75: Lower AST to IR
-        var ir_gen = ir_gen_mod.IRGen.init(self.source, &ast);
+        const ir_gen = std.heap.page_allocator.create(ir_gen_mod.IRGen) catch return error.OutOfMemory;
+        defer std.heap.page_allocator.destroy(ir_gen);
+        ir_gen.init(self.source, &ast);
         ir_gen.generate();
 
         // Phase 3: Codegen from IR
-        var ir_cg = ir_codegen_mod.IRCodegen.init(self.source, &ir_gen.mod);
+        const ir_cg = std.heap.page_allocator.create(ir_codegen_mod.IRCodegen) catch return error.OutOfMemory;
+        defer std.heap.page_allocator.destroy(ir_cg);
+        ir_cg.init(self.source, &ir_gen.mod);
         ir_cg.compile();
 
         // Phase 3.5: Patch references
         ir_cg.patchStrings();
 
-        // Phase 3.6: Peephole optimizations (TODO: fix false-positive byte scanning)
-        // ir_cg.peepholeOptimize();
-
         // Phase 4: Generate ELF
-        var output: [262144]u8 = undefined;
-        const size = ir_cg.generateELF(&output);
+        const output = std.heap.page_allocator.alloc(u8, 262144) catch return error.OutOfMemory;
+        defer std.heap.page_allocator.free(output);
+        const size = ir_cg.generateELF(output);
 
         const result = std.heap.page_allocator.alloc(u8, size) catch return error.OutOfMemory;
         @memcpy(result, output[0..size]);

@@ -1,0 +1,42 @@
+name: CI & Deployment Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Run Unit Tests
+        run: zig build test
+
+      - name: Build LIR Compiler (ReleaseFast)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Test LIR Compiler
+        run: |
+          ./zig-out/bin/lir version
+          ./zig-out/bin/lir build test.lir -o hello_test
+          ./hello_test
+          ./zig-out/bin/lir build test_str.lir -o str_test
+          ./str_test
+          ./zig-out/bin/lir build examples/features-demo.lir -o features_test
+          ./features_test
+
+      - name: Upload LIR Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: lir-linux-x86_64
+          path: zig-out/bin/lir
