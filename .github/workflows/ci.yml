@@ -34,6 +34,9 @@ jobs:
           ./str_test
           ./zig-out/bin/lir build examples/features-demo.lir -o features_test
           ./features_test
+          # Regression: stack allocation must cover >64 virtual registers.
+          ./zig-out/bin/lir build examples/stack-pressure.lir -o stack_pressure_test
+          ./stack_pressure_test
 
       - name: Smoke-test performance benchmark harness
         run: python3 bench/bench.py ./zig-out/bin/lir test.lir --repeats 3
