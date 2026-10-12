@@ -260,7 +260,7 @@ pub const Optimizer = struct {
                 .plus => a +% b,
                 .minus => a -% b,
                 .star => a *% b,
-                .slash => if (b != 0) @divTrunc(a, b) else return,
+                .slash => if (b != 0 and !(a == std.math.minInt(i64) and b == -1)) @divTrunc(a, b) else return,
                 .percent => if (b != 0) @rem(a, b) else return,
                 .eq => if (a == b) 1 else 0,
                 .ne => if (a != b) 1 else 0,
@@ -301,7 +301,7 @@ pub const Optimizer = struct {
                     }
                 },
                 .star => {
-                    if (a == 0) {
+                    if (a == 0 and self.isPureExpr(node.child1)) {
                         self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
                         changed.* = true;
                         return;
@@ -311,13 +311,9 @@ pub const Optimizer = struct {
                         return;
                     }
                 },
-                .slash => {
-                    if (a == 0) {
-                        self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
-                        changed.* = true;
-                        return;
-                    }
-                },
+                // Do not fold 0 / x unless both operands were constant.
+                // Unknown x may be zero (division trap) or have side effects.
+                .slash => {},
                 .and_and => {
                     if (a == 0) {
                         self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
@@ -360,7 +356,7 @@ pub const Optimizer = struct {
                     }
                 },
                 .star => {
-                    if (b == 0) {
+                    if (b == 0 and self.isPureExpr(node.child0)) {
                         self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
                         changed.* = true;
                         return;
@@ -371,14 +367,14 @@ pub const Optimizer = struct {
                     }
                 },
                 .percent => {
-                    if (b == 1) {
+                    if (b == 1 and self.isPureExpr(node.child0)) {
                         self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
                         changed.* = true;
                         return;
                     }
                 },
                 .and_and => {
-                    if (b == 0) {
+                    if (b == 0 and self.isPureExpr(node.child0)) {
                         self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
                         changed.* = true;
                         return;
@@ -389,7 +385,7 @@ pub const Optimizer = struct {
                     }
                 },
                 .pipe_pipe => {
-                    if (b != 0) {
+                    if (b != 0 and self.isPureExpr(node.child0)) {
                         self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 1 };
                         changed.* = true;
                         return;
@@ -488,13 +484,9 @@ pub const Optimizer = struct {
             return;
         }
 
-        // Double negation: !!x → x
-        if (op == .bang and inner.kind == .unary_expr) {
-            const inner_op: TokenKind = @enumFromInt(inner.op);
-            if (inner_op == .bang) {
-                self.replaceWithChild(idx, inner.child0, changed);
-            }
-        }
+        // Do not rewrite !!x to x: logical negation normalizes values to
+        // 0/1, so !!42 is 1 rather than 42. A future boolean-aware IR pass
+        // can safely simplify this when the value is already known boolean.
     }
 
     // ── Ternary simplification ─────────────────────────────────
