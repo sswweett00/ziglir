@@ -35,7 +35,6 @@ const eql = util.eql;
 const printStr = util.printStr;
 const printErr = util.printErr;
 const printUsize = util.printUsize;
-const readFile = util.readFile;
 const writeFile = util.writeFile;
 const sysExit = util.sysExit;
 const sysOpen = util.sysOpen;
