@@ -298,8 +298,12 @@ test "optimizer: while false eliminated compiles" {
 
 test "codegen uses disp32 for stack slots beyond signed disp8 range" {
     const source =
+        \\fn seed() -> i64 {
+        \\    return 1
+        \\}
+        \\
         \\fn main() {
-        \\    let v0 = 1
+        \\    let v0 = seed()
         \\    let v1 = v0 + 1
         \\    let v2 = v1 + 1
         \\    let v3 = v2 + 1
