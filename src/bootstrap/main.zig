@@ -383,8 +383,13 @@ const Compiler_ = struct {
         defer std.heap.page_allocator.free(output);
         const size = ir_cg.generateELF(output);
 
-        const result = std.heap.page_allocator.alloc(u8, size) catch return error.OutOfMemory;
-        @memcpy(result, output[0..size]);
+        // Shrink the ELF buffer in place when possible instead of allocating a
+        // second buffer and copying the entire executable. This removes one
+        // allocation and one full output copy from every compilation.
+        const result = std.heap.page_allocator.realloc(output, size) catch {
+            std.heap.page_allocator.free(output);
+            return error.OutOfMemory;
+        };
         return result;
     }
 };

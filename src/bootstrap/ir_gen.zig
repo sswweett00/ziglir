@@ -84,6 +84,10 @@ pub const IRGen = struct {
     // ── Emit helpers ────────────────────────────────────────────
 
     fn allocVreg(self: *IRGen) u16 {
+        if (self.next_vreg >= 4096) {
+            printErr("IR generation error: virtual register limit exceeded (4095 per function)\n");
+            sysExit(1);
+        }
         const v: u16 = @intCast(self.next_vreg);
         self.next_vreg += 1;
         return v;
@@ -91,13 +95,19 @@ pub const IRGen = struct {
 
     fn emit(self: *IRGen, inst: IRInst) void {
         const blk = &self.cur_fn.blocks[self.cur_block_idx];
-        if (blk.inst_count < blk.insts.len) {
-            blk.insts[blk.inst_count] = inst;
-            blk.inst_count += 1;
+        if (@as(usize, blk.inst_count) >= blk.insts.len) {
+            printErr("IR generation error: instruction limit exceeded (32 per basic block)\n");
+            sysExit(1);
         }
+        blk.insts[blk.inst_count] = inst;
+        blk.inst_count += 1;
     }
 
     fn addBlock(self: *IRGen) u16 {
+        if (@as(usize, self.cur_fn.block_count) >= self.cur_fn.blocks.len) {
+            printErr("IR generation error: basic block limit exceeded (16 per function)\n");
+            sysExit(1);
+        }
         const idx: u16 = self.cur_fn.block_count;
         self.cur_fn.blocks[idx] = .{ .label = idx };
         self.cur_fn.block_count = idx + 1;
@@ -176,6 +186,10 @@ pub const IRGen = struct {
                 const name = self.nodeText(i);
                 var total_size: u32 = 0;
                 var fi: u32 = 0;
+                if (@as(usize, self.mod.struct_count) >= self.mod.struct_defs.len) {
+                    printErr("IR generation error: struct declaration limit exceeded\n");
+                    sysExit(1);
+                }
                 const info = &self.mod.struct_defs[self.mod.struct_count];
                 info.name_start = @intCast(@intFromPtr(name.ptr) - @intFromPtr(self.src.ptr));
                 info.name_len = @intCast(name.len);
@@ -183,11 +197,12 @@ pub const IRGen = struct {
                 var field_i = n.child0;
                 while (field_i != 0) : (field_i = self.ast.nodes[field_i].child1) {
                     _ = self.ast.nodes[field_i];
-                    if (fi < 32) {
-                        info.field_offsets[fi] = total_size;
-                        // Store field info in a way codegen can access
-                        fi += 1;
+                    if (fi >= info.field_offsets.len) {
+                        printErr("IR generation error: struct field limit exceeded (32 fields)\n");
+                        sysExit(1);
                     }
+                    info.field_offsets[fi] = total_size;
+                    fi += 1;
                     total_size += 8; // all fields are i64-sized
                 }
                 info.field_count = fi;
@@ -212,6 +227,10 @@ pub const IRGen = struct {
         const node = self.ast.nodes[ast_idx];
         const name = self.nodeText(ast_idx);
 
+        if (@as(usize, self.mod.fn_count) >= self.mod.fns.len) {
+            printErr("IR generation error: function limit exceeded (16 functions)\n");
+            sysExit(1);
+        }
         const fi = self.mod.fn_count;
         const fn_ir = &self.mod.fns[fi];
         fn_ir.name_start = @intCast(@intFromPtr(name.ptr) - @intFromPtr(self.src.ptr));
@@ -235,6 +254,10 @@ pub const IRGen = struct {
         var pi = node.child0;
         var param_count: u32 = 0;
         while (pi != 0) : (pi = self.ast.nodes[pi].child1) {
+            if (param_count >= fn_ir.param_slots.len) {
+                printErr("IR generation error: function parameter limit exceeded (8 parameters)\n");
+                sysExit(1);
+            }
             const pname = self.nodeText(pi);
             self.defineLocal(pname);
             fn_ir.param_slots[param_count] = self.local_count; // slot = local_count at time of define
