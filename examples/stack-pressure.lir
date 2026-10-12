@@ -29,7 +29,23 @@ fn main() {
     let v22 = v21 + 1
     let v23 = v22 + 1
     let v24 = v23 + 1
-    printInt(v24)
+    let v25 = v24 + 1
+    let v26 = v25 + 1
+    let v27 = v26 + 1
+    let v28 = v27 + 1
+    let v29 = v28 + 1
+    let v30 = v29 + 1
+    let v31 = v30 + 1
+    let v32 = v31 + 1
+    let v33 = v32 + 1
+    let v34 = v33 + 1
+    let v35 = v34 + 1
+    let v36 = v35 + 1
+    let v37 = v36 + 1
+    let v38 = v37 + 1
+    let v39 = v38 + 1
+    let v40 = v39 + 1
+    printInt(v40)
 
     0
 }
