@@ -255,11 +255,23 @@ fn cmdInit(name: []const u8) void {
     printStr("Created project.manifest\nCreated src/main.lir\n\nNext: lir build src/main.lir\n");
 }
 
+fn fileExists(path: [*:0]const u8) bool {
+    const fd = util.sysOpen(path, 0, 0);
+    if (fd < 0) return false;
+    util.sysClose(@intCast(fd));
+    return true;
+}
+
 fn cmdTest() void {
-    const test_path: [*:0]const u8 = if (util.sysOpen("src/tests.lir", 0, 0) >= 0) "src/tests.lir" else if (util.sysOpen("src/main.lir", 0, 0) >= 0) "src/main.lir" else "test.lir";
+    const test_path: [*:0]const u8 = if (fileExists("src/tests.lir"))
+        "src/tests.lir"
+    else if (fileExists("src/main.lir"))
+        "src/main.lir"
+    else
+        "test.lir";
     printStr("Running tests in ");
     printStr(std.mem.span(test_path));
-    printStr("...\n");
+    printStr("...\\n");
     cmdRun(&[_][*:0]const u8{test_path});
 }
 
