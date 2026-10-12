@@ -99,10 +99,17 @@ pub fn readFile(path: []const u8, buf: []u8) ?usize {
         return null;
     }
     const read_size: usize = @intCast(size);
-    const n = sysRead(file_fd, buf.ptr, read_size);
+    var total: usize = 0;
+    while (total < read_size) {
+        const n = sysRead(file_fd, buf.ptr + total, read_size - total);
+        if (n <= 0) {
+            sysClose(file_fd);
+            return null;
+        }
+        total += @intCast(n);
+    }
     sysClose(file_fd);
-    if (n < 0) return null;
-    return @intCast(n);
+    return total;
 }
 
 pub fn writeFile(path: []const u8, data: []const u8) bool {
