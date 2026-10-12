@@ -729,6 +729,7 @@ pub const Codegen = struct {
 
     fn compileFn(self: *Codegen, fi: u32) void {
         const f = self.fns[fi];
+        if (@as(usize, f.param_count) > ARG_REGS.len) capacityError("functions support at most 6 parameters");
         const decl = self.ast.nodes[f.ast_idx];
         const name = self.src[f.name_start..][0..f.name_len];
         const is_main = eql(name, "main");
