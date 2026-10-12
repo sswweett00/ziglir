@@ -35,6 +35,9 @@ jobs:
           ./zig-out/bin/lir build examples/features-demo.lir -o features_test
           ./features_test
 
+      - name: Smoke-test performance benchmark harness
+        run: python3 bench/bench.py ./zig-out/bin/lir test.lir --repeats 3
+
       - name: Upload LIR Binary
         uses: actions/upload-artifact@v4
         with:
