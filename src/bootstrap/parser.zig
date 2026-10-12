@@ -90,7 +90,7 @@ pub const AST = struct {
 
     pub fn addNode(self: *AST, kind: NodeKind, line: u32) u32 {
         if (@as(usize, self.count) >= self.nodes.len) {
-            printErr("Parse error: AST node limit exceeded (4095 nodes)\\n");
+            printErr("Parse error: AST node limit exceeded (4095 nodes)\n");
             sysExit(1);
         }
         const idx = self.count;
@@ -767,7 +767,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         if (@as(usize, self.ast.struct_count) >= self.ast.struct_defs.len) {
-            printErr("Parse error: too many struct declarations (limit 128)\\n");
+            printErr("Parse error: too many struct declarations (limit 128)\n");
             sysExit(1);
         }
         const si: u32 = self.ast.struct_count;
@@ -791,7 +791,7 @@ pub const Parser = struct {
 
             const sd = &self.ast.struct_defs[si];
             if (@as(usize, sd.field_count) >= sd.fields.len) {
-                printErr("Parse error: too many fields in struct (limit 32)\\n");
+                printErr("Parse error: too many fields in struct (limit 32)\n");
                 sysExit(1);
             }
             sd.fields[sd.field_count] = .{
