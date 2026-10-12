@@ -355,6 +355,19 @@ pub const Codegen = struct {
         }
     }
 
+    fn emitLeaRbpSlot(self: *Codegen, slot: u32) void {
+        const disp: i32 = -@as(i32, @intCast(slot)) * 8;
+        self.emit8(0x48);
+        self.emit8(0x8D); // lea rax, [rbp+disp]
+        if (disp >= -128 and disp <= 127) {
+            self.emit8(0x45); // mod=01, disp8
+            self.emit8(@bitCast(@as(i8, @intCast(disp))));
+        } else {
+            self.emit8(0x85); // mod=10, disp32
+            self.emit32(@bitCast(disp));
+        }
+    }
+
     fn emitLeaveRet(self: *Codegen) void {
         // mov rsp, rbp ; pop rbp ; ret
         self.emit8(0x48);
@@ -958,12 +971,8 @@ pub const Codegen = struct {
                     printErr("'\n");
                     sysExit(1);
                 };
-                // Return address of the stack slot
-                self.emit8(0x48);
-                self.emit8(0x8D);
-                self.emit8(0x45);
-                const disp: i32 = -@as(i32, @intCast(slot)) * 8;
-                self.emit8(@intCast(disp & 0xFF)); // lea rax, [rbp - slot*8]
+                // Return address of the stack slot (disp8 or disp32 as required).
+                self.emitLeaRbpSlot(slot);
             },
             else => {
                 // Fallback: treat as expression (value, not address)
@@ -2784,12 +2793,8 @@ pub const Codegen = struct {
                         printErr("'\n");
                         sysExit(1);
                     };
-                    // lea rax, [rbp - slot*8]
-                    self.emit8(0x48);
-                    self.emit8(0x8D);
-                    self.emit8(0x45);
-                    const disp: i32 = -@as(i32, @intCast(slot)) * 8;
-                    self.emit8(@intCast(disp & 0xFF));
+                    // lea rax, [rbp-slot*8], including large stack frames.
+                    self.emitLeaRbpSlot(slot);
                 } else if (inner.kind == .field_access) {
                     self.compileLValue(node.child0);
                 } else {
