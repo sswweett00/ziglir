@@ -111,7 +111,7 @@ pub const IRInst = struct {
     field_offset: u16 = 0, // for field_access / field_store
 };
 
-pub const MAX_INSTS_PER_BLOCK: u32 = 32;
+pub const MAX_INSTS_PER_BLOCK: u32 = 256;
 pub const MAX_BLOCKS_PER_FN: u32 = 16;
 pub const MAX_FNS: u32 = 16;
 

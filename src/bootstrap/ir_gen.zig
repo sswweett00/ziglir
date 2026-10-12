@@ -96,7 +96,7 @@ pub const IRGen = struct {
     fn emit(self: *IRGen, inst: IRInst) void {
         const blk = &self.cur_fn.blocks[self.cur_block_idx];
         if (@as(usize, blk.inst_count) >= blk.insts.len) {
-            printErr("IR generation error: instruction limit exceeded (32 per basic block)\n");
+            printErr("IR generation error: instruction limit exceeded (256 per basic block)\n");
             sysExit(1);
         }
         blk.insts[blk.inst_count] = inst;
