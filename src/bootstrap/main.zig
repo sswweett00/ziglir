@@ -271,7 +271,7 @@ fn cmdTest() void {
         "test.lir";
     printStr("Running tests in ");
     printStr(std.mem.span(test_path));
-    printStr("...\\n");
+    printStr("...\n");
     cmdRun(&[_][*:0]const u8{test_path});
 }
 
