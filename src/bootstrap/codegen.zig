@@ -1281,10 +1281,9 @@ pub const Codegen = struct {
                 if (lctx.is_for) {
                     // For loops: continue jumps to the increment, which is
                     // only known after the body is compiled — record patch.
-                    if (lctx.continue_count < lctx.continue_patches.len) {
-                        lctx.continue_patches[lctx.continue_count] = self.emitJmp();
-                        lctx.continue_count += 1;
-                    }
+                    if (lctx.continue_count >= lctx.continue_patches.len) capacityError("too many continue statements in one loop (limit 16)");
+                    lctx.continue_patches[lctx.continue_count] = self.emitJmp();
+                    lctx.continue_count += 1;
                 } else {
                     self.emitJmpTo(lctx.continue_target);
                 }
@@ -1296,10 +1295,9 @@ pub const Codegen = struct {
     fn recordBreak(self: *Codegen) void {
         const p = self.emitJmp();
         const ctx = &self.loops[self.loop_depth - 1];
-        if (ctx.break_count < ctx.break_patches.len) {
-            ctx.break_patches[ctx.break_count] = p;
-            ctx.break_count += 1;
-        }
+        if (ctx.break_count >= ctx.break_patches.len) capacityError("too many break statements in one loop (limit 16)");
+        ctx.break_patches[ctx.break_count] = p;
+        ctx.break_count += 1;
     }
 
     /// Patch break/continue jumps after a for-loop body was compiled.
