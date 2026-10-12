@@ -141,6 +141,7 @@ pub const Lexer = struct {
     line: u32,
     tokens: [4096]Token,
     token_count: u32,
+    overflowed: bool,
 
     pub fn init(source: []const u8) Lexer {
         return .{
@@ -149,6 +150,7 @@ pub const Lexer = struct {
             .line = 1,
             .tokens = undefined,
             .token_count = 0,
+            .overflowed = false,
         };
     }
 
@@ -178,6 +180,8 @@ pub const Lexer = struct {
                 .line = self.line,
             };
             self.token_count += 1;
+        } else {
+            self.overflowed = true;
         }
     }
 
