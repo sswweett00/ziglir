@@ -702,7 +702,7 @@ pub const IRCodegen = struct {
         // Reserve stack space for every local AND every virtual register
         // used by this function. A fixed +64 silently under-allocates when
         // codegen emits more than 64 vregs, corrupting the caller's stack.
-        const max_vreg = self.maxVRegInFn(ir_fn);
+        const max_vreg = maxVRegInFn(ir_fn);
         const stack_slots = ir_fn.total_locals + max_vreg;
         const stack_size = stack_slots * 8;
         const aligned = (stack_size + 15) & ~@as(u32, 15);
