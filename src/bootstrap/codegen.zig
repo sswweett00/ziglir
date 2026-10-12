@@ -151,18 +151,29 @@ pub const Codegen = struct {
         };
     }
 
+    // Capacity failures must stop compilation before an unchecked write.
+    fn capacityError(message: []const u8) noreturn {
+        printErr("Compile error: ");
+        printErr(message);
+        printErr("\n");
+        sysExit(1);
+    }
+
     // ── Emit bytes ──────────────────────────────────────────────
     fn emit8(self: *Codegen, b: u8) void {
+        if (@as(usize, self.code_len) >= self.code.len) capacityError("generated code exceeds 64 KiB limit");
         self.code[self.code_len] = b;
         self.code_len += 1;
     }
 
     fn emit32(self: *Codegen, v: u32) void {
+        if (@as(usize, self.code_len) > self.code.len - 4) capacityError("generated code exceeds 64 KiB limit");
         self.code[self.code_len..][0..4].* = .{ @truncate(v), @truncate(v >> 8), @truncate(v >> 16), @truncate(v >> 24) };
         self.code_len += 4;
     }
 
     fn emit64(self: *Codegen, v: u64) void {
+        if (@as(usize, self.code_len) > self.code.len - 8) capacityError("generated code exceeds 64 KiB limit");
         self.code[self.code_len..][0..8].* = .{ @truncate(v), @truncate(v >> 8), @truncate(v >> 16), @truncate(v >> 24), @truncate(v >> 32), @truncate(v >> 40), @truncate(v >> 48), @truncate(v >> 56) };
         self.code_len += 8;
     }
@@ -220,13 +231,13 @@ pub const Codegen = struct {
         self.emit8(0x05 | ((dst & 7) << 3));
         const patch_pos = self.code_len;
         self.emit32(0);
-        if (self.patch_count < self.string_patches.len) {
-            self.string_patches[self.patch_count] = .{
-                .patch_pos = patch_pos,
-                .string_offset = self.string_offsets[string_idx],
-            };
-            self.patch_count += 1;
-        }
+        if (self.patch_count >= self.string_patches.len) capacityError("too many string references (limit 512)");
+        if (string_idx >= self.string_count) capacityError("invalid string reference during code generation");
+        self.string_patches[self.patch_count] = .{
+            .patch_pos = patch_pos,
+            .string_offset = self.string_offsets[string_idx],
+        };
+        self.patch_count += 1;
     }
 
     fn emitJe(self: *Codegen) u32 {
@@ -296,19 +307,19 @@ pub const Codegen = struct {
 
     /// call rel32 to a named user function, patched later
     fn callNamed(self: *Codegen, name: []const u8) void {
+        if (name.len > 64) capacityError("function name exceeds 64-byte call-patch limit");
+        if (self.call_patch_count >= self.call_patches.len) capacityError("too many deferred function calls");
         self.emit8(0xE8);
         const patch_pos = self.code_len;
         self.emit32(0);
-        if (self.call_patch_count < self.call_patches.len) {
-            var patch = CallPatch{
-                .name_buf = undefined,
-                .name_len = @intCast(@min(name.len, 64)),
-                .patch_pos = patch_pos,
-            };
-            @memcpy(patch.name_buf[0..patch.name_len], name[0..patch.name_len]);
-            self.call_patches[self.call_patch_count] = patch;
-            self.call_patch_count += 1;
-        }
+        var patch = CallPatch{
+            .name_buf = undefined,
+            .name_len = @intCast(name.len),
+            .patch_pos = patch_pos,
+        };
+        @memcpy(patch.name_buf[0..patch.name_len], name);
+        self.call_patches[self.call_patch_count] = patch;
+        self.call_patch_count += 1;
     }
 
     // ── Stack frame helpers ─────────────────────────────────────
@@ -318,8 +329,13 @@ pub const Codegen = struct {
         if (reg >= 8) rex |= 0x04;
         self.emit8(rex);
         self.emit8(0x89); // mov [rbp+disp], reg
-        self.emit8(0x45 | ((reg & 7) << 3));
-        self.emit8(@intCast(disp & 0xFF));
+        if (disp >= -128 and disp <= 127) {
+            self.emit8(0x45 | ((reg & 7) << 3)); // mod=01, disp8
+            self.emit8(@bitCast(@as(i8, @intCast(disp))));
+        } else {
+            self.emit8(0x85 | ((reg & 7) << 3)); // mod=10, disp32
+            self.emit32(@bitCast(disp));
+        }
     }
 
     fn storeRaxToSlot(self: *Codegen, slot: u32) void {
@@ -330,8 +346,13 @@ pub const Codegen = struct {
         const disp: i32 = -@as(i32, @intCast(slot)) * 8;
         self.emit8(0x48);
         self.emit8(0x8B); // mov rax, [rbp+disp]
-        self.emit8(0x45);
-        self.emit8(@intCast(disp & 0xFF));
+        if (disp >= -128 and disp <= 127) {
+            self.emit8(0x45); // mod=01, disp8
+            self.emit8(@bitCast(@as(i8, @intCast(disp))));
+        } else {
+            self.emit8(0x85); // mod=10, disp32
+            self.emit32(@bitCast(disp));
+        }
     }
 
     fn emitLeaveRet(self: *Codegen) void {
@@ -492,7 +513,7 @@ pub const Codegen = struct {
         for (0..self.ast.count) |i| {
             const n = self.ast.nodes[i];
             if (n.kind != .fn_decl) continue;
-            if (self.fn_count >= self.fns.len) break;
+            if (self.fn_count >= self.fns.len) capacityError("too many functions (limit 128)");
             self.fns[self.fn_count] = .{
                 .name_start = n.text_start,
                 .name_len = n.text_len,
@@ -642,6 +663,8 @@ pub const Codegen = struct {
                 if (found) return i;
             }
         }
+        if (self.string_count >= self.string_offsets.len) capacityError("too many distinct string literals (limit 256)");
+        if (str.len >= self.rodata.len or @as(usize, self.rodata_len) > self.rodata.len - str.len - 1) capacityError("string data exceeds 64 KiB read-only data limit");
         const idx = self.string_count;
         const off = self.rodata_len;
         for (str) |ch| {
@@ -651,11 +674,9 @@ pub const Codegen = struct {
         self.rodata[self.rodata_len] = 0; // null terminator
         self.rodata_len += 1;
 
-        if (self.string_count < 256) {
-            self.string_offsets[self.string_count] = off;
-            self.string_lens[self.string_count] = @intCast(str.len);
-            self.string_count += 1;
-        }
+        self.string_offsets[self.string_count] = off;
+        self.string_lens[self.string_count] = @intCast(str.len);
+        self.string_count += 1;
         return idx;
     }
 
@@ -1759,10 +1780,9 @@ pub const Codegen = struct {
                     self.emit8(0xE8);
                     const patch = self.code_len;
                     self.emit32(0);
-                    if (self.printint_patch_count < self.printint_patches.len) {
-                        self.printint_patches[self.printint_patch_count] = patch;
-                        self.printint_patch_count += 1;
-                    }
+                    if (self.printint_patch_count >= self.printint_patches.len) capacityError("too many printInt calls (limit 64)");
+                    self.printint_patches[self.printint_patch_count] = patch;
+                    self.printint_patch_count += 1;
                     return;
                 }
 
@@ -2618,15 +2638,14 @@ pub const Codegen = struct {
                     const fn_patch_pos = self.code_len;
                     self.emit64(0); // placeholder for fn_addr
                     // Record patch
-                    if (self.thread_fn_patch_count < self.thread_fn_patches.len) {
-                        self.thread_fn_patches[self.thread_fn_patch_count] = .{
-                            .name_start = name_node.text_start,
-                            .name_len = name_node.text_len,
-                            .code_pos = fn_patch_pos,
-                            .source_id = name_node.source_id,
-                        };
-                        self.thread_fn_patch_count += 1;
-                    }
+                    if (self.thread_fn_patch_count >= self.thread_fn_patches.len) capacityError("too many @thread_create references (limit 64)");
+                    self.thread_fn_patches[self.thread_fn_patch_count] = .{
+                        .name_start = name_node.text_start,
+                        .name_len = name_node.text_len,
+                        .code_pos = fn_patch_pos,
+                        .source_id = name_node.source_id,
+                    };
+                    self.thread_fn_patch_count += 1;
                     self.emit8(0x48);
                     self.emit8(0x89);
                     self.emit8(0x07); // mov [rdi], rax
@@ -2813,6 +2832,7 @@ pub const Codegen = struct {
         // Page-align the code offset so (p_offset % p_align) == (p_vaddr % p_align)
         const raw_offset = header_size + phdr_size * num_phdrs;
         const code_file_offset = (raw_offset + 0xFFF) & ~@as(u64, 0xFFF); // round up to 4096
+        if (code_file_offset > @as(u64, @intCast(output.len)) or total_size > @as(u64, @intCast(output.len)) - code_file_offset) capacityError("ELF output buffer is too small");
         const code_vaddr: u64 = 0x400000;
         const entry = code_vaddr + code_file_offset;
 
