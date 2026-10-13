@@ -360,6 +360,7 @@ const Compiler_ = struct {
         var parser_inst = parser_mod.Parser{ .lex = &lexer, .pos = 0, .ast = &ast, .src = self.source };
         parser_inst.parse();
         if (parser_inst.invalid_syntax) return error.InvalidSyntax;
+        if (parser_inst.unsupported_float_literal) return error.UnsupportedFloatLiteral;
         if (ast.overflowed) return error.TooManyASTNodes;
         if (parser_inst.invalid_integer_literal) return error.InvalidIntegerLiteral;
 
