@@ -791,8 +791,16 @@ pub const Parser = struct {
         self.skipNewlines();
 
         if (@as(usize, self.ast.struct_count) >= self.ast.struct_defs.len) {
-            printErr("Parse error: too many struct declarations (limit 128)\n");
-            sysExit(1);
+            self.ast.overflowed = true;
+            // The opening brace has already been consumed. Skip this whole
+            // declaration with balanced-brace tracking, without indexing the
+            // exhausted struct table or exiting the host process.
+            var depth: u32 = 1;
+            while (depth > 0 and !self.match(.eof)) {
+                const skipped = self.advance().kind;
+                if (skipped == .lbrace) depth += 1 else if (skipped == .rbrace) depth -= 1;
+            }
+            return 0;
         }
         const si: u32 = self.ast.struct_count;
         self.ast.struct_count += 1;
@@ -815,15 +823,15 @@ pub const Parser = struct {
 
             const sd = &self.ast.struct_defs[si];
             if (@as(usize, sd.field_count) >= sd.fields.len) {
-                printErr("Parse error: too many fields in struct (limit 32)\n");
-                sysExit(1);
+                self.ast.overflowed = true;
+            } else {
+                sd.fields[sd.field_count] = .{
+                    .name_start = field_name.start,
+                    .name_len = field_name.len,
+                    .offset = field_offset,
+                };
+                sd.field_count += 1;
             }
-            sd.fields[sd.field_count] = .{
-                .name_start = field_name.start,
-                .name_len = field_name.len,
-                .offset = field_offset,
-            };
-            sd.field_count += 1;
             field_offset += 8;
         }
         self.ast.struct_defs[si].total_size = field_offset;
