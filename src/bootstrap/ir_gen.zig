@@ -684,6 +684,8 @@ pub const IRGen = struct {
                     self.emit(.{ .op = .neg, .dest = v, .src1 = operand_v });
                 } else if (op_kind == .bang) {
                     self.emit(.{ .op = .logic_not, .dest = v, .src1 = operand_v });
+                } else if (op_kind == .tilde) {
+                    self.emit(.{ .op = .bit_not, .dest = v, .src1 = operand_v });
                 }
                 return v;
             },
