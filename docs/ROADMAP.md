@@ -1,5 +1,11 @@
 # LIR Roadmap
 
+## Architecture and release gates
+
+The implementation sequence and mandatory correctness/performance gates are specified in [Compiler Architecture](COMPILER_ARCHITECTURE.md). Roadmap checkboxes are not evidence of correctness by themselves: mark an item complete only after its tests run successfully in CI and the behavior is integrated end-to-end.
+
+Release blockers include unchecked capacity/offset arithmetic, process termination from reusable compiler stages, silent acceptance of unsupported syntax, invalid IR reaching code generation, incorrect ABI/register/stack behavior, and non-atomic executable output.
+
 ## Phase 1: Core Language (bootstrap implementation; completion not yet verified)
 - [x] Lexer with zero allocations
 - [x] Pratt parser for expressions
