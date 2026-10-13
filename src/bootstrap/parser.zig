@@ -76,6 +76,7 @@ pub const StructDef = struct {
 pub const AST = struct {
     nodes: [4096]ASTNode,
     count: u32,
+    overflowed: bool,
     stmt_chains: [4096]u32,
     struct_defs: [128]StructDef,
     struct_count: u32,
@@ -83,15 +84,17 @@ pub const AST = struct {
     source_count: u32,
 
     pub fn init() AST {
-        var ast = AST{ .nodes = undefined, .count = 1, .stmt_chains = .{@as(u32, 0)} ** 4096, .struct_defs = undefined, .struct_count = 0, .sources = undefined, .source_count = 0 };
+        var ast = AST{ .nodes = undefined, .count = 1, .overflowed = false, .stmt_chains = .{@as(u32, 0)} ** 4096, .struct_defs = undefined, .struct_count = 0, .sources = undefined, .source_count = 0 };
         ast.nodes[0] = .{ .kind = .identifier, .line = 0 };
         return ast;
     }
 
     pub fn addNode(self: *AST, kind: NodeKind, line: u32) u32 {
         if (@as(usize, self.count) >= self.nodes.len) {
-            printErr("Parse error: AST node limit exceeded (4095 nodes)\n");
-            sysExit(1);
+            // Keep the parser in-bounds and let the compiler report a normal
+            // diagnostic after parsing; never terminate the embedding process.
+            self.overflowed = true;
+            return 0;
         }
         const idx = self.count;
         self.nodes[idx] = .{ .kind = kind, .line = line };
