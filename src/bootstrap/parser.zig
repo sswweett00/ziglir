@@ -101,28 +101,36 @@ pub const AST = struct {
         return idx;
     }
 
+    fn validSourceRange(src: []const u8, start: u32, length: u32) bool {
+        // Subtraction-based validation avoids overflow in start + length.
+        const s: usize = start;
+        const n: usize = length;
+        return s <= src.len and n <= src.len - s;
+    }
+
     pub fn nodeText(self: *const AST, idx: u32) []const u8 {
+        if (idx == 0 or idx >= self.count or self.source_count == 0) return "";
         const n = self.nodes[idx];
-        if (self.source_count > 0 and n.text_start + n.text_len <= self.sources[0].len) {
-            return self.sources[0][n.text_start..][0..n.text_len];
-        }
-        return "";
+        const src = self.sources[0];
+        if (!validSourceRange(src, n.text_start, n.text_len)) return "";
+        return src[@as(usize, n.text_start)..][0..@as(usize, n.text_len)];
     }
 
     pub fn nodeTextSrcFrom(self: *const AST, start: u32, length: u32, source_id: u32) []const u8 {
-        if (source_id < self.source_count) {
-            const s = self.sources[source_id];
-            if (start + length <= s.len) {
-                return s[start..][0..length];
-            }
-        }
-        return "";
+        if (source_id >= self.source_count) return "";
+        const src = self.sources[source_id];
+        if (!validSourceRange(src, start, length)) return "";
+        return src[@as(usize, start)..][0..@as(usize, length)];
     }
 
     pub fn findStructByName(self: *const AST, src: []const u8, name_start: u32, name_len: u32) ?u32 {
-        for (0..self.struct_count) |i| {
-            const s = self.struct_defs[i];
-            if (s.name_len == name_len and std.mem.eql(u8, src[s.name_start..][0..s.name_len], src[name_start..][0..name_len])) return @intCast(i);
+        if (!validSourceRange(src, name_start, name_len)) return null;
+        const sought = src[@as(usize, name_start)..][0..@as(usize, name_len)];
+        const count = @min(@as(usize, self.struct_count), self.struct_defs.len);
+        for (0..count) |i| {
+            const def = self.struct_defs[i];
+            if (!validSourceRange(src, def.name_start, def.name_len)) continue;
+            if (def.name_len == name_len and std.mem.eql(u8, src[@as(usize, def.name_start)..][0..@as(usize, def.name_len)], sought)) return @intCast(i);
         }
         return null;
     }
