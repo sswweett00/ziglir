@@ -1,6 +1,0 @@
-fn main() {
-    let a = @string_new("Hello, ", 7)
-    let b = @string_new("World!", 6)
-    let c = @string_concat(a, b)
-    printInt(@string_len(c))
-}
