@@ -250,8 +250,8 @@ pub const Lexer = struct {
                 if (self.pos < self.src.len) {
                     _ = self.advance();
                 } else {
+                    if (!self.invalid) self.invalid_line = start_line;
                     self.invalid = true;
-                    self.invalid_line = start_line;
                 }
                 self.emit(.string_literal, start, start_line);
                 continue;
