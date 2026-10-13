@@ -251,7 +251,7 @@ fn cmdTest() void {
     else if (fileExists("src/main.lir"))
         "src/main.lir"
     else
-        "test.lir";
+        "tests/fixtures/test.lir";
     printStr("Running tests in ");
     printStr(std.mem.span(test_path));
     printStr("...\n");
