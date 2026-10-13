@@ -24,6 +24,7 @@ pub const NodeKind = enum {
     while_stmt,
     break_stmt,
     continue_stmt,
+    unreachable_stmt,
     call_expr,
     binary_expr,
     unary_expr,
@@ -396,7 +397,10 @@ pub const Parser = struct {
             if (self.match(.rbrace)) break;
 
             var stmt: u32 = 0;
-            if (self.match(.kw_return)) {
+            if (self.match(.kw_unreachable)) {
+                const tok = self.advance();
+                stmt = self.ast.addNode(.unreachable_stmt, tok.line);
+            } else if (self.match(.kw_return)) {
                 _ = self.advance();
                 var val: u32 = 0;
                 if (!self.match(.newline) and !self.match(.rbrace) and !self.match(.eof)) {
