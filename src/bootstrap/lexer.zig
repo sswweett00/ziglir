@@ -312,11 +312,17 @@ pub const Lexer = struct {
                     _ = self.advance();
                     break :blk .ne;
                 } else .bang,
-                '<' => if (self.peek() == '=') blk: {
+                '<' => if (self.peek() == '<') blk: {
+                    _ = self.advance();
+                    break :blk .lshift;
+                } else if (self.peek() == '=') blk: {
                     _ = self.advance();
                     break :blk .le;
                 } else .lt,
-                '>' => if (self.peek() == '=') blk: {
+                '>' => if (self.peek() == '>') blk: {
+                    _ = self.advance();
+                    break :blk .rshift;
+                } else if (self.peek() == '=') blk: {
                     _ = self.advance();
                     break :blk .ge;
                 } else .gt,
