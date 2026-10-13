@@ -14,6 +14,21 @@ fn compileSource(source: []const u8) ![]u8 {
     return try std.testing.allocator.dupe(u8, output);
 }
 
+
+test "unsupported enum declarations fail closed" {
+    var compiler = main.Compiler.init(
+        \\enum Color {
+        \\    Red
+        \\}
+    , "<test>");
+    try std.testing.expectError(error.InvalidSyntax, compiler.compile());
+}
+
+test "unsupported const declarations fail closed" {
+    var compiler = main.Compiler.init("const answer = 42\\nfn main() { printInt(answer) }", "<test>");
+    try std.testing.expectError(error.InvalidSyntax, compiler.compile());
+}
+
 test "lexer tokenizes basic LIR" {
     const source =
         \\fn main() -> i64 {
