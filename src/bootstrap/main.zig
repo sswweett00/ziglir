@@ -389,6 +389,10 @@ const Compiler_ = struct {
         defer std.heap.page_allocator.destroy(ir_gen);
         ir_gen.init(self.source, &ast);
         ir_gen.generate();
+        if (ir_gen.mod.string_overflowed) {
+            printErr("IR generation error: string table capacity exceeded\n");
+            return error.StringTableOverflow;
+        }
 
         // Phase 3: Codegen from IR
         const ir_cg = std.heap.page_allocator.create(ir_codegen_mod.IRCodegen) catch return error.OutOfMemory;
