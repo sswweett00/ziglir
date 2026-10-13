@@ -333,8 +333,8 @@ pub const Lexer = struct {
                 } else .dot,
                 '\n' => .newline,
                 else => blk: {
+                    if (!self.invalid) self.invalid_line = start_line;
                     self.invalid = true;
-                    self.invalid_line = start_line;
                     break :blk .eof;
                 },
             };
