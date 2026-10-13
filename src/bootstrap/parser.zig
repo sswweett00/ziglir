@@ -202,6 +202,8 @@ pub const Parser = struct {
     ast: *AST,
     src: []const u8,
     source_id: u32 = 0,
+    invalid_integer_literal: bool = false,
+    invalid_integer_line: u32 = 0,
 
     fn peek(self: *const Parser) Token {
         return self.lex.get(self.pos);
@@ -587,13 +589,27 @@ pub const Parser = struct {
             const txt = self.lex.text(tok);
             var cleaned: [64]u8 = undefined;
             var clen: usize = 0;
+            var malformed = txt.len == 0;
             for (txt) |c| {
-                if (c != '_' and clen < cleaned.len) {
-                    cleaned[clen] = c;
-                    clen += 1;
+                if (c == '_') continue;
+                if (clen >= cleaned.len) {
+                    malformed = true;
+                    break;
                 }
+                cleaned[clen] = c;
+                clen += 1;
             }
-            self.ast.nodes[n].int_val = std.fmt.parseInt(i64, cleaned[0..clen], 10) catch 0;
+            if (clen == 0) malformed = true;
+            if (!malformed) {
+                self.ast.nodes[n].int_val = std.fmt.parseInt(i64, cleaned[0..clen], 10) catch blk: {
+                    self.invalid_integer_literal = true;
+                    self.invalid_integer_line = tok.line;
+                    break :blk 0;
+                };
+            } else {
+                self.invalid_integer_literal = true;
+                self.invalid_integer_line = tok.line;
+            }
             return n;
         }
 
