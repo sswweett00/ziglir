@@ -32,6 +32,12 @@ jobs:
           ./hello_test
           ./zig-out/bin/lir build test_str.lir -o str_test
           ./str_test
+          ./zig-out/bin/lir build test_arr.lir -o array_test
+          ./array_test
+          ./zig-out/bin/lir build test_complex.lir -o complex_test
+          ./complex_test
+          ./zig-out/bin/lir build test_concat.lir -o concat_test
+          ./concat_test
           ./zig-out/bin/lir build examples/features-demo.lir -o features_test
           ./features_test
           # Regression: stack allocation must cover >64 virtual registers.
