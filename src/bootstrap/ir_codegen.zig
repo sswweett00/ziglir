@@ -696,7 +696,9 @@ pub const IRCodegen = struct {
             self.syscallInst();
         }
 
+        if (self.overflowed) return;
         self.emitPrintIntRoutine();
+        if (self.overflowed) return;
         self.patchCalls();
     }
 
@@ -754,6 +756,7 @@ pub const IRCodegen = struct {
             const blk = &ir_fn.blocks[bi];
             for (0..blk.inst_count) |ii| {
                 self.compileIRInst(blk.insts[ii]);
+                if (self.overflowed) return;
             }
         }
 
