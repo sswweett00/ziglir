@@ -181,3 +181,8 @@ Keep a baseline artifact and compare on stable runners. Use broad regression thr
 ## Definition of done
 
 A feature is complete only when its semantics are documented, errors are explicit, tests cover positive/negative/boundary cases, CI passes, and its implementation is integrated end-to-end. A compiler is not production-ready merely because it builds, emits ELF, or passes a few example programs.
+
+
+## String interning performance
+
+The IR module and native code generator intern strings with fixed-capacity open-addressed hash tables (512 buckets for at most 256 entries). FNV-1a hashes narrow candidate matches, while length and byte equality remain the final correctness check. This changes repeated string lookup from a linear scan of all prior literals to expected constant-time lookup without heap allocation; capacity and byte-buffer bounds remain explicitly checked.
