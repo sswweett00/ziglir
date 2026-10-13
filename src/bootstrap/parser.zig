@@ -288,7 +288,7 @@ pub const Parser = struct {
                 printUsize(self.peek().line);
                 printErr(": ");
                 printErr(@tagName(self.peek().kind));
-                printErr(" is not implemented by this compiler\\n");
+                printErr(" is not implemented by this compiler\n");
                 self.invalid_syntax = true;
                 while (!self.match(.newline) and !self.match(.eof)) _ = self.advance();
             } else if (self.match(.kw_const) or self.match(.kw_type)) {
@@ -296,7 +296,7 @@ pub const Parser = struct {
                 printUsize(self.peek().line);
                 printErr(": ");
                 printErr(@tagName(self.peek().kind));
-                printErr(" is not implemented by this compiler\\n");
+                printErr(" is not implemented by this compiler\n");
                 self.invalid_syntax = true;
                 while (!self.match(.newline) and !self.match(.semicolon) and !self.match(.eof)) _ = self.advance();
             } else if (self.match(.kw_pub)) {
