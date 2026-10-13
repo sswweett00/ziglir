@@ -10,19 +10,26 @@
 
 LIR is a systems-language project aiming to combine a small, approachable syntax with predictable memory use and highly optimized native code. Its long-term performance goal is to outperform C on selected, benchmarked workloads without sacrificing correctness or readability. That is a goal to prove with reproducible measurements—not a universal speed guarantee. The checked-in bootstrap compiler currently targets Linux x86-64 ELF; features listed as design goals are not necessarily implemented yet.
 
-### Why LIR?
+### Design principles
 
-| Feature | LIR | Rust | Zig | Go | C++ |
-|---------|:---:|:----:|:---:|:--:|:---:|
-| Zero-cost abstractions | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Memory safety (no GC) | ✅ | ✅ | Partial | ❌ | Partial |
-| Compile-time execution | ✅ | ✅ | ✅ | ❌ | Partial |
-| Built-in concurrency | ✅ | ✅ | ❌ | ✅ | ❌ |
-| Self-contained build | ✅ | ❌ | ✅ | ✅ | ❌ |
-| Cross-compilation | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Learning curve | **Easy** | Hard | Medium | Easy | Hard |
-| Binary size | **Tiny** | Medium | Tiny | Large | Large |
-| Startup time | **Instant** | Instant | Instant | Slow | Instant |
+- **Zig-native implementation:** the checked-in bootstrap compiler and native code-generation pipeline are implemented in Zig. LIR is not merely a syntax wrapper around GCC, Clang, LLVM, or another language compiler.
+- **Direct native output:** the current bootstrap targets Linux x86-64 ELF and emits machine code itself.
+- **Readable language design:** syntax should stay small and consistent; unsupported features must fail explicitly rather than silently generating incorrect code.
+- **Measured performance:** performance claims require repeatable benchmarks against equivalent C implementations, including correctness checks. No universal claim that LIR is faster than C is made.
+- **Honest implementation status:** memory safety, compile-time execution, concurrency primitives, cross-compilation, and a stable standard library are not advertised as complete unless they are implemented and tested.
+
+| Capability | Current status |
+|---|---|
+| Bootstrap compiler implementation | Zig |
+| Native output | Linux x86-64 ELF |
+| External compiler required at runtime | No; the compiler emits the target code itself |
+| C ABI / foreign-function interface | Not yet a complete, stable contract |
+| Memory-safety guarantees | Not yet complete |
+| Compile-time execution | Not yet complete |
+| Built-in concurrency | Not yet complete |
+| Cross-compilation | Not yet complete |
+| Stable standard library | Not yet complete |
+| Performance versus C | Must be established workload-by-workload with reproducible benchmarks |
 
 ## Quick Start
 
