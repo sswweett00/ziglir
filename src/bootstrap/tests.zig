@@ -78,6 +78,20 @@ test "lexer recognizes all operator tokens" {
     }
 }
 
+test "lexer records token start line for multiline strings" {
+    const source =
+        \\"first
+        \\second" value
+    ;
+    var lexer = main.Lexer.init(source);
+    lexer.tokenize();
+
+    try std.testing.expectEqual(main.TokenKind.string_literal, lexer.get(0).kind);
+    try std.testing.expectEqual(@as(u32, 1), lexer.get(0).line);
+    try std.testing.expectEqual(main.TokenKind.identifier, lexer.get(1).kind);
+    try std.testing.expectEqual(@as(u32, 2), lexer.get(1).line);
+}
+
 test "parser parses function declaration" {
     const source =
         \\fn add(a: i64, b: i64) -> i64 {
