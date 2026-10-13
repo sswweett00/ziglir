@@ -329,25 +329,24 @@ pub const Lexer = struct {
         self.emit(.eof, self.pos);
     }
 
+    // Static comptime string map for O(1) keyword lookups instead of O(N) array iteration
+    const keyword_map = std.StaticStringMap(TokenKind).initComptime(&[_]struct { []const u8, TokenKind }{
+        .{ "fn", .kw_fn },             .{ "let", .kw_let },     .{ "mut", .kw_mut },       .{ "const", .kw_const },
+        .{ "struct", .kw_struct },     .{ "enum", .kw_enum },   .{ "trait", .kw_trait },   .{ "impl", .kw_impl },
+        .{ "match", .kw_match },       .{ "if", .kw_if },       .{ "else", .kw_else },     .{ "while", .kw_while },
+        .{ "for", .kw_for },           .{ "in", .kw_in },       .{ "return", .kw_return }, .{ "break", .kw_break },
+        .{ "continue", .kw_continue }, .{ "defer", .kw_defer }, .{ "pub", .kw_pub },       .{ "mod", .kw_mod },
+        .{ "use", .kw_use },           .{ "import", .kw_import }, .{ "type", .kw_type },   .{ "extern", .kw_extern },
+        .{ "self", .kw_self },         .{ "true", .kw_true },   .{ "false", .kw_false },   .{ "null", .kw_null },
+        .{ "comptime", .kw_comptime }, .{ "try", .kw_try },     .{ "panic", .kw_panic },   .{ "elif", .kw_elif },
+        .{ "and", .and_and },          .{ "or", .pipe_pipe },   .{ "i8", .kw_i8 },         .{ "i16", .kw_i16 },
+        .{ "i32", .kw_i32 },           .{ "i64", .kw_i64 },     .{ "u8", .kw_u8 },         .{ "u16", .kw_u16 },
+        .{ "u32", .kw_u32 },           .{ "u64", .kw_u64 },     .{ "f32", .kw_f32 },       .{ "f64", .kw_f64 },
+        .{ "bool", .kw_bool },         .{ "string", .kw_string }, .{ "void", .kw_void },
+    });
+
     fn keywordOrIdent(word: []const u8) TokenKind {
-        const kws = [_]struct { []const u8, TokenKind }{
-            .{ "fn", .kw_fn },             .{ "let", .kw_let },     .{ "mut", .kw_mut },       .{ "const", .kw_const },
-            .{ "struct", .kw_struct },     .{ "enum", .kw_enum },   .{ "trait", .kw_trait },   .{ "impl", .kw_impl },
-            .{ "match", .kw_match },       .{ "if", .kw_if },       .{ "else", .kw_else },     .{ "while", .kw_while },
-            .{ "for", .kw_for },           .{ "in", .kw_in },       .{ "return", .kw_return }, .{ "break", .kw_break },
-            .{ "continue", .kw_continue }, .{ "defer", .kw_defer }, .{ "pub", .kw_pub },       .{ "mod", .kw_mod },
-            .{ "import", .kw_import },     .{ "type", .kw_type },   .{ "extern", .kw_extern }, .{ "self", .kw_self },
-            .{ "true", .kw_true },         .{ "false", .kw_false }, .{ "null", .kw_null },     .{ "comptime", .kw_comptime },
-            .{ "try", .kw_try },           .{ "panic", .kw_panic }, .{ "elif", .kw_elif },     .{ "and", .and_and },
-            .{ "or", .pipe_pipe },         .{ "i8", .kw_i8 },       .{ "i16", .kw_i16 },       .{ "i32", .kw_i32 },
-            .{ "i64", .kw_i64 },           .{ "u8", .kw_u8 },       .{ "u16", .kw_u16 },       .{ "u32", .kw_u32 },
-            .{ "u64", .kw_u64 },           .{ "f32", .kw_f32 },     .{ "f64", .kw_f64 },       .{ "bool", .kw_bool },
-            .{ "string", .kw_string },     .{ "void", .kw_void },
-        };
-        for (kws) |entry| {
-            if (eql(word, entry[0])) return entry[1];
-        }
-        return .identifier;
+        return keyword_map.get(word) orelse .identifier;
     }
 
     pub fn text(self: *const Lexer, tok: Token) []const u8 {
