@@ -4,6 +4,7 @@
 const std = @import("std");
 const main = @import("main.zig");
 const parser = @import("parser.zig");
+const ir_mod = @import("ir.zig");
 
 fn compileSource(source: []const u8) ![]u8 {
     // Exercise the same AST -> IR -> ELF pipeline used by the production CLI.
@@ -497,4 +498,40 @@ test "codegen uses disp32 for stack slots beyond signed disp8 range" {
     const load_disp32 = [_]u8{ 0x48, 0x8B, 0x85, 0x78, 0xFF, 0xFF, 0xFF };
     try std.testing.expect(std.mem.indexOf(u8, elf, &store_disp32) != null);
     try std.testing.expect(std.mem.indexOf(u8, elf, &load_disp32) != null);
+}
+
+
+test "IR string table rejects entry-count overflow without writing out of bounds" {
+    var module: ir_mod.IRModule = undefined;
+    module.init();
+    var i: usize = 0;
+    while (i < module.string_offsets.len) : (i += 1) {
+        const value = try std.fmt.allocPrint(std.testing.allocator, "s{d}", .{i});
+        defer std.testing.allocator.free(value);
+        _ = module.addString(value);
+    }
+    try std.testing.expectEqual(@as(u32, 256), module.string_count);
+    _ = module.addString("overflow");
+    try std.testing.expect(module.string_overflowed);
+    try std.testing.expectEqual(@as(u32, 256), module.string_count);
+}
+
+test "IR string table rejects byte-capacity overflow without partial insertion" {
+    var module: ir_mod.IRModule = undefined;
+    module.init();
+    const too_large = [_]u8{'x'} ** 4096;
+    _ = module.addString(&too_large);
+    try std.testing.expect(module.string_overflowed);
+    try std.testing.expectEqual(@as(u32, 0), module.string_count);
+    try std.testing.expectEqual(@as(u32, 0), module.string_len);
+}
+
+test "IR string table deduplicates existing entries" {
+    var module: ir_mod.IRModule = undefined;
+    module.init();
+    const first = module.addString("hello");
+    const second = module.addString("hello");
+    try std.testing.expectEqual(first, second);
+    try std.testing.expectEqual(@as(u32, 1), module.string_count);
+    try std.testing.expect(!module.string_overflowed);
 }
