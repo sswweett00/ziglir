@@ -1,15 +1,41 @@
+# Zig build artifacts
 .zig-cache/
+zig-cache/
 zig-out/
-*.lir.bin
-lir_test*
-test_file*
-hello
-t_*
-mytest
-test_output.txt
+
+# Native compiler outputs and temporary objects
+*.o
+*.obj
+*.s
+*.asm
+*.out
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.pdb
+*.ilk
+*.bin
+
+# Generated compiler/test binaries
+/hello
+/test_file
+/test_file*
+/mytest
+/t_*
+/lir
+/lir_test*
+/hello_test
+/str_test
+/stack_pressure_test
+
+# Local test outputs
+/test_output.txt
+
+# Editor, package and local agent state
 .kilo/
 .freebuff/
 node_modules/
 target/
-zig-out/
-zig-cache/
