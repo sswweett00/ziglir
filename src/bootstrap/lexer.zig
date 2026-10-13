@@ -58,6 +58,20 @@ pub const TokenKind = enum(u8) {
     kw_bool,
     kw_string,
     kw_void,
+    // Low-level systems-language keywords (lexed; parser/codegen support is gated separately)
+    kw_unsafe,
+    kw_volatile,
+    kw_asm,
+    kw_align,
+    kw_packed,
+    kw_union,
+    kw_unreachable,
+    kw_as,
+    kw_isize,
+    kw_usize,
+    kw_i128,
+    kw_u128,
+    kw_never,
     // Operators
     plus,
     minus,
@@ -112,6 +126,10 @@ pub fn isTypeKeyword(kind: TokenKind) bool {
     return switch (kind) {
         .kw_i8,
         .kw_i16,
+        .kw_i128,
+        .kw_u128,
+        .kw_isize,
+        .kw_usize,
         .kw_i32,
         .kw_i64,
         .kw_u8,
@@ -357,6 +375,11 @@ pub const Lexer = struct {
         .{ "i32", .kw_i32 },           .{ "i64", .kw_i64 },     .{ "u8", .kw_u8 },         .{ "u16", .kw_u16 },
         .{ "u32", .kw_u32 },           .{ "u64", .kw_u64 },     .{ "f32", .kw_f32 },       .{ "f64", .kw_f64 },
         .{ "bool", .kw_bool },         .{ "string", .kw_string }, .{ "void", .kw_void },
+        .{ "unsafe", .kw_unsafe },     .{ "volatile", .kw_volatile }, .{ "asm", .kw_asm },
+        .{ "align", .kw_align },       .{ "packed", .kw_packed }, .{ "union", .kw_union },
+        .{ "unreachable", .kw_unreachable }, .{ "as", .kw_as }, .{ "isize", .kw_isize },
+        .{ "usize", .kw_usize },       .{ "i128", .kw_i128 }, .{ "u128", .kw_u128 },
+        .{ "never", .kw_never },
     });
 
     fn keywordOrIdent(word: []const u8) TokenKind {
