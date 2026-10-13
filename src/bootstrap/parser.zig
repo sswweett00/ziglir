@@ -331,7 +331,19 @@ pub const Parser = struct {
             const ptok = self.expect(.identifier);
             if (self.match(.colon)) {
                 _ = self.advance();
-                while (!self.match(.comma) and !self.match(.rparen) and !self.match(.eof)) _ = self.advance();
+                const type_tok = self.expect(.identifier);
+                if (!std.mem.eql(u8, self.lex.text(type_tok), "i64")) {
+                    printErr("Unsupported parameter type at line ");
+                    printUsize(type_tok.line);
+                    printErr(": bootstrap compiler currently supports only i64 parameters\n");
+                    self.invalid_syntax = true;
+                }
+                // Do not silently consume a compound/generic type annotation.
+                if (!self.match(.comma) and !self.match(.rparen) and !self.match(.eof)) {
+                    printErr("Unsupported parameter type syntax\n");
+                    self.invalid_syntax = true;
+                    while (!self.match(.comma) and !self.match(.rparen) and !self.match(.eof)) _ = self.advance();
+                }
             }
             const pnode = self.ast.addNode(.identifier, ptok.line);
             self.ast.nodes[pnode].text_start = ptok.start;
@@ -347,7 +359,18 @@ pub const Parser = struct {
         _ = self.expect(.rparen);
         if (self.match(.arrow)) {
             _ = self.advance();
-            while (!self.match(.lbrace) and !self.match(.newline) and !self.match(.eof)) _ = self.advance();
+            const return_type = self.expect(.identifier);
+            if (!std.mem.eql(u8, self.lex.text(return_type), "i64")) {
+                printErr("Unsupported return type at line ");
+                printUsize(return_type.line);
+                printErr(": bootstrap compiler currently supports only i64 return types\n");
+                self.invalid_syntax = true;
+            }
+            if (!self.match(.lbrace) and !self.match(.newline) and !self.match(.eof)) {
+                printErr("Unsupported return type syntax\n");
+                self.invalid_syntax = true;
+                while (!self.match(.lbrace) and !self.match(.newline) and !self.match(.eof)) _ = self.advance();
+            }
         }
         self.skipNewlines();
         const body = self.parseBlock();
@@ -847,7 +870,18 @@ pub const Parser = struct {
             if (self.match(.rbrace)) break;
             const field_name = self.expect(.identifier);
             _ = self.expect(.colon);
-            while (!self.match(.newline) and !self.match(.rbrace) and !self.match(.eof)) _ = self.advance();
+            const field_type = self.expect(.identifier);
+            if (!std.mem.eql(u8, self.lex.text(field_type), "i64")) {
+                printErr("Unsupported struct field type at line ");
+                printUsize(field_type.line);
+                printErr(": bootstrap compiler currently supports only i64 fields\n");
+                self.invalid_syntax = true;
+            }
+            if (!self.match(.newline) and !self.match(.rbrace) and !self.match(.eof)) {
+                printErr("Unsupported struct field type syntax\n");
+                self.invalid_syntax = true;
+                while (!self.match(.newline) and !self.match(.rbrace) and !self.match(.eof)) _ = self.advance();
+            }
             self.skipNewlines();
 
             const sd = &self.ast.struct_defs[si];
