@@ -207,6 +207,7 @@ pub const Parser = struct {
     source_id: u32 = 0,
     invalid_integer_literal: bool = false,
     invalid_integer_line: u32 = 0,
+    invalid_syntax: bool = false,
 
     fn peek(self: *const Parser) Token {
         return self.lex.get(self.pos);
@@ -232,7 +233,12 @@ pub const Parser = struct {
             printErr(", got ");
             printErr(@tagName(t.kind));
             printErr("\n");
-            sysExit(1);
+            self.invalid_syntax = true;
+
+            // Make forward progress on malformed input so parsing can finish
+            // and return a normal compiler error instead of exiting the host.
+            if (t.kind != .eof) _ = self.advance();
+            return .{ .kind = kind, .start = t.start, .len = 0, .line = t.line };
         }
         return self.advance();
     }
