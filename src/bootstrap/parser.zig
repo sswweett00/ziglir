@@ -547,8 +547,38 @@ pub const Parser = struct {
     }
 
     fn parseAnd(self: *Parser) u32 {
-        var left = self.parseEquality();
+        var left = self.parseBitOr();
         while (self.match(.and_and)) {
+            const op = self.advance();
+            const right = self.parseBitOr();
+            left = self.addBinary(left, right, op);
+        }
+        return left;
+    }
+
+    fn parseBitOr(self: *Parser) u32 {
+        var left = self.parseBitXor();
+        while (self.match(.pipe)) {
+            const op = self.advance();
+            const right = self.parseBitXor();
+            left = self.addBinary(left, right, op);
+        }
+        return left;
+    }
+
+    fn parseBitXor(self: *Parser) u32 {
+        var left = self.parseBitAnd();
+        while (self.match(.caret)) {
+            const op = self.advance();
+            const right = self.parseBitAnd();
+            left = self.addBinary(left, right, op);
+        }
+        return left;
+    }
+
+    fn parseBitAnd(self: *Parser) u32 {
+        var left = self.parseEquality();
+        while (self.match(.amp)) {
             const op = self.advance();
             const right = self.parseEquality();
             left = self.addBinary(left, right, op);
@@ -567,8 +597,18 @@ pub const Parser = struct {
     }
 
     fn parseRelational(self: *Parser) u32 {
-        var left = self.parseAdditive();
+        var left = self.parseShift();
         while (self.match(.lt) or self.match(.gt) or self.match(.le) or self.match(.ge)) {
+            const op = self.advance();
+            const right = self.parseShift();
+            left = self.addBinary(left, right, op);
+        }
+        return left;
+    }
+
+    fn parseShift(self: *Parser) u32 {
+        var left = self.parseAdditive();
+        while (self.match(.lshift) or self.match(.rshift)) {
             const op = self.advance();
             const right = self.parseAdditive();
             left = self.addBinary(left, right, op);
@@ -622,7 +662,7 @@ pub const Parser = struct {
                 return n;
             }
         }
-        if (self.match(.minus) or self.match(.bang)) {
+        if (self.match(.minus) or self.match(.bang) or self.match(.tilde)) {
             const op = self.advance();
             const operand = self.parseUnary();
             const n = self.ast.addNode(.unary_expr, op.line);
