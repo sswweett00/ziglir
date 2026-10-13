@@ -590,8 +590,13 @@ pub const Parser = struct {
             var cleaned: [64]u8 = undefined;
             var clen: usize = 0;
             var malformed = txt.len == 0;
-            for (txt) |c| {
-                if (c == '_') continue;
+            for (txt, 0..) |c, i| {
+                if (c == '_') {
+                    // Separators are legal only between digits, never at an
+                    // edge or adjacent to another separator.
+                    if (i == 0 or i + 1 == txt.len or txt[i - 1] == '_' or txt[i + 1] == '_') malformed = true;
+                    continue;
+                }
                 if (clen >= cleaned.len) {
                     malformed = true;
                     break;
