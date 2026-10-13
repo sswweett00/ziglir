@@ -11,6 +11,9 @@ RUN curl -sSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
 
 COPY . .
 
+# Validate the bootstrap compiler before producing the runtime image
+RUN zig build test
+
 # Build the LIR compiler
 RUN zig build -Doptimize=ReleaseFast
 
