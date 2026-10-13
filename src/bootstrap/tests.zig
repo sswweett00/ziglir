@@ -26,7 +26,7 @@ test "unsupported enum declarations fail closed" {
 }
 
 test "unsupported const declarations fail closed" {
-    var compiler = main.Compiler.init("const answer = 42\\nfn main() { printInt(answer) }", "<test>");
+    var compiler = main.Compiler.init("const answer = 42\nfn main() { printInt(answer) }", "<test>");
     try std.testing.expectError(error.InvalidSyntax, compiler.compile());
 }
 
