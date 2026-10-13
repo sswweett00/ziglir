@@ -589,6 +589,20 @@ test "IR verifier rejects stack frames above backend safety limit" {
 
 
 
+
+test "unreachable keyword is lowered to a native trap" {
+    const source =
+        \\fn main() -> i64 {
+        \\    unreachable
+        \\}
+    ;
+    const elf = try compileSource(source);
+    defer std.testing.allocator.free(elf);
+    try std.testing.expect(elf.len > 4);
+    try std.testing.expectEqualSlices(u8, "\x7fELF", elf[0..4]);
+    try std.testing.expect(std.mem.indexOf(u8, elf, &[_]u8{ 0x0F, 0x0B }) != null);
+}
+
 test "low-level bitwise and shift operators reach native code generation" {
     const source =
         \\fn main() -> i64 {
