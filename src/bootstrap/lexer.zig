@@ -142,6 +142,8 @@ pub const Lexer = struct {
     tokens: [4096]Token,
     token_count: u32,
     overflowed: bool,
+    invalid: bool,
+    invalid_line: u32,
 
     pub fn init(source: []const u8) Lexer {
         return .{
@@ -151,6 +153,8 @@ pub const Lexer = struct {
             .tokens = undefined,
             .token_count = 0,
             .overflowed = false,
+            .invalid = false,
+            .invalid_line = 0,
         };
     }
 
@@ -243,7 +247,12 @@ pub const Lexer = struct {
                     if (self.peek() == '\\') _ = self.advance();
                     if (self.pos < self.src.len) _ = self.advance();
                 }
-                if (self.pos < self.src.len) _ = self.advance();
+                if (self.pos < self.src.len) {
+                    _ = self.advance();
+                } else {
+                    self.invalid = true;
+                    self.invalid_line = start_line;
+                }
                 self.emit(.string_literal, start, start_line);
                 continue;
             }
@@ -323,7 +332,11 @@ pub const Lexer = struct {
                     break :blk .dot_dot;
                 } else .dot,
                 '\n' => .newline,
-                else => .eof,
+                else => blk: {
+                    self.invalid = true;
+                    self.invalid_line = start_line;
+                    break :blk .eof;
+                },
             };
             self.emit(kind, start, start_line);
         }
