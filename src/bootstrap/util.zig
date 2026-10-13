@@ -172,12 +172,9 @@ pub fn writeFile(path: []const u8, data: []const u8) bool {
     return true;
 }
 
+// Fast string equality using std.mem.eql (vectorized / SIMD comparison)
 pub fn eql(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (0..a.len) |i| {
-        if (a[i] != b[i]) return false;
-    }
-    return true;
+    return std.mem.eql(u8, a, b);
 }
 
 pub fn printUsize(val: usize) void {
