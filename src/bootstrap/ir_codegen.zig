@@ -60,6 +60,7 @@ const ARG_REGS = [_]u8{ 7, 6, 2, 1, 8, 9 }; // rdi, rsi, rdx, rcx, r8, r9
 pub const IRCodegen = struct {
     code: [65536]u8,
     code_len: u32,
+    overflowed: bool,
     rodata: [65536]u8,
     rodata_len: u32,
     string_patches: [512]StringPatch,
@@ -99,6 +100,7 @@ pub const IRCodegen = struct {
 
     pub fn init(self: *IRCodegen, source: []const u8, module: *const IRModule) void {
         self.code_len = 0;
+        self.overflowed = false;
         self.rodata_len = 0;
         self.patch_count = 0;
         self.string_count = 0;
@@ -121,16 +123,22 @@ pub const IRCodegen = struct {
     // ═══════════════════════════════════════════════════════════
 
     fn emit8(self: *IRCodegen, b: u8) void {
+        if (self.overflowed) return;
+        if (self.code_len >= self.code.len) { self.overflowed = true; return; }
         self.code[self.code_len] = b;
         self.code_len += 1;
     }
 
     fn emit32(self: *IRCodegen, v: u32) void {
+        if (self.overflowed) return;
+        if (self.code.len - self.code_len < 4) { self.overflowed = true; return; }
         self.code[self.code_len..][0..4].* = .{ @truncate(v), @truncate(v >> 8), @truncate(v >> 16), @truncate(v >> 24) };
         self.code_len += 4;
     }
 
     fn emit64(self: *IRCodegen, v: u64) void {
+        if (self.overflowed) return;
+        if (self.code.len - self.code_len < 8) { self.overflowed = true; return; }
         self.code[self.code_len..][0..8].* = .{ @truncate(v), @truncate(v >> 8), @truncate(v >> 16), @truncate(v >> 24), @truncate(v >> 32), @truncate(v >> 40), @truncate(v >> 48), @truncate(v >> 56) };
         self.code_len += 8;
     }
@@ -510,19 +518,15 @@ pub const IRCodegen = struct {
                 if (found) return i;
             }
         }
+        if (self.string_count >= self.string_offsets.len or str.len + 1 > self.rodata.len - self.rodata_len) { self.overflowed = true; return 0; }
         const idx = self.string_count;
         const off = self.rodata_len;
-        for (str) |ch| {
-            self.rodata[self.rodata_len] = ch;
-            self.rodata_len += 1;
-        }
+        for (str) |ch| { self.rodata[self.rodata_len] = ch; self.rodata_len += 1; }
         self.rodata[self.rodata_len] = 0;
         self.rodata_len += 1;
-        if (self.string_count < 256) {
-            self.string_offsets[self.string_count] = off;
-            self.string_lens[self.string_count] = @intCast(str.len);
-            self.string_count += 1;
-        }
+        self.string_offsets[self.string_count] = off;
+        self.string_lens[self.string_count] = @intCast(str.len);
+        self.string_count += 1;
         return idx;
     }
 
