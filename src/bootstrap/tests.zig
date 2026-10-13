@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const main = @import("main.zig");
-const parser = @import("parser.zig");
+const parser_mod = @import("parser.zig");
 const ir_mod = @import("ir.zig");
 
 fn compileSource(source: []const u8) ![]u8 {
@@ -34,7 +34,7 @@ test "unsupported const declarations fail closed" {
 
 
 test "AST source range access rejects invalid indices and overflowing ranges" {
-    var ast = parser.AST.init();
+    var ast = parser_mod.AST.init();
     ast.sources[0] = "hello";
     ast.source_count = 1;
 
@@ -49,7 +49,7 @@ test "AST source range access rejects invalid indices and overflowing ranges" {
 }
 
 test "AST struct lookup rejects out-of-range source spans" {
-    var ast = parser.AST.init();
+    var ast = parser_mod.AST.init();
     try std.testing.expect(ast.findStructByName("abc", std.math.maxInt(u32), 4) == null);
 }
 
