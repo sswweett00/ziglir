@@ -92,6 +92,24 @@ test "lexer records token start line for multiline strings" {
     try std.testing.expectEqual(@as(u32, 2), lexer.get(1).line);
 }
 
+test "lexer flags unterminated strings" {
+    const source = "\\\"unterminated";
+    var lexer = main.Lexer.init(source);
+    lexer.tokenize();
+
+    try std.testing.expect(lexer.invalid);
+    try std.testing.expectEqual(@as(u32, 1), lexer.invalid_line);
+}
+
+test "lexer flags unknown characters instead of treating them as EOF" {
+    const source = "fn main() { $ }";
+    var lexer = main.Lexer.init(source);
+    lexer.tokenize();
+
+    try std.testing.expect(lexer.invalid);
+    try std.testing.expectEqual(@as(u32, 1), lexer.invalid_line);
+}
+
 test "parser parses function declaration" {
     const source =
         \\fn add(a: i64, b: i64) -> i64 {
