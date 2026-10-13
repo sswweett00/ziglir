@@ -68,21 +68,33 @@
 - [ ] Proof assistant integration
 - [ ] Formal verification
 
-## Performance Goals
+## Performance and Usability Goals
 
-| Metric | Target | Status |
-|--------|--------|--------|
-| Compile speed | >100K LOC/s | 🔄 In progress |
-| Binary size | <10KB hello world | ✅ Achieved |
-| Startup time | <1ms | ✅ Achieved |
-| Runtime performance | Within 5% of C | 🔄 In progress |
-| Memory usage | <2x C | 🔄 In progress |
+These are engineering targets, not verified claims about the current compiler. Record baseline measurements before changing the optimizer, and keep each optimization only when correctness tests pass and benchmarks show a repeatable improvement.
+
+| Metric | Goal | Verification |
+|--------|------|--------------|
+| Runtime speed | Beat optimized C on selected workloads; remain competitive on the full suite | Same algorithm, same inputs, equivalent safety/overflow semantics, optimized builds, repeated runs, report median and variance |
+| Compile speed | Improve throughput without weakening diagnostics or correctness | Benchmark cold and warm builds separately; report LOC/s and wall time |
+| Binary size | Keep small programs compact without sacrificing runtime speed | Compare stripped release binaries and disclose target/flags |
+| Memory use | Avoid hidden allocations and unnecessary copies | Measure peak RSS and allocation counts on identical workloads |
+| Startup latency | Keep short-lived CLI programs responsive | Measure process startup separately from steady-state throughput |
+| Learnability | Small core syntax, consistent rules, useful diagnostics | Beginner tasks, examples, and error-recovery tests |
+
+### Required optimization workflow
+
+1. Establish a reproducible baseline against a recent, optimizing C compiler (for example, Clang or GCC) using documented flags and identical workloads.
+2. Include microbenchmarks and representative programs; prevent dead-code elimination from invalidating results and verify outputs for every implementation.
+3. Run multiple repetitions, report median and spread, and test both debug and release configurations.
+4. Inspect generated assembly for claimed low-level wins; measure compile time, binary size, and memory alongside runtime.
+5. Never claim “faster than C” universally. State exactly which workload, hardware, compiler versions, flags, and correctness constraints support each result.
 
 ## Language Design Principles
 
-1. **Simplicity** — Small, orthogonal features
-2. **Performance** — Every feature maps to efficient code
-3. **Safety** — Catch errors at compile time
-4. **Expressiveness** — Clear, maintainable code
-5. **Portability** — Write once, run anywhere
-6. **Self-contained** — No external dependencies
+1. **Simplicity first** — Prefer a small set of consistent rules over many special cases.
+2. **Easy to read and write** — Infer obvious local types; require annotations where inference would be ambiguous or obscure.
+3. **Performance by construction** — Predictable layouts, explicit allocation control, and abstractions that optimize away when possible.
+4. **Safety without hidden costs** — Enforce ownership and borrowing in the type checker; do not claim safety until checks are implemented and tested.
+5. **Optimize from evidence** — Use benchmarks, generated-code inspection, and regression tests rather than intuition alone.
+6. **Portability through backends** — Keep language semantics separate from target-specific code generation.
+7. **Honest status** — Clearly distinguish implemented, partial, and planned features.
