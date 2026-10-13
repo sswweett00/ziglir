@@ -308,6 +308,9 @@ pub const IRGen = struct {
         if (idx == 0) return;
         const node = self.ast.nodes[idx];
         switch (node.kind) {
+            .unreachable_stmt => {
+                self.emit(.{ .op = .unreachable_trap });
+            },
             .return_stmt => {
                 if (node.child0 != 0) {
                     const v = self.genExpr(node.child0);
