@@ -93,7 +93,7 @@ test "lexer records token start line for multiline strings" {
 }
 
 test "lexer flags unterminated strings" {
-    const source = "\\\"unterminated";
+    const source = "\"unterminated";
     var lexer = main.Lexer.init(source);
     lexer.tokenize();
 
