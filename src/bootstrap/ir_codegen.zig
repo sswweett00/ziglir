@@ -20,7 +20,6 @@ const IROp = ir_mod.IROp;
 const eql = util.eql;
 const printErr = util.printErr;
 const printUsize = util.printUsize;
-const sysExit = util.sysExit;
 const write16 = util.write16;
 const write32 = util.write32;
 const write64 = util.write64;
