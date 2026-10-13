@@ -280,11 +280,24 @@ pub const Parser = struct {
             } else if (self.match(.kw_struct)) {
                 _ = self.parseStructDecl();
             } else if (self.match(.kw_enum) or self.match(.kw_trait) or
-                self.match(.kw_impl) or self.match(.kw_mod))
+                self.match(.kw_impl) or self.match(.kw_mod) or self.match(.kw_extern))
             {
-                while (!self.match(.lbrace) and !self.match(.newline) and !self.match(.eof)) _ = self.advance();
-                if (self.match(.lbrace)) self.skipBalancedBraces();
+                // Never silently discard a declaration. These constructs are
+                // recognized by the lexer but are not yet fully implemented.
+                printErr("Unsupported declaration at line ");
+                printUsize(self.peek().line);
+                printErr(": ");
+                printErr(@tagName(self.peek().kind));
+                printErr(" is not implemented by this compiler\\n");
+                self.invalid_syntax = true;
+                while (!self.match(.newline) and !self.match(.eof)) _ = self.advance();
             } else if (self.match(.kw_const) or self.match(.kw_type)) {
+                printErr("Unsupported declaration at line ");
+                printUsize(self.peek().line);
+                printErr(": ");
+                printErr(@tagName(self.peek().kind));
+                printErr(" is not implemented by this compiler\\n");
+                self.invalid_syntax = true;
                 while (!self.match(.newline) and !self.match(.semicolon) and !self.match(.eof)) _ = self.advance();
             } else if (self.match(.kw_pub)) {
                 _ = self.advance();
