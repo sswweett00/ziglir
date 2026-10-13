@@ -376,6 +376,7 @@ const Compiler_ = struct {
         defer std.heap.page_allocator.destroy(ir_cg);
         ir_cg.init(self.source, &ir_gen.mod);
         ir_cg.compile();
+        if (ir_cg.overflowed) return error.CodeTooLarge;
 
         // Phase 3.5: Patch references
         ir_cg.patchStrings();
