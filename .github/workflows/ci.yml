@@ -43,6 +43,22 @@ jobs:
           # Regression: stack allocation must cover >64 virtual registers.
           ./zig-out/bin/lir build examples/stack-pressure.lir -o stack_pressure_test
           test "$(./stack_pressure_test)" = "47"
+          # Invalid source must fail compilation rather than produce a partial executable.
+          printf '%s\n' 'fn main() { let x = "unterminated }' > invalid_string.lir
+          if ./zig-out/bin/lir build invalid_string.lir -o invalid_string_out; then
+            echo "ERROR: unterminated string unexpectedly compiled"
+            exit 1
+          fi
+          printf '%s\n' 'fn main() { let x = 9223372036854775808 }' > invalid_integer.lir
+          if ./zig-out/bin/lir build invalid_integer.lir -o invalid_integer_out; then
+            echo "ERROR: out-of-range integer unexpectedly compiled"
+            exit 1
+          fi
+          printf '%s\n' 'fn main() { let x = $ }' > invalid_character.lir
+          if ./zig-out/bin/lir build invalid_character.lir -o invalid_character_out; then
+            echo "ERROR: unknown character unexpectedly compiled"
+            exit 1
+          fi
 
       - name: Smoke-test performance benchmark harness
         run: python3 bench/bench.py ./zig-out/bin/lir tests/fixtures/test.lir --repeats 3
