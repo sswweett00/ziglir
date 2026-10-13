@@ -405,6 +405,21 @@ pub const IRCodegen = struct {
                 self.emit8(0x29);
                 self.emit8(0xC8); // sub rax, rcx
             },
+            .bit_and => {
+                self.emit8(0x48);
+                self.emit8(0x21);
+                self.emit8(0xC8); // and rax, rcx
+            },
+            .bit_or => {
+                self.emit8(0x48);
+                self.emit8(0x09);
+                self.emit8(0xC8); // or rax, rcx
+            },
+            .bit_xor => {
+                self.emit8(0x48);
+                self.emit8(0x31);
+                self.emit8(0xC8); // xor rax, rcx
+            },
             .mul => {
                 self.emit8(0x48);
                 self.emit8(0x0F);
@@ -854,7 +869,7 @@ pub const IRCodegen = struct {
             },
 
             // ── Arithmetic ──
-            .add, .sub, .mul, .div, .@"mod", .shl, .shr, .cmp_eq, .cmp_ne, .cmp_lt, .cmp_le, .cmp_gt, .cmp_ge => {
+            .add, .sub, .mul, .div, .@"mod", .shl, .shr, .bit_and, .bit_or, .bit_xor, .cmp_eq, .cmp_ne, .cmp_lt, .cmp_le, .cmp_gt, .cmp_ge => {
                 // Keep lhs in rax and load rhs directly into rcx. The previous
                 // sequence used push/pop plus xchg for every operation; this
                 // removes three instructions and avoids touching the stack.
@@ -870,6 +885,13 @@ pub const IRCodegen = struct {
                 self.emit8(0x48);
                 self.emit8(0xF7);
                 self.emit8(0xD8); // neg rax
+                self.storeVreg(inst.dest);
+            },
+            .bit_not => {
+                self.loadVreg(inst.src1);
+                self.emit8(0x48);
+                self.emit8(0xF7);
+                self.emit8(0xD0); // not rax
                 self.storeVreg(inst.dest);
             },
             .logic_not => {
