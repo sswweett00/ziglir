@@ -352,8 +352,16 @@ const Compiler_ = struct {
         // Phase 1: Lex
         var lexer = lex.Lexer.init(self.source);
         lexer.tokenize();
-        if (lexer.overflowed) return error.TooManyTokens;
-        if (lexer.invalid) return error.InvalidToken;
+        if (lexer.overflowed) {
+            printErr("Lexical error: token capacity exceeded (maximum 4096 tokens)\n");
+            return error.TooManyTokens;
+        }
+        if (lexer.invalid) {
+            printErr("Lexical error at line ");
+            printUsize(lexer.invalid_line);
+            printErr(": invalid character or unterminated string literal\n");
+            return error.InvalidToken;
+        }
 
         // Phase 2: Parse
         var ast = AST.init();
@@ -361,8 +369,16 @@ const Compiler_ = struct {
         parser_inst.parse();
         if (parser_inst.invalid_syntax) return error.InvalidSyntax;
         if (parser_inst.unsupported_float_literal) return error.UnsupportedFloatLiteral;
-        if (ast.overflowed) return error.TooManyASTNodes;
-        if (parser_inst.invalid_integer_literal) return error.InvalidIntegerLiteral;
+        if (ast.overflowed) {
+            printErr("Parse error: AST or struct metadata capacity exceeded\n");
+            return error.TooManyASTNodes;
+        }
+        if (parser_inst.invalid_integer_literal) {
+            printErr("Integer literal error at line ");
+            printUsize(parser_inst.invalid_integer_line);
+            printErr(": malformed or outside the supported i64 range\n");
+            return error.InvalidIntegerLiteral;
+        }
 
         // Phase 2.5: Optimize the AST
         var optimizer = Optimizer.init(&ast, self.source);
