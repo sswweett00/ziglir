@@ -15,6 +15,7 @@ const optimizer_mod = @import("optimizer.zig");
 const ir_mod = @import("ir.zig");
 const ir_gen_mod = @import("ir_gen.zig");
 const ir_codegen_mod = @import("ir_codegen.zig");
+const ir_verify_mod = @import("ir_verify.zig");
 
 // Re-export public types for tests and external use
 pub const TokenKind = lex.TokenKind;
@@ -393,6 +394,10 @@ const Compiler_ = struct {
             printErr("IR generation error: string table capacity exceeded\n");
             return error.StringTableOverflow;
         }
+        ir_verify_mod.verify(&ir_gen.mod, self.source) catch |err| {
+            printErr("IR verification failed before code generation\n");
+            return err;
+        };
 
         // Phase 3: Codegen from IR
         const ir_cg = std.heap.page_allocator.create(ir_codegen_mod.IRCodegen) catch return error.OutOfMemory;
