@@ -8,7 +8,9 @@ LIR is a systems programming language designed for:
 - **Fearless concurrency** — compile-time data race prevention
 - **Native speed** — compiles to native machine code
 - **Self-contained** — no external dependencies needed
-- **Cross-platform** — Linux, macOS, Windows, WASM, embedded
+- **Cross-platform** — intended to target Linux, macOS, Windows, WASM, and embedded systems
+
+These are language design goals, not a claim that every feature is implemented in the current compiler. The checked-in bootstrap compiler currently emits Linux x86-64 ELF executables. Cross-platform backends, complete static type checking, and enforced ownership/borrow checking must be treated as incomplete until implemented and covered by tests. See the roadmap for implementation status.
 
 ## Design Principles
 
