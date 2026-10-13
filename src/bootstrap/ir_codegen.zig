@@ -266,6 +266,8 @@ pub const IRCodegen = struct {
             @memcpy(patch.name_buf[0..patch.name_len], name[0..patch.name_len]);
             self.call_patches[self.call_patch_count] = patch;
             self.call_patch_count += 1;
+        } else {
+            self.overflowed = true;
         }
         self.emit32(0); // placeholder
     }
@@ -284,6 +286,8 @@ pub const IRCodegen = struct {
                 .string_offset = self.string_offsets[string_idx],
             };
             self.patch_count += 1;
+        } else {
+            self.overflowed = true;
         }
     }
 
@@ -649,6 +653,11 @@ pub const IRCodegen = struct {
     // ═══════════════════════════════════════════════════════════
 
     pub fn compile(self: *IRCodegen) void {
+        // Fixed-capacity metadata must fail explicitly rather than indexing past its end.
+        if (self.ir.fn_count > self.fns.len) {
+            self.overflowed = true;
+            return;
+        }
         // Collect function info
         for (0..self.ir.fn_count) |i| {
             const f = &self.ir.fns[i];
@@ -734,6 +743,10 @@ pub const IRCodegen = struct {
             self.storeRegToSlot(ARG_REGS[pi], ir_fn.param_slots[pi]);
         }        // Reset patch list and block offsets
         self.patch_count_fn = 0;
+        if (ir_fn.block_count > self.block_offsets.len) {
+            self.overflowed = true;
+            return;
+        }
         self.block_count = ir_fn.block_count;
         for (0..self.block_offsets.len) |bi| self.block_offsets[bi] = 0;
         for (0..ir_fn.block_count) |bi| {
