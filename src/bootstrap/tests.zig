@@ -52,6 +52,28 @@ test "AST struct lookup rejects out-of-range source spans" {
     try std.testing.expect(ast.findStructByName("abc", std.math.maxInt(u32), 4) == null);
 }
 
+
+test "unsupported parameter types fail closed" {
+    var compiler = main.Compiler.init("fn id(x: i32) -> i64 { return x }", "<test>");
+    try std.testing.expectError(error.InvalidSyntax, compiler.compile());
+}
+
+test "unsupported return types fail closed" {
+    var compiler = main.Compiler.init("fn main() -> u64 { return 0 }", "<test>");
+    try std.testing.expectError(error.InvalidSyntax, compiler.compile());
+}
+
+test "unsupported struct field types fail closed" {
+    const source =
+        \\struct Point {
+        \\    x: i32
+        \\}
+        \\fn main() -> i64 { return 0 }
+    ;
+    var compiler = main.Compiler.init(source, "<test>");
+    try std.testing.expectError(error.InvalidSyntax, compiler.compile());
+}
+
 test "lexer tokenizes basic LIR" {
     const source =
         \\fn main() -> i64 {
