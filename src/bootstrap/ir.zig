@@ -45,6 +45,7 @@ pub const IROp = enum {
     jump, // goto target_block
     cond_jump, // if src goto target_block else goto alt_block
     ret, // return src
+    unreachable_trap, // trap if control reaches a statically unreachable point
     // Calls
     call, // dest = call name(args...)
     // Builtins as first-class IR ops
