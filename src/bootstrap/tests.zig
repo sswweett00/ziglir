@@ -561,3 +561,27 @@ test "IR verifier rejects invalid string references" {
 
     try std.testing.expectError(error.InvalidStringIndex, ir_verify.verify(module, "fn"));
 }
+
+
+test "IR verifier rejects local slots outside the declared frame" {
+    const module = try std.testing.allocator.create(ir_mod.IRModule);
+    defer std.testing.allocator.destroy(module);
+    module.init();
+    module.fn_count = 1;
+    module.fns[0] = .{ .name_start = 0, .name_len = 2, .block_count = 1, .total_locals = 1 };
+    module.fns[0].blocks[0] = .{ .label = 0, .inst_count = 1 };
+    module.fns[0].blocks[0].insts[0] = .{ .op = .load_local, .dest = 1, .slot = 2 };
+
+    try std.testing.expectError(error.InvalidLocalSlot, ir_verify.verify(module, "fn"));
+}
+
+test "IR verifier rejects stack frames above backend safety limit" {
+    const module = try std.testing.allocator.create(ir_mod.IRModule);
+    defer std.testing.allocator.destroy(module);
+    module.init();
+    module.fn_count = 1;
+    module.fns[0] = .{ .name_start = 0, .name_len = 2, .block_count = 1, .total_locals = 2_000_000 };
+    module.fns[0].blocks[0] = .{ .label = 0, .inst_count = 0 };
+
+    try std.testing.expectError(error.StackFrameTooLarge, ir_verify.verify(module, "fn"));
+}
