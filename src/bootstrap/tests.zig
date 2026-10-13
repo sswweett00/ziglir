@@ -168,6 +168,12 @@ test "AST node capacity exhaustion is reported without out-of-bounds access" {
     try std.testing.expect(ast.overflowed);
 }
 
+test "compiler reports malformed syntax without exiting the test process" {
+    const source = "fn main( {";
+    var compiler = main.Compiler.init(source, "<test>");
+    try std.testing.expectError(error.InvalidSyntax, compiler.compile());
+}
+
 test "compiler reports undefined function calls without exiting the test process" {
     const source =
         \\fn main() {
