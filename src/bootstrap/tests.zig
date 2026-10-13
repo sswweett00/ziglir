@@ -588,6 +588,30 @@ test "IR verifier rejects stack frames above backend safety limit" {
 }
 
 
+
+test "low-level bitwise and shift operators reach native code generation" {
+    const source =
+        \\fn main() -> i64 {
+        \\    return ((6 & 3) | (1 << 2)) ^ (~0)
+        \\}
+    ;
+    const elf = try compileSource(source);
+    defer std.testing.allocator.free(elf);
+    try std.testing.expect(elf.len > 4);
+    try std.testing.expectEqualSlices(u8, "\x7fELF", elf[0..4]);
+}
+
+test "lexer distinguishes shift operators from comparisons" {
+    var lexer = lexer_mod.Lexer.init("1 << 2 >> 1 <= 4 >= 2");
+    lexer.tokenize();
+    const expected = [_]lexer_mod.TokenKind{
+        .int_literal, .lshift, .int_literal, .rshift, .int_literal,
+        .le, .int_literal, .ge, .int_literal, .eof,
+    };
+    try std.testing.expectEqual(expected.len, lexer.token_count);
+    for (expected, 0..) |kind, i| try std.testing.expectEqual(kind, lexer.get(@intCast(i)).kind);
+}
+
 test "lexer recognizes low-level systems keywords without splitting identifiers" {
     const source = "unsafe volatile asm align packed union unreachable as isize usize i128 u128 never unsafe_mode";
     var lexer = lexer_mod.Lexer.init(source);
