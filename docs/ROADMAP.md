@@ -2,7 +2,7 @@
 
 ## Architecture and release gates
 
-The implementation sequence and mandatory correctness/performance gates are specified in [Compiler Architecture](COMPILER_ARCHITECTURE.md). Roadmap checkboxes are not evidence of correctness by themselves: mark an item complete only after its tests run successfully in CI and the behavior is integrated end-to-end.
+The implementation sequence and mandatory correctness/performance gates are specified in [Compiler Architecture](COMPILER_ARCHITECTURE.md). The complete low-level language contract (including pointer/memory semantics, ABI/layout, hardware facilities, safety modes, tooling, and release gates) is in [Low-Level Language Specification](LOW_LEVEL_LANGUAGE.md). Roadmap checkboxes are not evidence of correctness by themselves: mark an item complete only after its tests run successfully in CI and the behavior is integrated end-to-end.
 
 Release blockers include unchecked capacity/offset arithmetic, process termination from reusable compiler stages, silent acceptance of unsupported syntax, invalid IR reaching code generation, incorrect ABI/register/stack behavior, and non-atomic executable output.
 
