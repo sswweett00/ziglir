@@ -8,7 +8,7 @@
 
 ## What is LIR?
 
-LIR is a systems-language project aiming to combine a small, approachable syntax with predictable memory use and highly optimized native code. Its long-term performance goal is to outperform C on selected, benchmarked workloads without sacrificing correctness or readability. That is a goal to prove with reproducible measurements—not a universal speed guarantee. The checked-in bootstrap compiler currently targets Linux x86-64 ELF; features listed as design goals are not necessarily implemented yet.
+LIR is a systems-language project aiming to combine a small, approachable syntax with predictable memory use and highly optimized native code. Its long-term performance goal is to outperform C on selected, benchmarked workloads without sacrificing correctness or readability. That is a goal to prove with reproducible measurements—not a universal speed guarantee. The checked-in bootstrap compiler currently targets Linux x86-64 ELF; features listed as design goals are not necessarily implemented yet. The intended low-level feature contract and staged implementation gates are documented in [Low-Level Language Specification](docs/LOW_LEVEL_LANGUAGE.md); that document explicitly distinguishes design requirements from implemented features.
 
 ### Design principles
 
