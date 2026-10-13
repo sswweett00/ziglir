@@ -992,6 +992,8 @@ pub const IRCodegen = struct {
                 if (self.printint_patch_count < self.printint_patches.len) {
                     self.printint_patches[self.printint_patch_count] = patch;
                     self.printint_patch_count += 1;
+                } else {
+                    self.overflowed = true;
                 }
                 if (inst.dest != 0) {
                     self.xorReg(0, 0);
@@ -1308,6 +1310,8 @@ pub const IRCodegen = struct {
                 if (self.printint_patch_count < self.printint_patches.len) {
                     self.printint_patches[self.printint_patch_count] = patch;
                     self.printint_patch_count += 1;
+                } else {
+                    self.overflowed = true;
                 }
                 if (inst.dest != 0) {
                     self.xorReg(0, 0);
