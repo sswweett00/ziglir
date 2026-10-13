@@ -144,6 +144,7 @@ pub const IRModule = struct {
     string_offsets: [256]u32 = undefined,
     string_lens: [256]u32 = undefined,
     string_count: u32 = 0,
+    string_overflowed: bool = false,
     // Struct definitions (carried through from AST)
     struct_defs: [128]StructInfo,
     struct_count: u32 = 0,
@@ -155,32 +156,54 @@ pub const IRModule = struct {
         self.fn_count = 0;
         self.string_len = 0;
         self.string_count = 0;
+        self.string_overflowed = false;
         self.struct_count = 0;
         self.source_count = 0;
     }
 
     pub fn addString(self: *IRModule, str: []const u8) u32 {
-        // Deduplicate
+        // Keep all metadata and byte writes within their fixed-capacity tables.
+        // A failed insertion is sticky; the compiler checks this flag after IR
+        // generation and rejects the module instead of emitting corrupt code.
+        if (self.string_overflowed) return 0;
+        if (self.string_count > self.string_offsets.len or
+            self.string_len > self.strings.len)
+        {
+            self.string_overflowed = true;
+            return 0;
+        }
+
+        // Deduplicate only entries whose stored ranges are valid.
         var i: u32 = 0;
         while (i < self.string_count) : (i += 1) {
-            if (self.string_lens[i] == str.len) {
-                const existing = self.strings[self.string_offsets[i]..][0..str.len];
-                if (eql(existing, str)) return i;
+            const idx: usize = i;
+            const off: usize = self.string_offsets[idx];
+            const len: usize = self.string_lens[idx];
+            if (off <= self.string_len and len <= self.string_len - off and len == str.len) {
+                if (eql(self.strings[off..][0..len], str)) return i;
             }
         }
+
+        const needed = std.math.add(usize, str.len, 1) catch {
+            self.string_overflowed = true;
+            return 0;
+        };
+        const used: usize = self.string_len;
+        if (@as(usize, self.string_count) >= self.string_offsets.len or
+            used > self.strings.len or needed > self.strings.len - used)
+        {
+            self.string_overflowed = true;
+            return 0;
+        }
+
         const idx = self.string_count;
         const off = self.string_len;
-        for (str) |ch| {
-            self.strings[self.string_len] = ch;
-            self.string_len += 1;
-        }
-        self.strings[self.string_len] = 0;
-        self.string_len += 1;
-        if (self.string_count < 256) {
-            self.string_offsets[self.string_count] = off;
-            self.string_lens[self.string_count] = @intCast(str.len);
-            self.string_count += 1;
-        }
+        @memcpy(self.strings[used..][0..str.len], str);
+        self.strings[used + str.len] = 0;
+        self.string_len += @intCast(needed);
+        self.string_offsets[idx] = off;
+        self.string_lens[idx] = @intCast(str.len);
+        self.string_count += 1;
         return idx;
     }
 
