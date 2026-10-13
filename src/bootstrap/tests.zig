@@ -158,6 +158,16 @@ test "parser rejects malformed integer separators" {
     try std.testing.expect(parser.invalid_integer_literal);
 }
 
+test "compiler reports undefined function calls without exiting the test process" {
+    const source =
+        \\fn main() {
+        \\    missing_function()
+        \\}
+    ;
+    var compiler = main.Compiler.init(source, "<test>");
+    try std.testing.expectError(error.UndefinedFunctionCall, compiler.compile());
+}
+
 test "codegen produces ELF header" {
     const elf = try compileSource(
         \\fn main() -> i64 {
