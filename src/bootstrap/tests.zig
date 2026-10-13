@@ -45,6 +45,38 @@ test "lexer tokenizes basic LIR" {
     try std.testing.expectEqual(main.TokenKind.identifier, lexer.get(1).kind);
 }
 
+test "lexer get handles out of bounds index" {
+    const source = "let x = 42";
+    var lexer = main.Lexer.init(source);
+    lexer.tokenize();
+
+    try std.testing.expect(lexer.token_count > 0);
+    const valid_tok = lexer.get(0);
+    try std.testing.expectEqual(main.TokenKind.kw_let, valid_tok.kind);
+
+    // Test idx == token_count
+    const eof_at_count = lexer.get(lexer.token_count);
+    try std.testing.expectEqual(main.TokenKind.eof, eof_at_count.kind);
+    try std.testing.expectEqual(@as(u32, 0), eof_at_count.start);
+    try std.testing.expectEqual(@as(u32, 0), eof_at_count.len);
+    try std.testing.expectEqual(@as(u32, 0), eof_at_count.line);
+
+    // Test idx > token_count
+    const eof_beyond = lexer.get(lexer.token_count + 100);
+    try std.testing.expectEqual(main.TokenKind.eof, eof_beyond.kind);
+    try std.testing.expectEqual(@as(u32, 0), eof_beyond.start);
+    try std.testing.expectEqual(@as(u32, 0), eof_beyond.len);
+    try std.testing.expectEqual(@as(u32, 0), eof_beyond.line);
+
+    // Test un-tokenized lexer (token_count == 0)
+    const uninit_lexer = main.Lexer.init(source);
+    const eof_uninit = uninit_lexer.get(0);
+    try std.testing.expectEqual(main.TokenKind.eof, eof_uninit.kind);
+    try std.testing.expectEqual(@as(u32, 0), eof_uninit.start);
+    try std.testing.expectEqual(@as(u32, 0), eof_uninit.len);
+    try std.testing.expectEqual(@as(u32, 0), eof_uninit.line);
+}
+
 test "lexer recognizes all operator tokens" {
     const source = "+ - * / % == != < > <= >= = += -= *= /= && || !";
     var lexer = main.Lexer.init(source);
