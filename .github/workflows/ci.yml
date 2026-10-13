@@ -19,8 +19,11 @@ jobs:
         with:
           version: 0.13.0
 
-      - name: Run Unit Tests
+      - name: Run Unit Tests (Debug)
         run: zig build test
+
+      - name: Run Unit Tests (ReleaseSafe)
+        run: zig build test -Doptimize=ReleaseSafe
 
       - name: Build LIR Compiler (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
