@@ -1,0 +1,10 @@
+fn main() {
+    let arr = @array_new(5, 8)
+    @array_set(arr, 0, 10)
+    @array_set(arr, 1, 20)
+    @array_set(arr, 2, 30)
+    printInt(@array_len(arr))
+    printInt(@array_get(arr, 0))
+    printInt(@array_get(arr, 1))
+    printInt(@array_get(arr, 2))
+}
