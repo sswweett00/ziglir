@@ -359,6 +359,7 @@ const Compiler_ = struct {
         var ast = AST.init();
         var parser_inst = parser_mod.Parser{ .lex = &lexer, .pos = 0, .ast = &ast, .src = self.source };
         parser_inst.parse();
+        if (ast.overflowed) return error.TooManyASTNodes;
         if (parser_inst.invalid_integer_literal) return error.InvalidIntegerLiteral;
 
         // Phase 2.5: Optimize the AST
