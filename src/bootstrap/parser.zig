@@ -12,7 +12,6 @@ const Lexer = lex.Lexer;
 const eql = util.eql;
 const printErr = util.printErr;
 const printUsize = util.printUsize;
-const sysExit = util.sysExit;
 
 pub const NodeKind = enum {
     fn_decl,
@@ -208,6 +207,7 @@ pub const Parser = struct {
     invalid_integer_literal: bool = false,
     invalid_integer_line: u32 = 0,
     invalid_syntax: bool = false,
+    unsupported_float_literal: bool = false,
 
     fn peek(self: *const Parser) Token {
         return self.lex.get(self.pos);
@@ -631,7 +631,9 @@ pub const Parser = struct {
             printErr("Compile error at line ");
             printUsize(tok.line);
             printErr(": float literals are not yet supported in codegen\n");
-            sysExit(1);
+            self.unsupported_float_literal = true;
+            _ = self.advance();
+            return self.ast.addNode(.int_literal, tok.line);
         }
 
         if (self.match(.string_literal)) {
