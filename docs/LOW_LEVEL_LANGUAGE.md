@@ -198,3 +198,8 @@ The syntax sketches are not a promise of current support. Before implementation,
 The bootstrap compiler now parses and lowers integer bitwise AND (&), OR (|), XOR (^), complement (~), left shift (<<), and arithmetic right shift (>>) through AST, IR, and the Linux x86-64 encoder. Shift operators have lower precedence than addition and higher precedence than relational comparisons; bitwise operators have separate precedence levels below equality and above logical conjunction/disjunction.
 
 The current backend uses signed 64-bit integer values, so >> is arithmetic right shift. These operators do not imply checked shift-count semantics yet; target x86-64 masks the hardware shift count. The full typed integer model and portable overflow/shift diagnostics remain future work.
+
+
+## 14. Implemented unreachable trap
+
+The `unreachable` statement is now parsed as a statement, lowered to a dedicated IR operation, and encoded as x86-64 `ud2`. Reaching it intentionally traps rather than silently returning a value. It is a runtime trap in this bootstrap implementation, not yet a proof-backed optimizer assumption or a `never` type.
