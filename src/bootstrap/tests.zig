@@ -158,6 +158,16 @@ test "parser rejects malformed integer separators" {
     try std.testing.expect(parser.invalid_integer_literal);
 }
 
+test "AST node capacity exhaustion is reported without out-of-bounds access" {
+    var ast = main.AST.init();
+    for (0..4095) |_| {
+        _ = ast.addNode(.identifier, 1);
+    }
+    try std.testing.expect(!ast.overflowed);
+    try std.testing.expectEqual(@as(u32, 0), ast.addNode(.identifier, 1));
+    try std.testing.expect(ast.overflowed);
+}
+
 test "compiler reports undefined function calls without exiting the test process" {
     const source =
         \\fn main() {
