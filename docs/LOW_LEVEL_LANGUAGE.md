@@ -142,3 +142,52 @@ A feature is not production-ready until all relevant gates pass:
 10. Add another target only after the target-independent semantic contract and backend conformance suite are stable.
 
 The priority is a small, fully implemented and testable low-level core—not a large keyword list whose constructs are ignored by the compiler.
+
+
+## 12. Proposed low-level syntax and keyword surface
+
+The bootstrap lexer now recognizes the following additional reserved words:
+
+| Keyword | Intended meaning | Implementation status |
+|---|---|---|
+| `unsafe` | Explicit scope for operations whose safety cannot be proven | Lexer only; parser, semantic rules, and codegen are not implemented |
+| `volatile` | Observable memory access for device/MMIO use | Lexer only; memory-ordering and target semantics are not implemented |
+| `asm` | Inline assembly with explicit constraints and clobbers | Lexer only; not executable syntax |
+| `align` | Explicit alignment declaration or expression | Lexer only; layout validation is not implemented |
+| `packed` | Packed aggregate layout | Lexer only; ABI and unaligned-access rules are not implemented |
+| `union` | Explicit overlapping storage | Lexer only; type checking and layout are not implemented |
+| `unreachable` | Assert that control flow cannot reach a point | Lexer only; semantics are not implemented |
+| `as` | Explicit cast syntax | Lexer only; cast validation is not implemented |
+| `isize`, `usize` | Target-pointer-width signed and unsigned integers | Lexed as type keywords; target-aware layout and codegen are not implemented |
+| `i128`, `u128` | 128-bit signed and unsigned integers | Lexed as type keywords; arithmetic and ABI support are not implemented |
+| `never` | Uninhabited return/control-flow type | Lexer only; type-system support is not implemented |
+
+These words are reserved by the lexer but are **not yet supported language features**. Until each feature has parser, semantic-analysis, IR, backend, diagnostics, and end-to-end tests, the compiler must reject its use rather than silently accept it or emit incorrect machine code.
+
+Intended syntax sketches (design examples only; currently not compilable):
+
+```lir
+unsafe {
+    // raw pointer arithmetic and other explicitly unsafe operations
+}
+
+const DEVICE: usize = 0xF000_0000;
+volatile write32(DEVICE, 1);
+
+asm("pause"); // final design must specify operands, constraints, clobbers, and ABI rules
+
+struct CacheLine align(64) {
+    packed: u64
+}
+
+union Word {
+    signed: i64,
+    unsigned: u64
+}
+
+fn checked_cast(x: i64) -> i32 {
+    return x as i32;
+}
+```
+
+The syntax sketches are not a promise of current support. Before implementation, settle precedence, grammar, layout, aliasing, volatile semantics, and target-dependent type widths in the specification.
