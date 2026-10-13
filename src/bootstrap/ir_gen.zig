@@ -272,8 +272,11 @@ pub const IRGen = struct {
         if (self.cur_fn.block_count > 0) {
             const last_block = &self.cur_fn.blocks[self.cur_block_idx];
             const last_inst: ir_mod.IRInst = if (last_block.inst_count > 0) last_block.insts[last_block.inst_count - 1] else .{ .op = .nop };
-            // Add implicit return only if the last instruction isn't already a ret
-            if (last_inst.op != .ret) {
+            // Do not append code after any terminator. In particular, unreachable
+            // must remain the final instruction instead of being followed by an implicit return.
+            const terminated = last_inst.op == .ret or last_inst.op == .jump or
+                last_inst.op == .cond_jump or last_inst.op == .unreachable_trap;
+            if (!terminated) {
                 const is_main = eql(name, "main");
                 if (is_main) {
                     self.emit(.{ .op = .ret, .src1 = 0 });
@@ -298,6 +301,11 @@ pub const IRGen = struct {
         var stmt_idx = node.child0;
         while (stmt_idx != 0) {
             self.genStmt(stmt_idx);
+            const blk = &self.cur_fn.blocks[self.cur_block_idx];
+            if (blk.inst_count > 0) {
+                const last = blk.insts[blk.inst_count - 1].op;
+                if (last == .ret or last == .jump or last == .cond_jump or last == .unreachable_trap) break;
+            }
             stmt_idx = self.ast.stmt_chains[stmt_idx];
         }
     }
