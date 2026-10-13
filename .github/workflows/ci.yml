@@ -28,15 +28,15 @@ jobs:
       - name: Test LIR Compiler
         run: |
           ./zig-out/bin/lir version
-          ./zig-out/bin/lir build test.lir -o hello_test
+          ./zig-out/bin/lir build tests/fixtures/test.lir -o hello_test
           ./hello_test
           ./zig-out/bin/lir build test_str.lir -o str_test
           ./str_test
-          ./zig-out/bin/lir build test_arr.lir -o array_test
+          ./zig-out/bin/lir build tests/fixtures/test_arr.lir -o array_test
           ./array_test
-          ./zig-out/bin/lir build test_complex.lir -o complex_test
+          ./zig-out/bin/lir build tests/fixtures/test_complex.lir -o complex_test
           ./complex_test
-          ./zig-out/bin/lir build test_concat.lir -o concat_test
+          ./zig-out/bin/lir build tests/fixtures/test_concat.lir -o concat_test
           ./concat_test
           ./zig-out/bin/lir build examples/features-demo.lir -o features_test
           ./features_test
@@ -45,7 +45,7 @@ jobs:
           test "$(./stack_pressure_test)" = "47"
 
       - name: Smoke-test performance benchmark harness
-        run: python3 bench/bench.py ./zig-out/bin/lir test.lir --repeats 3
+        run: python3 bench/bench.py ./zig-out/bin/lir tests/fixtures/test.lir --repeats 3
 
       - name: Upload LIR Binary
         uses: actions/upload-artifact@v4
