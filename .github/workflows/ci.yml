@@ -30,7 +30,7 @@ jobs:
           ./zig-out/bin/lir version
           ./zig-out/bin/lir build tests/fixtures/test.lir -o hello_test
           ./hello_test
-          ./zig-out/bin/lir build test_str.lir -o str_test
+          ./zig-out/bin/lir build tests/fixtures/test_str.lir -o str_test
           ./str_test
           ./zig-out/bin/lir build tests/fixtures/test_arr.lir -o array_test
           ./array_test
