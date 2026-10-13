@@ -33,22 +33,27 @@ LIR is a systems-language project aiming to combine a small, approachable syntax
 
 ## Quick Start
 
+The bootstrap compiler is built with **Zig 0.13.0** and currently targets Linux x86-64.
+
 ```bash
-# Install (just download the binary — no dependencies!)
 git clone https://github.com/sswweett00/ziglir.git
 cd ziglir
 
-# Create a new project
-lir init myproject
+# Build the compiler and run its unit tests
+zig build -Doptimize=ReleaseFast
+zig build test
+
+# Compile and run a checked-in example
+./zig-out/bin/lir build tests/fixtures/test.lir -o /tmp/lir-example
+/tmp/lir-example
+
+# Optional: generate a starter project
+./zig-out/bin/lir init myproject
 cd myproject
-
-# Build and run
-lir build
-lir run
-
-# Run tests
-lir test
+../zig-out/bin/lir build src/main.lir -o myproject
+./myproject
 ```
+
 
 ## Hello World
 
@@ -61,9 +66,11 @@ fn main() -> i64 {
 }
 ```
 
-## Features
+## Language design examples
 
-### Memory Safety Without Garbage Collection
+The examples below illustrate intended syntax and are **not a promise that every feature currently compiles**. The implemented subset is defined by the compiler, tests, and [language specification](docs/SPEC.md).
+
+### Ownership and memory safety (planned; not enforced comprehensively yet)
 
 ```lir
 fn main() {
@@ -74,7 +81,7 @@ fn main() {
 }
 ```
 
-### Concurrency (design direction; implementation status varies)
+### Concurrency (planned; not implemented as a stable feature)
 
 ```lir
 import core
@@ -91,7 +98,7 @@ fn main() {
 }
 ```
 
-### Compile-Time Execution (planned language capability)
+### Compile-time execution (planned; not implemented)
 
 ```lir
 comptime fn fibonacci(n: u64) -> u64 {
@@ -102,7 +109,7 @@ comptime fn fibonacci(n: u64) -> u64 {
 const TABLE_SIZE = fibonacci(10)  // Computed at compile time!
 ```
 
-### Pattern Matching (planned language capability)
+### Pattern matching (planned; not implemented)
 
 ```lir
 match value {
