@@ -15,6 +15,9 @@ pub const VerifyError = error{
     InvalidStructNameRange,
     InvalidStructFieldCount,
     InvalidStructLayout,
+    InvalidLocalSlot,
+    InvalidParameterSlot,
+    StackFrameTooLarge,
 };
 
 fn validRange(source: []const u8, start: u32, len: u32) bool {
@@ -49,6 +52,31 @@ pub fn verify(module: *const ir.IRModule, source: []const u8) VerifyError!void {
         if (!validRange(source, function.name_start, function.name_len)) return error.InvalidFunctionNameRange;
         if (function.block_count == 0 or function.block_count > function.blocks.len) return error.InvalidBlockCount;
         if (function.param_count > function.param_slots.len) return error.InvalidBlockCount;
+        for (function.param_slots[0..function.param_count]) |slot| {
+            if (slot == 0 or slot > function.total_locals) return error.InvalidParameterSlot;
+        }
+
+        // Bound the current backend's combined local/register stack frame before
+        // its u32 size arithmetic and signed stack displacement calculations.
+        var max_vreg: u32 = 0;
+        for (function.blocks[0..function.block_count]) |*block| {
+            if (block.inst_count > block.insts.len) return error.InvalidInstructionCount;
+            for (block.insts[0..block.inst_count]) |inst| {
+                max_vreg = @max(max_vreg, inst.dest);
+                max_vreg = @max(max_vreg, inst.src1);
+                max_vreg = @max(max_vreg, inst.src2);
+                if (inst.arg_count > inst.args.len) return error.InvalidCallArgumentCount;
+                for (inst.args[0..inst.arg_count]) |arg| max_vreg = @max(max_vreg, arg);
+                switch (inst.op) {
+                    .load_local, .store_local, .addr_of => {
+                        if (inst.slot == 0 or inst.slot > function.total_locals) return error.InvalidLocalSlot;
+                    },
+                    else => {},
+                }
+            }
+        }
+        const stack_slots = @as(u64, function.total_locals) + max_vreg;
+        if (stack_slots > (16 * 1024 * 1024) / 8) return error.StackFrameTooLarge;
 
         for (function.blocks[0..function.block_count]) |*block| {
             if (block.inst_count > block.insts.len) return error.InvalidInstructionCount;
