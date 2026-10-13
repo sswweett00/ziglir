@@ -996,7 +996,7 @@ pub const IRGen = struct {
 fn blockHasTerminator(blk: IRBlock) bool {
     if (blk.inst_count == 0) return false;
     const last = blk.insts[blk.inst_count - 1];
-    return last.op == .ret or last.op == .jump or last.op == .cond_jump;
+    return last.op == .ret or last.op == .jump or last.op == .cond_jump or last.op == .unreachable_trap;
 }
 
 fn tokenToBinop(op: TokenKind) ?IROp {
