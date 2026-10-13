@@ -5,28 +5,13 @@ const std = @import("std");
 const main = @import("main.zig");
 
 fn compileSource(source: []const u8) ![]u8 {
-    var lexer = main.Lexer.init(source);
-    lexer.tokenize();
+    // Exercise the same AST -> IR -> ELF pipeline used by the production CLI.
+    // Tests must not silently validate the legacy AST code generator instead.
+    var compiler = main.Compiler.init(source, "<test>");
+    const output = try compiler.compile();
+    defer std.heap.page_allocator.free(output);
 
-    var ast = main.AST.init();
-    var parser = main.Parser{ .lex = &lexer, .pos = 0, .ast = &ast, .src = source };
-    parser.parse();
-
-    // Phase 2.5: Optimize the AST
-    var optimizer = main.Optimizer.init(&ast, source);
-    optimizer.optimize();
-
-    var cg = main.Codegen.init(source, &ast);
-    cg.compile();
-    cg.patchStrings();
-    cg.peepholeOptimize();
-
-    var output: [262144]u8 = undefined;
-    const size = cg.generateELF(&output);
-
-    const result = try std.testing.allocator.alloc(u8, size);
-    @memcpy(result, output[0..size]);
-    return result;
+    return try std.testing.allocator.dupe(u8, output);
 }
 
 test "lexer tokenizes basic LIR" {
