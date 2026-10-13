@@ -203,3 +203,8 @@ The current backend uses signed 64-bit integer values, so >> is arithmetic right
 ## 14. Implemented unreachable trap
 
 The `unreachable` statement is now parsed as a statement, lowered to a dedicated IR operation, and encoded as x86-64 `ud2`. Reaching it intentionally traps rather than silently returning a value. It is a runtime trap in this bootstrap implementation, not yet a proof-backed optimizer assumption or a `never` type.
+
+
+### Terminator correctness
+
+The IR generator stops lowering a statement list after a terminator and does not append an implicit return after the unreachable statement. This prevents the trap from being treated as an ordinary non-terminal instruction. A regression test covers an unreachable statement followed by a return.
