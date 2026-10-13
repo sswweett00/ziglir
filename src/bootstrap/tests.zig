@@ -6,6 +6,7 @@ const main = @import("main.zig");
 const parser_mod = @import("parser.zig");
 const ir_mod = @import("ir.zig");
 const ir_verify = @import("ir_verify.zig");
+const lexer_mod = @import("lexer.zig");
 
 fn compileSource(source: []const u8) ![]u8 {
     // Exercise the same AST -> IR -> ELF pipeline used by the production CLI.
@@ -584,4 +585,21 @@ test "IR verifier rejects stack frames above backend safety limit" {
     module.fns[0].blocks[0] = .{ .label = 0, .inst_count = 0 };
 
     try std.testing.expectError(error.StackFrameTooLarge, ir_verify.verify(module, "fn"));
+}
+
+
+test "lexer recognizes low-level systems keywords without splitting identifiers" {
+    const source = "unsafe volatile asm align packed union unreachable as isize usize i128 u128 never unsafe_mode";
+    var lexer = lexer_mod.Lexer.init(source);
+    lexer.tokenize();
+
+    const expected = [_]lexer_mod.TokenKind{
+        .kw_unsafe, .kw_volatile, .kw_asm, .kw_align, .kw_packed, .kw_union,
+        .kw_unreachable, .kw_as, .kw_isize, .kw_usize, .kw_i128, .kw_u128,
+        .kw_never, .identifier,
+    };
+    try std.testing.expectEqual(expected.len, lexer.token_count);
+    for (expected, 0..) |kind, i| {
+        try std.testing.expectEqual(kind, lexer.get(@intCast(i)).kind);
+    }
 }
