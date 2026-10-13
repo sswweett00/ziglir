@@ -1437,6 +1437,10 @@ pub const IRCodegen = struct {
     }
 
     pub fn generateELF(self: *IRCodegen, output: []u8) usize {
+        // This API is public and must not assume its caller allocated the exact
+        // size returned by requiredOutputSize(). Fail safely on undersized buffers.
+        if (output.len < self.requiredOutputSize()) return 0;
+
         var pos: usize = 0;
         const header_size: u64 = 64;
         const phdr_size: u64 = 56;
