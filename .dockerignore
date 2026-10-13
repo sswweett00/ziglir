@@ -1,7 +1,40 @@
+# Git metadata and local caches
 .git
 .zig-cache
+zig-cache
 zig-out
+
+# Temporary output and native build artifacts
 tmp
+*.o
+*.obj
+*.s
+*.asm
 *.out
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.pdb
+*.ilk
+*.bin
+
+# Generated binaries and local test artifacts
+hello
+test_file
+test_file*
 mytest
 t_*
+lir_test*
+hello_test
+str_test
+stack_pressure_test
+test_output.txt
+
+# Local tooling, agents and dependency caches
+.kilo
+.freebuff
+node_modules
+target
