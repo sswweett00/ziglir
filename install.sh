@@ -2,7 +2,7 @@
 set -e
 
 # LIR Language Installer
-# Usage: curl -sSL https://lir-lang.dev/install.sh | sh
+# Usage: run from a checkout with `sh install.sh`, or pipe this script from a trusted source
 
 echo "Installing LIR Language..."
 
@@ -39,7 +39,7 @@ else
 
     echo "Fetching LIR repository..."
     if command -v git >/dev/null 2>&1; then
-        git clone --depth 1 https://github.com/lir-lang/lir.git "$TMP_DIR/lir"
+        git clone --depth 1 https://github.com/sswweett00/ziglir.git "$TMP_DIR/lir"
         cd "$TMP_DIR/lir"
     else
         echo "Error: git is required to clone LIR source repository."
