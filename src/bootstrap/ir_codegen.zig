@@ -3,6 +3,12 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
+
+fn stringHash(bytes: []const u8) u64 {
+    var hash: u64 = 14695981039346656037;
+    for (bytes) |byte| hash = (hash ^ byte) *% 1099511628211;
+    return hash;
+}
 const util = @import("util.zig");
 const lex = @import("lexer.zig");
 const parser = @import("parser.zig");
@@ -67,6 +73,8 @@ pub const IRCodegen = struct {
     patch_count: u32,
     string_offsets: [256]u32,
     string_lens: [256]u32,
+    string_hashes: [256]u64,
+    string_hash_slots: [512]u16,
     string_count: u32,
 
     src: []const u8,
@@ -105,6 +113,7 @@ pub const IRCodegen = struct {
         self.rodata_len = 0;
         self.patch_count = 0;
         self.string_count = 0;
+        @memset(&self.string_hash_slots, 0);
         self.src = source;
         self.ir = module;
         self.fn_count = 0;
@@ -525,27 +534,46 @@ pub const IRCodegen = struct {
     // ═══════════════════════════════════════════════════════════
 
     fn addString(self: *IRCodegen, str: []const u8) u32 {
-        var i: u32 = 0;
-        while (i < self.string_count) : (i += 1) {
-            if (self.string_lens[i] == str.len) {
-                var found = true;
-                for (0..str.len) |j| {
-                    if (self.rodata[self.string_offsets[i] + j] != str[j]) {
-                        found = false;
-                        break;
-                    }
-                }
-                if (found) return i;
+        if (self.overflowed) return 0;
+        const hash = stringHash(str);
+        var bucket: usize = @intCast(hash & 511);
+        while (true) {
+            const entry = self.string_hash_slots[bucket];
+            if (entry == 0) break;
+            const idx: usize = @as(usize, entry) - 1;
+            if (idx >= self.string_count) {
+                self.overflowed = true;
+                return 0;
             }
+            const off: usize = self.string_offsets[idx];
+            const len: usize = self.string_lens[idx];
+            if (self.string_hashes[idx] == hash and len == str.len and
+                off <= self.rodata_len and len <= self.rodata_len - off and
+                std.mem.eql(u8, self.rodata[off..][0..len], str))
+            {
+                return @intCast(idx);
+            }
+            bucket = (bucket + 1) & 511;
         }
-        if (@as(usize, self.string_count) >= self.string_offsets.len or str.len + 1 > self.rodata.len - @as(usize, self.rodata_len)) { self.overflowed = true; return 0; }
+
+        if (@as(usize, self.string_count) >= self.string_offsets.len or
+            @as(usize, self.rodata_len) > self.rodata.len or
+            str.len >= self.rodata.len - @as(usize, self.rodata_len))
+        {
+            self.overflowed = true;
+            return 0;
+        }
         const idx = self.string_count;
         const off = self.rodata_len;
-        for (str) |ch| { self.rodata[self.rodata_len] = ch; self.rodata_len += 1; }
-        self.rodata[self.rodata_len] = 0;
-        self.rodata_len += 1;
-        self.string_offsets[self.string_count] = off;
-        self.string_lens[self.string_count] = @intCast(str.len);
+        @memcpy(self.rodata[@as(usize, off)..][0..str.len], str);
+        self.rodata[@as(usize, off) + str.len] = 0;
+        self.rodata_len += @intCast(str.len + 1);
+        self.string_offsets[idx] = off;
+        self.string_lens[idx] = @intCast(str.len);
+        self.string_hashes[idx] = hash;
+        bucket = @intCast(hash & 511);
+        while (self.string_hash_slots[bucket] != 0) : (bucket = (bucket + 1) & 511) {}
+        self.string_hash_slots[bucket] = @intCast(idx + 1);
         self.string_count += 1;
         return idx;
     }
