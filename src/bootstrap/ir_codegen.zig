@@ -522,7 +522,7 @@ pub const IRCodegen = struct {
                 if (found) return i;
             }
         }
-        if (self.string_count >= self.string_offsets.len or str.len + 1 > self.rodata.len - @as(usize, self.rodata_len)) { self.overflowed = true; return 0; }
+        if (@as(usize, self.string_count) >= self.string_offsets.len or str.len + 1 > self.rodata.len - @as(usize, self.rodata_len)) { self.overflowed = true; return 0; }
         const idx = self.string_count;
         const off = self.rodata_len;
         for (str) |ch| { self.rodata[self.rodata_len] = ch; self.rodata_len += 1; }
@@ -654,7 +654,7 @@ pub const IRCodegen = struct {
 
     pub fn compile(self: *IRCodegen) void {
         // Fixed-capacity metadata must fail explicitly rather than indexing past its end.
-        if (self.ir.fn_count > self.fns.len) {
+        if (@as(usize, self.ir.fn_count) > self.fns.len) {
             self.overflowed = true;
             return;
         }
@@ -743,7 +743,7 @@ pub const IRCodegen = struct {
             self.storeRegToSlot(ARG_REGS[pi], ir_fn.param_slots[pi]);
         }        // Reset patch list and block offsets
         self.patch_count_fn = 0;
-        if (ir_fn.block_count > self.block_offsets.len) {
+        if (@as(usize, ir_fn.block_count) > self.block_offsets.len) {
             self.overflowed = true;
             return;
         }
