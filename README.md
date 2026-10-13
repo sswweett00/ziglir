@@ -1,14 +1,14 @@
-# LIR — The Most Advanced Systems Programming Language
+# LIR — A Simple, Performance-First Systems Language
 
 <p align="center">
-  <b>Zero-cost abstractions. Memory safety. Fearless concurrency. Native speed.</b>
+  <b>Write simply. Compile natively. Measure every optimization.</b>
 </p>
 
 ---
 
 ## What is LIR?
 
-LIR is a **systems programming language** designed for the next generation of software. It combines the performance of C with the safety of Rust and the simplicity of Go — all while being completely self-contained with no external dependencies.
+LIR is a systems-language project aiming to combine a small, approachable syntax with predictable memory use and highly optimized native code. Its long-term performance goal is to outperform C on selected, benchmarked workloads without sacrificing correctness or readability. That is a goal to prove with reproducible measurements—not a universal speed guarantee. The checked-in bootstrap compiler currently targets Linux x86-64 ELF; features listed as design goals are not necessarily implemented yet.
 
 ### Why LIR?
 
@@ -28,7 +28,8 @@ LIR is a **systems programming language** designed for the next generation of so
 
 ```bash
 # Install (just download the binary — no dependencies!)
-curl -sSL https://lir-lang.dev/install.sh | sh
+git clone https://github.com/sswweett00/ziglir.git
+cd ziglir
 
 # Create a new project
 lir init myproject
@@ -66,7 +67,7 @@ fn main() {
 }
 ```
 
-### Fearless Concurrency
+### Concurrency (design direction; implementation status varies)
 
 ```lir
 import core
@@ -83,7 +84,7 @@ fn main() {
 }
 ```
 
-### Compile-Time Execution
+### Compile-Time Execution (planned language capability)
 
 ```lir
 comptime fn fibonacci(n: u64) -> u64 {
@@ -94,7 +95,7 @@ comptime fn fibonacci(n: u64) -> u64 {
 const TABLE_SIZE = fibonacci(10)  // Computed at compile time!
 ```
 
-### Pattern Matching
+### Pattern Matching (planned language capability)
 
 ```lir
 match value {
@@ -106,7 +107,7 @@ match value {
 }
 ```
 
-### Generics
+### Generics (planned language capability)
 
 ```lir
 struct Vec(T) {
@@ -123,7 +124,7 @@ let mut nums = Vec(i32).init(alloc)
 nums.push(42)
 ```
 
-### Error Handling
+### Error Handling (planned language capability)
 
 ```lir
 fn divide(a: f64, b: f64) -> !f64 {
@@ -149,7 +150,7 @@ myproject/
 
 ## Standard Library
 
-LIR includes a comprehensive standard library:
+The intended standard library includes the following areas; implementation completeness must be verified against the current source and tests:
 
 - **core** — Primitives, Option, Result, panic
 - **collections** — Vec, HashMap, HashSet, Stack, Queue
@@ -164,17 +165,12 @@ LIR includes a comprehensive standard library:
 
 ```bash
 # Clone the repository
-git clone https://github.com/lir-lang/lir.git
-cd lir
+git clone https://github.com/sswweett00/ziglir.git
+cd ziglir
 
-# Build the compiler (bootstrap)
-lir build
-
-# Run the test suite
-lir test
-
-# Install
-lir install
+# Build and test the bootstrap compiler (requires Zig)
+zig build
+zig build test
 ```
 
 ## Contributing
@@ -196,5 +192,5 @@ LIR is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  <b>LIR — Write less. Do more. Go faster.</b>
+  <b>LIR — Clear syntax. Native performance. Evidence over promises.</b>
 </p>
