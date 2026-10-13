@@ -137,6 +137,27 @@ test "parser parses function declaration" {
     try std.testing.expectEqual(@as(i64, 2), f.int_val); // param count
 }
 
+test "parser rejects out-of-range integer literals" {
+    const source = "fn main() { let x = 9223372036854775808 }";
+    var lexer = main.Lexer.init(source);
+    lexer.tokenize();
+    var ast = main.AST.init();
+    var parser = main.Parser{ .lex = &lexer, .pos = 0, .ast = &ast, .src = source };
+    parser.parse();
+    try std.testing.expect(parser.invalid_integer_literal);
+    try std.testing.expectEqual(@as(u32, 1), parser.invalid_integer_line);
+}
+
+test "parser rejects malformed integer separators" {
+    const source = "fn main() { let x = 1__2 }";
+    var lexer = main.Lexer.init(source);
+    lexer.tokenize();
+    var ast = main.AST.init();
+    var parser = main.Parser{ .lex = &lexer, .pos = 0, .ast = &ast, .src = source };
+    parser.parse();
+    try std.testing.expect(parser.invalid_integer_literal);
+}
+
 test "codegen produces ELF header" {
     const elf = try compileSource(
         \\fn main() -> i64 {
