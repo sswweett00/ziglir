@@ -14,11 +14,22 @@ These are language design goals, not a claim that every feature is implemented i
 
 ## Design Principles
 
-1. **Simplicity** — small, orthogonal features that compose well
-2. **Performance** — every feature maps to efficient machine code
-3. **Safety** — catch errors at compile time, not runtime
-4. **Expressiveness** — write clear, maintainable code
-5. **Portability** — write once, run anywhere
+1. **Easy to learn** — a small core language, consistent rules, and beginner-friendly diagnostics.
+2. **Easy to write** — infer obvious local types; require explicit annotations when they improve clarity or resolve ambiguity.
+3. **Readable by default** — prefer familiar control flow and avoid syntax that has multiple meanings.
+4. **Predictable performance** — make allocation, layout, ownership, and expensive operations understandable to the programmer.
+5. **Optimization with evidence** — every performance claim must be backed by correctness tests, reproducible benchmarks, and generated-code inspection.
+6. **Safety without surprise** — enforce ownership and borrowing only when the compiler actually implements and tests those checks.
+7. **Portable semantics** — keep language rules independent of target-specific machine code.
+
+### Syntax ergonomics acceptance criteria
+
+- A first program should require only a function, a print call, and a clear exit value.
+- Common code should not require annotations when the type is unambiguous from the initializer.
+- Error messages should identify the source location, explain the problem in plain language, and suggest a valid next step when possible.
+- There should be one canonical spelling for each core operation; avoid aliases and punctuation-heavy alternatives.
+- New syntax must be covered by parser, diagnostics, formatting, and compatibility tests before it is declared supported.
+- Ergonomics changes must preserve explicit control over allocation and predictable native code generation.
 
 ## Type System
 
