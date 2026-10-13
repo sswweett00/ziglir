@@ -528,6 +528,27 @@ test "IR string table rejects byte-capacity overflow without partial insertion" 
     try std.testing.expectEqual(@as(u32, 0), module.string_len);
 }
 
+test "IR string hash table preserves lookup through collisions and capacity" {
+    var module: ir_mod.IRModule = undefined;
+    module.init();
+    var i: usize = 0;
+    while (i < module.string_offsets.len) : (i += 1) {
+        const value = try std.fmt.allocPrint(std.testing.allocator, "interned_{d}", .{i});
+        defer std.testing.allocator.free(value);
+        try std.testing.expectEqual(@as(u32, @intCast(i)), module.addString(value));
+    }
+    try std.testing.expectEqual(@as(u32, 256), module.string_count);
+
+    i = 0;
+    while (i < module.string_offsets.len) : (i += 1) {
+        const value = try std.fmt.allocPrint(std.testing.allocator, "interned_{d}", .{i});
+        defer std.testing.allocator.free(value);
+        try std.testing.expectEqual(@as(u32, @intCast(i)), module.addString(value));
+    }
+    try std.testing.expectEqual(@as(u32, 256), module.string_count);
+    try std.testing.expect(!module.string_overflowed);
+}
+
 test "IR string table deduplicates existing entries" {
     var module: ir_mod.IRModule = undefined;
     module.init();
