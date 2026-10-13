@@ -908,6 +908,10 @@ pub const IRCodegen = struct {
             },
 
             // ── Control flow ──
+            .unreachable_trap => {
+                self.emit8(0x0F);
+                self.emit8(0x0B); // ud2: architecturally defined invalid-opcode trap
+            },
             .jump => {
                 const target = self.block_offsets[inst.target_block];
                 if (target > 0) {
