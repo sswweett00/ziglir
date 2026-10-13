@@ -61,6 +61,7 @@ pub const IRCodegen = struct {
     code: [65536]u8,
     code_len: u32,
     overflowed: bool,
+    invalid_reference: bool,
     rodata: [65536]u8,
     rodata_len: u32,
     string_patches: [512]StringPatch,
@@ -101,6 +102,7 @@ pub const IRCodegen = struct {
     pub fn init(self: *IRCodegen, source: []const u8, module: *const IRModule) void {
         self.code_len = 0;
         self.overflowed = false;
+        self.invalid_reference = false;
         self.rodata_len = 0;
         self.patch_count = 0;
         self.string_count = 0;
@@ -1390,10 +1392,13 @@ pub const IRCodegen = struct {
             const p = self.call_patches[i];
             const name = p.name_buf[0..p.name_len];
             const fi = self.findFn(name) orelse {
+                // A malformed program must return a compiler error, not terminate
+                // the host process (especially important for library/test use).
                 printErr("IRCodegen error: call to undefined function '");
                 printErr(name);
                 printErr("'\n");
-                sysExit(1);
+                self.invalid_reference = true;
+                return;
             };
             const target = self.fns[fi].code_offset;
             const disp: i32 = @intCast(@as(i64, @intCast(target)) - @as(i64, @intCast(p.patch_pos + 4)));
