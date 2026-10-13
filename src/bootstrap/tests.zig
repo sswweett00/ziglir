@@ -16,11 +16,12 @@ fn compileSource(source: []const u8) ![]u8 {
 
 
 test "unsupported enum declarations fail closed" {
-    var compiler = main.Compiler.init(
+    const source =
         \\enum Color {
         \\    Red
         \\}
-    , "<test>");
+    ;
+    var compiler = main.Compiler.init(source, "<test>");
     try std.testing.expectError(error.InvalidSyntax, compiler.compile());
 }
 
