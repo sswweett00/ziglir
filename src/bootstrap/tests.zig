@@ -5,6 +5,7 @@ const std = @import("std");
 const main = @import("main.zig");
 const parser_mod = @import("parser.zig");
 const ir_mod = @import("ir.zig");
+const ir_verify = @import("ir_verify.zig");
 
 fn compileSource(source: []const u8) ![]u8 {
     // Exercise the same AST -> IR -> ELF pipeline used by the production CLI.
@@ -534,4 +535,29 @@ test "IR string table deduplicates existing entries" {
     try std.testing.expectEqual(first, second);
     try std.testing.expectEqual(@as(u32, 1), module.string_count);
     try std.testing.expect(!module.string_overflowed);
+}
+
+
+test "IR verifier rejects invalid branch targets before code generation" {
+    const module = try std.testing.allocator.create(ir_mod.IRModule);
+    defer std.testing.allocator.destroy(module);
+    module.init();
+    module.fn_count = 1;
+    module.fns[0] = .{ .name_start = 0, .name_len = 2, .block_count = 1 };
+    module.fns[0].blocks[0] = .{ .label = 0, .inst_count = 1 };
+    module.fns[0].blocks[0].insts[0] = .{ .op = .jump, .target_block = 7 };
+
+    try std.testing.expectError(error.InvalidBranchTarget, ir_verify.verify(module, "fn"));
+}
+
+test "IR verifier rejects invalid string references" {
+    const module = try std.testing.allocator.create(ir_mod.IRModule);
+    defer std.testing.allocator.destroy(module);
+    module.init();
+    module.fn_count = 1;
+    module.fns[0] = .{ .name_start = 0, .name_len = 2, .block_count = 1 };
+    module.fns[0].blocks[0] = .{ .label = 0, .inst_count = 1 };
+    module.fns[0].blocks[0].insts[0] = .{ .op = .const_str, .str_idx = 1 };
+
+    try std.testing.expectError(error.InvalidStringIndex, ir_verify.verify(module, "fn"));
 }
