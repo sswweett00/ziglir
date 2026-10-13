@@ -580,7 +580,7 @@ test "IR verifier rejects stack frames above backend safety limit" {
     defer std.testing.allocator.destroy(module);
     module.init();
     module.fn_count = 1;
-    module.fns[0] = .{ .name_start = 0, .name_len = 2, .block_count = 1, .total_locals = 2_000_000 };
+    module.fns[0] = .{ .name_start = 0, .name_len = 2, .block_count = 1, .total_locals = 3_000_000 };
     module.fns[0].blocks[0] = .{ .label = 0, .inst_count = 0 };
 
     try std.testing.expectError(error.StackFrameTooLarge, ir_verify.verify(module, "fn"));
