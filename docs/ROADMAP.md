@@ -6,7 +6,7 @@ The implementation sequence and mandatory correctness/performance gates are spec
 
 Release blockers include unchecked capacity/offset arithmetic, process termination from reusable compiler stages, silent acceptance of unsupported syntax, invalid IR reaching code generation, incorrect ABI/register/stack behavior, and non-atomic executable output.
 
-Recent bootstrap hardening (not yet validated by a local Zig test run): unsupported top-level declarations and non-`i64` parameter/return/struct-field annotations now fail closed; AST source-span access uses overflow-safe range validation. These changes reduce silent miscompilation risk but do not constitute a complete type checker.
+Recent bootstrap hardening (not yet validated by a local Zig test run): unsupported top-level declarations and non-`i64` parameter/return/struct-field annotations now fail closed; AST source-span access uses overflow-safe range validation. These changes reduce silent miscompilation risk but do not constitute a complete type checker. The IR string table now checks both entry and byte capacities before writes, deduplicates only validated ranges, and causes compilation to fail explicitly on overflow. CI had exposed a test-module name-shadowing compile error; the import alias was corrected, and the new run must confirm the fix.
 
 ## Phase 1: Core Language (bootstrap implementation; completion not yet verified)
 - [x] Lexer with zero allocations
