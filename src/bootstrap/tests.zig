@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const main = @import("main.zig");
+const parser = @import("parser.zig");
 
 fn compileSource(source: []const u8) ![]u8 {
     // Exercise the same AST -> IR -> ELF pipeline used by the production CLI.
@@ -28,6 +29,27 @@ test "unsupported enum declarations fail closed" {
 test "unsupported const declarations fail closed" {
     var compiler = main.Compiler.init("const answer = 42\nfn main() { printInt(answer) }", "<test>");
     try std.testing.expectError(error.InvalidSyntax, compiler.compile());
+}
+
+
+test "AST source range access rejects invalid indices and overflowing ranges" {
+    var ast = parser.AST.init();
+    ast.sources[0] = "hello";
+    ast.source_count = 1;
+
+    const node = ast.addNode(.identifier, 1);
+    ast.nodes[node].text_start = 1;
+    ast.nodes[node].text_len = 3;
+    try std.testing.expectEqualStrings("ell", ast.nodeText(node));
+    try std.testing.expectEqualStrings("", ast.nodeText(0));
+    try std.testing.expectEqualStrings("", ast.nodeText(999999));
+    try std.testing.expectEqualStrings("", ast.nodeTextSrcFrom(std.math.maxInt(u32), 8, 0));
+    try std.testing.expectEqualStrings("", ast.nodeTextSrcFrom(0, 1, 999));
+}
+
+test "AST struct lookup rejects out-of-range source spans" {
+    var ast = parser.AST.init();
+    try std.testing.expect(ast.findStructByName("abc", std.math.maxInt(u32), 4) == null);
 }
 
 test "lexer tokenizes basic LIR" {
