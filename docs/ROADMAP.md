@@ -1,17 +1,17 @@
 # LIR Roadmap
 
-## Phase 1: Core Language ✅ (Current)
+## Phase 1: Core Language (bootstrap implementation; completion not yet verified)
 - [x] Lexer with zero allocations
 - [x] Pratt parser for expressions
-- [x] Type system with ownership
+- [ ] Complete type system with enforced ownership and borrow checking
 - [x] x86-64 native codegen
 - [x] ELF binary output
-- [x] Standard library (core, io, json, os)
+- [ ] Production-complete standard library (core, io, json, os)
 - [x] Build system (lir build/run/test/init)
 - [x] JSON-based project manifest
 
 ## Phase 2: Complete Compiler (Q1 2026)
-- [ ] Full type checker with borrow checking
+- [ ] Full type checker with borrow checking (required before claiming ownership safety)
 - [ ] Lifetime inference
 - [ ] Generic type instantiation
 - [ ] Trait object dispatch
