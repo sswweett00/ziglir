@@ -171,13 +171,13 @@ pub const Lexer = struct {
         return ch;
     }
 
-    fn emit(self: *Lexer, kind: TokenKind, start: u32) void {
+    fn emit(self: *Lexer, kind: TokenKind, start: u32, start_line: u32) void {
         if (self.token_count < self.tokens.len) {
             self.tokens[self.token_count] = .{
                 .kind = kind,
                 .start = start,
                 .len = self.pos - start,
-                .line = self.line,
+                .line = start_line,
             };
             self.token_count += 1;
         } else {
@@ -208,6 +208,7 @@ pub const Lexer = struct {
             if (self.pos >= self.src.len) break;
 
             const start = self.pos;
+            const start_line = self.line;
             const ch = self.peek();
 
             // Numbers
@@ -217,7 +218,7 @@ pub const Lexer = struct {
                         self.src[self.pos + 1] >= '0' and self.src[self.pos + 1] <= '9')))
                     _ = self.advance();
                 const has_dot = std.mem.indexOfScalar(u8, self.src[start..self.pos], '.') != null;
-                self.emit(if (has_dot) .float_literal else .int_literal, start);
+                self.emit(if (has_dot) .float_literal else .int_literal, start, start_line);
                 continue;
             }
 
@@ -231,7 +232,7 @@ pub const Lexer = struct {
                         self.peek() == '_'))
                     _ = self.advance();
                 const word = self.src[start..self.pos];
-                self.emit(keywordOrIdent(word), start);
+                self.emit(keywordOrIdent(word), start, start_line);
                 continue;
             }
 
@@ -243,7 +244,7 @@ pub const Lexer = struct {
                     if (self.pos < self.src.len) _ = self.advance();
                 }
                 if (self.pos < self.src.len) _ = self.advance();
-                self.emit(.string_literal, start);
+                self.emit(.string_literal, start, start_line);
                 continue;
             }
 
@@ -324,9 +325,9 @@ pub const Lexer = struct {
                 '\n' => .newline,
                 else => .eof,
             };
-            self.emit(kind, start);
+            self.emit(kind, start, start_line);
         }
-        self.emit(.eof, self.pos);
+        self.emit(.eof, self.pos, self.line);
     }
 
     // Static comptime string map for O(1) keyword lookups instead of O(N) array iteration
