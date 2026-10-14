@@ -744,6 +744,7 @@ pub const IRCodegen = struct {
         self.emitPrintIntRoutine();
         if (self.overflowed) return;
         self.patchCalls();
+        self.peepholeOptimize();
     }
 
     fn irFnName(self: *const IRCodegen, idx: u32) []const u8 {
