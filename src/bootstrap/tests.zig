@@ -370,7 +370,15 @@ test "optimizer: algebraic simplification compiles" {
         \\    let d = 1 * x
         \\    let e = x - 0
         \\    let f = x * 0
-        \\    printInt(a + b + c + d + e + f)
+        \\    let g = x / 1
+        \\    let h = x | 0
+        \\    let i = x ^ 0
+        \\    let j = x & 0
+        \\    let k = x << 0
+        \\    let l = x >> 0
+        \\    let m = x - x
+        \\    let n = x ^ x
+        \\    printInt(a + b + c + d + e + f + g + h + i + j + k + l + m + n)
         \\}
     );
     defer std.testing.allocator.free(elf);
@@ -670,7 +678,7 @@ test "lexer recognizes low-level systems keywords without splitting identifiers"
     const expected = [_]lexer_mod.TokenKind{
         .kw_unsafe, .kw_volatile, .kw_asm, .kw_align, .kw_packed, .kw_union,
         .kw_unreachable, .kw_as, .kw_isize, .kw_usize, .kw_i128, .kw_u128,
-        .kw_never, .identifier,
+        .kw_never, .identifier, .eof,
     };
     try std.testing.expectEqual(expected.len, lexer.token_count);
     for (expected, 0..) |kind, i| {

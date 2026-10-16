@@ -311,6 +311,19 @@ pub const Optimizer = struct {
                         return;
                     }
                 },
+                .pipe, .caret => {
+                    if (a == 0) {
+                        self.replaceWithChild(idx, node.child1, changed);
+                        return;
+                    }
+                },
+                .amp => {
+                    if (a == 0 and self.isPureExpr(node.child1)) {
+                        self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
+                        changed.* = true;
+                        return;
+                    }
+                },
                 // Do not fold 0 / x unless both operands were constant.
                 // Unknown x may be zero (division trap) or have side effects.
                 .slash => {},
@@ -363,6 +376,25 @@ pub const Optimizer = struct {
                     }
                     if (b == 1) {
                         self.replaceWithChild(idx, node.child0, changed);
+                        return;
+                    }
+                },
+                .slash => {
+                    if (b == 1) {
+                        self.replaceWithChild(idx, node.child0, changed);
+                        return;
+                    }
+                },
+                .pipe, .caret, .lshift, .rshift => {
+                    if (b == 0) {
+                        self.replaceWithChild(idx, node.child0, changed);
+                        return;
+                    }
+                },
+                .amp => {
+                    if (b == 0 and self.isPureExpr(node.child0)) {
+                        self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
+                        changed.* = true;
                         return;
                     }
                 },
@@ -453,12 +485,12 @@ pub const Optimizer = struct {
             }
         }
 
-        // ── Identity comparison: x == x → 1, x != x → 0 ────────
-        if (node.child0 == node.child1) {
+        // ── Identity comparison & algebraic cancellation: x == x → 1, x != x → 0, x - x → 0, x ^ x → 0 ────────
+        if (node.child0 == node.child1 and self.isPureExpr(node.child0)) {
             if (op == .eq) {
                 self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 1 };
                 changed.* = true;
-            } else if (op == .ne) {
+            } else if (op == .ne or op == .minus or op == .caret) {
                 self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .int_val = 0 };
                 changed.* = true;
             }
