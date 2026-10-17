@@ -153,14 +153,30 @@ pub const IRCodegen = struct {
         self.code_len += 8;
     }
 
+    fn xor32Reg(self: *IRCodegen, dst: u8) void {
+        if (dst >= 8) self.emit8(0x45); // REX.R/B for r8d..r15d
+        self.emit8(0x31);
+        self.emit8(0xC0 | ((dst & 7) << 3) | (dst & 7));
+    }
+
     fn mov64imm(self: *IRCodegen, dst: u8, imm: u64) void {
-        // Prefer the shortest correct x86-64 encoding. Zeroing a register with
-        // XOR is 3 bytes instead of a 10-byte movabs, and C7 /0 sign-extends
-        // an imm32 to 64 bits when the value fits in signed 32-bit range.
+        // Prefer the shortest correct x86-64 encoding.
+        // 1) Zeroing register with 32-bit XOR (2 bytes for r0-7, 3 bytes for r8-15)
+        //    In x86-64, writing a 32-bit register automatically zero-extends to 64 bits.
         if (imm == 0) {
-            self.xorReg(dst, dst);
+            self.xor32Reg(dst);
             return;
         }
+        // 2) Unsigned 32-bit positive constant (5 bytes for r0-7, 6 bytes for r8-15)
+        //    mov reg32, imm32 zero-extends to 64 bits in x86-64 ISA.
+        if (imm <= std.math.maxInt(u32)) {
+            if (dst >= 8) self.emit8(0x41);
+            self.emit8(0xB8 + (dst & 7));
+            self.emit32(@truncate(imm));
+            return;
+        }
+        // 3) Signed 32-bit negative constant (7 bytes)
+        //    mov r/m64, imm32 sign-extends to 64 bits.
         const signed_imm: i64 = @bitCast(imm);
         if (signed_imm >= std.math.minInt(i32) and signed_imm <= std.math.maxInt(i32)) {
             self.emit8(if (dst >= 8) 0x49 else 0x48);
@@ -169,6 +185,7 @@ pub const IRCodegen = struct {
             self.emit32(@bitCast(@as(i32, @intCast(signed_imm))));
             return;
         }
+        // 4) Full 64-bit constant (10 bytes)
         self.emit8(if (dst >= 8) 0x49 else 0x48);
         self.emit8(0xB8 + (dst & 7));
         self.emit64(imm);
@@ -194,6 +211,10 @@ pub const IRCodegen = struct {
     }
 
     fn xorReg(self: *IRCodegen, a: u8, b: u8) void {
+        if (a == b) {
+            self.xor32Reg(a);
+            return;
+        }
         var rex: u8 = 0x48;
         if (a >= 8) rex |= 0x04;
         if (b >= 8) rex |= 0x01;
