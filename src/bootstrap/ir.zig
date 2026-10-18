@@ -6,10 +6,9 @@ const std = @import("std");
 const util = @import("util.zig");
 const eql = util.eql;
 
+// Fast 64-bit string hashing using Wyhash
 fn stringHash(bytes: []const u8) u64 {
-    var hash: u64 = 14695981039346656037;
-    for (bytes) |byte| hash = (hash ^ byte) *% 1099511628211;
-    return hash;
+    return std.hash.Wyhash.hash(0, bytes);
 }
 
 /// IR instruction opcodes
