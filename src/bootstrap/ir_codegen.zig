@@ -154,9 +154,10 @@ pub const IRCodegen = struct {
     }
 
     fn mov64imm(self: *IRCodegen, dst: u8, imm: u64) void {
-        // Prefer the shortest correct x86-64 encoding. Zeroing a register with
-        // XOR is 3 bytes instead of a 10-byte movabs, and C7 /0 sign-extends
-        // an imm32 to 64 bits when the value fits in signed 32-bit range.
+        // Optimize 64-bit immediate loading:
+        // 1. Zeroing a register with XOR is 3 bytes (and zeroes upper 32 bits) instead of 10 bytes.
+        // 2. Fits in signed 32-bit int -> mov r/m64, imm32 (7 bytes instead of 10 bytes).
+        // 3. Otherwise -> movabs r64, imm64 (10 bytes).
         if (imm == 0) {
             self.xorReg(dst, dst);
             return;
