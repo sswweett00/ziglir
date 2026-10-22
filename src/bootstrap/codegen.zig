@@ -180,6 +180,22 @@ pub const Codegen = struct {
 
     // ── x86-64 instructions ────────────────────────────────────
     fn mov64imm(self: *Codegen, dst: u8, imm: u64) void {
+        // Optimize 64-bit immediate loading:
+        // 1. Loading 0 -> XOR r32, r32 (3 bytes, zeroes upper 32 bits, faster execution)
+        // 2. Fits in signed 32-bit int -> mov r/m64, imm32 (7 bytes instead of 10 bytes)
+        // 3. Otherwise -> movabs r64, imm64 (10 bytes)
+        if (imm == 0) {
+            self.xorReg(dst, dst);
+            return;
+        }
+        const signed_imm: i64 = @bitCast(imm);
+        if (signed_imm >= std.math.minInt(i32) and signed_imm <= std.math.maxInt(i32)) {
+            self.emit8(if (dst >= 8) 0x49 else 0x48);
+            self.emit8(0xC7);
+            self.emit8(0xC0 | (dst & 7));
+            self.emit32(@bitCast(@as(i32, @intCast(signed_imm))));
+            return;
+        }
         self.emit8(if (dst >= 8) 0x49 else 0x48);
         self.emit8(0xB8 + (dst & 7));
         self.emit64(imm);
