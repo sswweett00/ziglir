@@ -154,6 +154,8 @@ pub const IRGen = struct {
         while (i > 0) {
             i -= 1;
             const loc = self.locals[@intCast(i)];
+            // Fast length check eliminates string comparisons for non-matching name lengths
+            if (loc.name_len != name.len) continue;
             const loc_name = self.src[loc.name_start..][0..loc.name_len];
             if (eql(loc_name, name)) return loc.slot;
         }
@@ -854,133 +856,136 @@ pub const IRGen = struct {
             argi = self.ast.nodes[argi].child1;
         }
 
-        // Check for builtins
-        if (eql(name, "println") or eql(name, "print")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = if (eql(name, "println")) .call_println else .call_print, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "printInt")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_print_int, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "exit")) {
-            self.emit(.{ .op = .call_exit, .args = args, .arg_count = argc });
-            return 0;
-        }
-        if (eql(name, "@sizeof")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_sizeof, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@syscall")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_syscall, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@memcpy")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_memcpy, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@memset")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_memset, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@printptr")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_printptr, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@malloc")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_malloc, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@free")) {
-            self.emit(.{ .op = .call_free, .args = args, .arg_count = argc });
-            return 0;
-        }
-        if (eql(name, "@array_new")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_new, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_push")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_push, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_get")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_get, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_set")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_set, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_len")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_len, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_free")) {
-            self.emit(.{ .op = .call_array_free, .args = args, .arg_count = argc });
-            return 0;
-        }
-        if (eql(name, "@string_new")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_new, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_len")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_len, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_sub")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_sub, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_eq")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_eq, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_concat")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_concat, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_split")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_split, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@open")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_open, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@read")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_read, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@write")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_write, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@close")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_close, .dest = v, .args = args, .arg_count = argc });
-            return v;
+        // Check for builtins (separate '@' intrinsics from standard function calls to avoid linear string comparisons for user calls)
+        if (name.len > 0 and name[0] == '@') {
+            if (eql(name, "@sizeof")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_sizeof, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@syscall")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_syscall, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@memcpy")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_memcpy, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@memset")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_memset, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@printptr")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_printptr, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@malloc")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_malloc, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@free")) {
+                self.emit(.{ .op = .call_free, .args = args, .arg_count = argc });
+                return 0;
+            }
+            if (eql(name, "@array_new")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_array_new, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@array_push")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_array_push, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@array_get")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_array_get, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@array_set")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_array_set, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@array_len")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_array_len, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@array_free")) {
+                self.emit(.{ .op = .call_array_free, .args = args, .arg_count = argc });
+                return 0;
+            }
+            if (eql(name, "@string_new")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_string_new, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@string_len")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_string_len, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@string_sub")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_string_sub, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@string_eq")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_string_eq, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@string_concat")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_string_concat, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@string_split")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_string_split, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@open")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_open, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@read")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_read, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@write")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_write, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "@close")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_close, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+        } else {
+            if (eql(name, "println") or eql(name, "print")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = if (eql(name, "println")) .call_println else .call_print, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "printInt")) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = .call_print_int, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            }
+            if (eql(name, "exit")) {
+                self.emit(.{ .op = .call_exit, .args = args, .arg_count = argc });
+                return 0;
+            }
         }
 
         // User-defined function call

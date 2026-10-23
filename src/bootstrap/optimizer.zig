@@ -676,7 +676,8 @@ pub const Optimizer = struct {
     fn nameInSet(self: *const Optimizer, start: u32, len: u32, starts: []const u32, lens: []const u32, count: u32) bool {
         const name = self.textOf(start, len);
         for (0..count) |i| {
-            if (lens[i] == len and eql(self.textOf(starts[i], lens[i]), name)) return true;
+            if (lens[i] != len) continue;
+            if (eql(self.textOf(starts[i], lens[i]), name)) return true;
         }
         return false;
     }
