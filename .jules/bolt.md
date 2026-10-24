@@ -3,3 +3,7 @@
 ## 2026-03-02 - Lexer keyword lookup and string equality
 **Learning:** Linear array searches for keywords and manual byte-by-byte string equality loops in compiler hot paths add substantial unnecessary string comparison overhead for every parsed identifier.
 **Action:** Use `std.StaticStringMap` for comptime O(1) keyword lookups and `std.mem.eql` for vectorized string equality.
+
+## 2026-10-24 - Builtin dispatch in IR lowering
+**Learning:** Sequential `if (eql(name, ...))` chains during IR lowering force up to N string comparisons for every function call in the source AST.
+**Action:** Map builtin function names to IR opcodes using `std.StaticStringMap(IROp)` for $O(1)$ dispatch during IR generation.
