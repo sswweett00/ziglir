@@ -854,133 +854,15 @@ pub const IRGen = struct {
             argi = self.ast.nodes[argi].child1;
         }
 
-        // Check for builtins
-        if (eql(name, "println") or eql(name, "print")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = if (eql(name, "println")) .call_println else .call_print, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "printInt")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_print_int, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "exit")) {
-            self.emit(.{ .op = .call_exit, .args = args, .arg_count = argc });
-            return 0;
-        }
-        if (eql(name, "@sizeof")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_sizeof, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@syscall")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_syscall, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@memcpy")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_memcpy, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@memset")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_memset, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@printptr")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_printptr, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@malloc")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_malloc, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@free")) {
-            self.emit(.{ .op = .call_free, .args = args, .arg_count = argc });
-            return 0;
-        }
-        if (eql(name, "@array_new")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_new, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_push")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_push, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_get")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_get, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_set")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_set, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_len")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_array_len, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@array_free")) {
-            self.emit(.{ .op = .call_array_free, .args = args, .arg_count = argc });
-            return 0;
-        }
-        if (eql(name, "@string_new")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_new, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_len")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_len, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_sub")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_sub, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_eq")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_eq, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_concat")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_concat, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@string_split")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_string_split, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@open")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_open, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@read")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_read, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@write")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_write, .dest = v, .args = args, .arg_count = argc });
-            return v;
-        }
-        if (eql(name, "@close")) {
-            const v = self.allocVreg();
-            self.emit(.{ .op = .call_close, .dest = v, .args = args, .arg_count = argc });
-            return v;
+        if (builtin_map.get(name)) |spec| {
+            if (spec.returns_value) {
+                const v = self.allocVreg();
+                self.emit(.{ .op = spec.op, .dest = v, .args = args, .arg_count = argc });
+                return v;
+            } else {
+                self.emit(.{ .op = spec.op, .args = args, .arg_count = argc });
+                return 0;
+            }
         }
 
         // User-defined function call
@@ -1000,6 +882,37 @@ pub const IRGen = struct {
         return self.hidden_names[idx][0..len];
     }
 };
+
+const BuiltinSpec = struct { op: IROp, returns_value: bool };
+const builtin_map = std.StaticStringMap(BuiltinSpec).initComptime(&[_]struct { []const u8, BuiltinSpec }{
+    .{ "println", .{ .op = .call_println, .returns_value = true } },
+    .{ "print", .{ .op = .call_print, .returns_value = true } },
+    .{ "printInt", .{ .op = .call_print_int, .returns_value = true } },
+    .{ "exit", .{ .op = .call_exit, .returns_value = false } },
+    .{ "@sizeof", .{ .op = .call_sizeof, .returns_value = true } },
+    .{ "@syscall", .{ .op = .call_syscall, .returns_value = true } },
+    .{ "@memcpy", .{ .op = .call_memcpy, .returns_value = true } },
+    .{ "@memset", .{ .op = .call_memset, .returns_value = true } },
+    .{ "@printptr", .{ .op = .call_printptr, .returns_value = true } },
+    .{ "@malloc", .{ .op = .call_malloc, .returns_value = true } },
+    .{ "@free", .{ .op = .call_free, .returns_value = false } },
+    .{ "@array_new", .{ .op = .call_array_new, .returns_value = true } },
+    .{ "@array_push", .{ .op = .call_array_push, .returns_value = true } },
+    .{ "@array_get", .{ .op = .call_array_get, .returns_value = true } },
+    .{ "@array_set", .{ .op = .call_array_set, .returns_value = true } },
+    .{ "@array_len", .{ .op = .call_array_len, .returns_value = true } },
+    .{ "@array_free", .{ .op = .call_array_free, .returns_value = false } },
+    .{ "@string_new", .{ .op = .call_string_new, .returns_value = true } },
+    .{ "@string_len", .{ .op = .call_string_len, .returns_value = true } },
+    .{ "@string_sub", .{ .op = .call_string_sub, .returns_value = true } },
+    .{ "@string_eq", .{ .op = .call_string_eq, .returns_value = true } },
+    .{ "@string_concat", .{ .op = .call_string_concat, .returns_value = true } },
+    .{ "@string_split", .{ .op = .call_string_split, .returns_value = true } },
+    .{ "@open", .{ .op = .call_open, .returns_value = true } },
+    .{ "@read", .{ .op = .call_read, .returns_value = true } },
+    .{ "@write", .{ .op = .call_write, .returns_value = true } },
+    .{ "@close", .{ .op = .call_close, .returns_value = true } },
+});
 
 fn blockHasTerminator(blk: IRBlock) bool {
     if (blk.inst_count == 0) return false;
