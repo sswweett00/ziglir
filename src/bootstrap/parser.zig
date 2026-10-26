@@ -332,7 +332,7 @@ pub const Parser = struct {
             const ptok = self.expect(.identifier);
             if (self.match(.colon)) {
                 _ = self.advance();
-                const type_tok = self.expect(.identifier);
+                const type_tok = if (self.match(.identifier) or lex.isTypeKeyword(self.peek().kind)) self.advance() else self.expect(.identifier);
                 if (!std.mem.eql(u8, self.lex.text(type_tok), "i64")) {
                     printErr("Unsupported parameter type at line ");
                     printUsize(type_tok.line);
@@ -360,7 +360,7 @@ pub const Parser = struct {
         _ = self.expect(.rparen);
         if (self.match(.arrow)) {
             _ = self.advance();
-            const return_type = self.expect(.identifier);
+            const return_type = if (self.match(.identifier) or lex.isTypeKeyword(self.peek().kind)) self.advance() else self.expect(.identifier);
             if (!std.mem.eql(u8, self.lex.text(return_type), "i64")) {
                 printErr("Unsupported return type at line ");
                 printUsize(return_type.line);
@@ -914,7 +914,7 @@ pub const Parser = struct {
             if (self.match(.rbrace)) break;
             const field_name = self.expect(.identifier);
             _ = self.expect(.colon);
-            const field_type = self.expect(.identifier);
+            const field_type = if (self.match(.identifier) or lex.isTypeKeyword(self.peek().kind)) self.advance() else self.expect(.identifier);
             if (!std.mem.eql(u8, self.lex.text(field_type), "i64")) {
                 printErr("Unsupported struct field type at line ");
                 printUsize(field_type.line);

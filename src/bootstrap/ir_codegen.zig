@@ -1475,7 +1475,9 @@ pub const IRCodegen = struct {
 
     fn findFn(self: *const IRCodegen, name: []const u8) ?u32 {
         for (0..self.fn_count) |i| {
-            if (eql(self.irFnName(@intCast(i)), name)) return @intCast(i);
+            if (self.fns[i].name_len == name.len) {
+                if (eql(self.irFnName(@intCast(i)), name)) return @intCast(i);
+            }
         }
         return null;
     }
