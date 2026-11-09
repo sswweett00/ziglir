@@ -198,6 +198,8 @@ LIR is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 ## Links
 
 - [Language Specification](docs/SPEC.md)
+- [Complete Language Architecture](docs/LANGUAGE_ARCHITECTURE.md)
+- [Verified Implementation Status](docs/IMPLEMENTATION_STATUS.md)
 - [Standard Library Documentation](docs/STDLIB.md)
 - [Examples](examples/)
 - [Benchmarks](bench/)
