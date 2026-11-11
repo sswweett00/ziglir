@@ -249,6 +249,9 @@ pub const Compiler = struct {
     }
 
     fn lowerAndVerify(self: *Compiler, ir_mod_out: *ir_mod.IRModule, diag: *DiagList, loaded: *LoadedSources) !void {
+        // Reject unsupported triples before lexing, parsing, or allocating compiler state.
+        if (!self.target.isSupported()) return error.UnsupportedTarget;
+
         const alloc = std.heap.page_allocator;
 
         const ast = alloc.create(AST) catch return error.OutOfMemory;

@@ -2641,7 +2641,8 @@ test "target validation rejects unsupported architecture and OS combinations" {
         .{ .arch = .riscv64, .os = .macos },
         .{ .arch = .aarch64, .os = .wasi },
     };
-    const src = "fn main() -> i64 { return 0 }";
+    // This source is intentionally malformed: target validation must win before lexing.
+    const src = "fn main() { let x = $ }";
 
     for (invalid_targets) |target| {
         try std.testing.expect(!target.isSupported());
@@ -2651,6 +2652,22 @@ test "target validation rejects unsupported architecture and OS combinations" {
         compiler.quiet = true;
         try std.testing.expectError(error.UnsupportedTarget, compiler.compile());
     }
+}
+
+test "backend entry points independently reject unsupported target pairs" {
+    const module = try std.testing.allocator.create(main.IRModule);
+    defer std.testing.allocator.destroy(module);
+    module.init();
+
+    const invalid = main.Target{ .arch = .wasm32, .os = .linux };
+    try std.testing.expectError(
+        error.UnsupportedTarget,
+        main.Backend.emitBinary(std.heap.page_allocator, module, "", invalid, .auto),
+    );
+    try std.testing.expectError(
+        error.UnsupportedTarget,
+        main.Backend.emitCSource(std.heap.page_allocator, module, "", invalid),
+    );
 }
 
 test "explicit native backends reject incompatible valid targets" {
