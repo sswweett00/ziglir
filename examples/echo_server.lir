@@ -34,7 +34,7 @@ fn main() {
     println("Server listening on port 8080...")
 
     // Accept loop
-    while 1 {
+    while true {
         let client_fd = @syscall(43, sockfd, 0, 0)
         printInt(client_fd)
 
@@ -51,8 +51,9 @@ fn main() {
 
 fn handle_client(fd: i64) {
     let buf = @malloc(1024)
+    defer @free(buf)
 
-    while 1 {
+    while true {
         // read(fd, buf, 1024)
         let n = @syscall(0, fd, buf, 1024)
         if n <= 0 {

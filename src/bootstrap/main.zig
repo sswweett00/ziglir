@@ -1,23 +1,34 @@
-// LIR Compiler — Entry Point, CLI, and Pipeline Orchestrator
-// Compiles LIR source code to native x86-64 Linux ELF executables
+// LIR Compiler — Entry Point, Portable CLI, and Public API Exports
 //
-// Usage: lir build <file.lir> [-o output]
-//        lir run <file.lir>
+// Usage: lir build <file.lir> [-o output] [-O0|-O1|-O2] [--target <triple>] [--backend <kind>] [--emit-ir] [--emit-c]
+//        lir run <file.lir> [-O0|-O1|-O2] [--target <triple>] [--backend <kind>] [-- args...]
+//        lir check <file.lir> [--target <triple>]
+//        lir ir <file.lir> [-O0|-O1|-O2] [--target <triple>]
+//        lir test [file.lir] [-O0|-O1|-O2] [--target <triple>] [--backend <kind>]
+//        lir targets
 //        lir init [name]
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const util = @import("util.zig");
+const diag_mod = @import("diag.zig");
 const lex = @import("lexer.zig");
 const parser_mod = @import("parser.zig");
-const codegen_mod = @import("codegen.zig");
+const sema_mod = @import("sema.zig");
 const optimizer_mod = @import("optimizer.zig");
 const ir_mod = @import("ir.zig");
 const ir_gen_mod = @import("ir_gen.zig");
+const ir_opt_mod = @import("ir_opt.zig");
 const ir_codegen_mod = @import("ir_codegen.zig");
-const ir_verify_mod = @import("ir_verify.zig");
+const target_mod = @import("target.zig");
+const backend_mod = @import("backend.zig");
+const driver_mod = @import("driver.zig");
+const c_backend_mod = @import("c_backend.zig");
+const wasm_backend_mod = @import("wasm_backend.zig");
+const ir_vm_mod = @import("ir_vm.zig");
 
-// Re-export public types for tests and external use
+// Re-export public types for tests and library callers
 pub const TokenKind = lex.TokenKind;
 pub const Token = lex.Token;
 pub const Lexer = lex.Lexer;
@@ -25,12 +36,25 @@ pub const NodeKind = parser_mod.NodeKind;
 pub const ASTNode = parser_mod.ASTNode;
 pub const AST = parser_mod.AST;
 pub const Parser = parser_mod.Parser;
+pub const Sema = sema_mod.Sema;
+pub const SemaInfo = sema_mod.SemaInfo;
 pub const Optimizer = optimizer_mod.Optimizer;
-pub const Codegen = codegen_mod.Codegen;
 pub const IRModule = ir_mod.IRModule;
 pub const IRGen = ir_gen_mod.IRGen;
+pub const OptLevel = ir_opt_mod.OptLevel;
 pub const IRCodegen = ir_codegen_mod.IRCodegen;
-pub const Compiler = Compiler_;
+pub const DiagList = diag_mod.DiagList;
+pub const Target = target_mod.Target;
+pub const Arch = target_mod.Arch;
+pub const OS = target_mod.OS;
+pub const BinaryFormat = target_mod.BinaryFormat;
+pub const BackendKind = target_mod.BackendKind;
+pub const Backend = backend_mod;
+pub const Driver = driver_mod;
+pub const Compiler = driver_mod.Compiler;
+pub const CBackend = c_backend_mod;
+pub const WasmBackend = wasm_backend_mod;
+pub const IRVM = ir_vm_mod;
 
 const eql = util.eql;
 const printStr = util.printStr;
@@ -38,42 +62,59 @@ const printErr = util.printErr;
 const printUsize = util.printUsize;
 const writeFile = util.writeFile;
 const sysExit = util.sysExit;
-const sysOpen = util.sysOpen;
-const sysRead = util.sysRead;
-const sysClose = util.sysClose;
 
 // ════════════════════════════════════════════════════════════════════════════
 // CLI
 // ════════════════════════════════════════════════════════════════════════════
 
 pub fn main() !void {
-    const argv = std.os.argv;
-    if (argv.len < 2) {
+    const alloc = std.heap.page_allocator;
+    const args = std.process.argsAlloc(alloc) catch {
+        printErr("Error: unable to read process arguments\n");
+        sysExit(1);
+    };
+    defer std.process.argsFree(alloc, args);
+
+    if (args.len < 2) {
         printUsage();
         return;
     }
 
-    const command = std.mem.span(argv[1]);
+    const command = args[1];
     if (eql(command, "help") or eql(command, "--help") or eql(command, "-h")) {
         printUsage();
     } else if (eql(command, "version") or eql(command, "--version") or eql(command, "-V")) {
-        printStr("lir 2.1.0\n");
+        printStr("lir 2.2.0\n");
+    } else if (eql(command, "targets")) {
+        printTargets();
     } else if (eql(command, "build")) {
-        if (argv.len < 3) {
-            printErr("Error: usage: lir build <file.lir> [-o output]\n");
+        if (args.len < 3) {
+            printErr("Error: usage: lir build <file.lir> [-o output] [-O0|-O1|-O2] [--target <triple>] [--backend <kind>] [--emit-ir] [--emit-c]\n");
             sysExit(1);
         }
-        cmdBuild(argv[2..]);
+        cmdBuild(args[2..]);
     } else if (eql(command, "run")) {
-        if (argv.len < 3) {
-            printErr("Error: usage: lir run <file.lir>\n");
+        if (args.len < 3) {
+            printErr("Error: usage: lir run <file.lir> [-O0|-O1|-O2] [--target <triple>] [--backend <kind>] [-- args...]\n");
             sysExit(1);
         }
-        cmdRun(argv[2..]);
+        cmdRun(args[2..]);
+    } else if (eql(command, "check")) {
+        if (args.len < 3) {
+            printErr("Error: usage: lir check <file.lir> [--target <triple>]\n");
+            sysExit(1);
+        }
+        cmdCheck(args[2..]);
+    } else if (eql(command, "ir")) {
+        if (args.len < 3) {
+            printErr("Error: usage: lir ir <file.lir> [-O0|-O1|-O2] [--target <triple>]\n");
+            sysExit(1);
+        }
+        cmdIr(args[2..]);
     } else if (eql(command, "test")) {
-        cmdTest();
+        cmdTest(args[2..]);
     } else if (eql(command, "init")) {
-        const name = if (argv.len >= 3) std.mem.span(argv[2]) else "myproject";
+        const name = if (args.len >= 3) args[2] else "myproject";
         cmdInit(name);
     } else if (eql(command, "install")) {
         cmdInstall();
@@ -87,136 +128,493 @@ pub fn main() !void {
 
 fn printUsage() void {
     printStr(
-        \\LIR Compiler v2.1.0
+        \\LIR Compiler v2.2.0
         \\
         \\Usage: lir <command> [options]
         \\
         \\Commands:
-        \\  build <file.lir>    Compile LIR source to native executable
-        \\  run <file.lir>      Compile and run
-        \\  test [file.lir]     Run tests
+        \\  build <file.lir>    Compile LIR source to native or cross-platform binary
+        \\    -o <path>           Output binary (or C file when --emit-c is passed)
+        \\    -O0 | -O1 | -O2     Optimization level (default: -O2)
+        \\    --target <triple>   Target platform (run 'lir targets' for list)
+        \\    --backend <kind>    Backend: auto | native | wasm | c | vm
+        \\    --emit-ir           Print lowered & optimized IR to stdout
+        \\    --emit-c            Emit standalone portable C11 source instead of linking
+        \\  run <file.lir>      Compile and execute in one step (supports --backend=vm/wasm/c/native)
+        \\  check <file.lir>    Type-check and verify IR without emitting binary
+        \\  ir <file.lir>       Dump lowered & optimized IR
+        \\  test [file.lir]     Run #[test] suite
+        \\  targets             List supported cross-compilation targets and host defaults
         \\  init [name]         Create a new project
         \\  install             Install lir binary to system PATH
         \\  help                Show this help
         \\  version             Show version
         \\
         \\Examples:
-        \\  lir build main.lir
-        \\  lir run main.lir
-        \\  lir init myproject
-        \\  lir install
+        \\  lir build main.lir -O2 -o main
+        \\  lir build main.lir --target=wasm32-wasi -o main.wasm
+        \\  lir build main.lir --target=aarch64-macos -o main_mac
+        \\  lir build main.lir --emit-c -o main.c
+        \\  lir run main.lir --backend=vm -- arg1 arg2
+        \\  lir check main.lir
         \\
     );
 }
 
+fn printTargets() void {
+    const host = Target.host();
+    var buf: [64]u8 = undefined;
+    printStr("Host target: ");
+    printStr(host.triple(&buf));
+    printStr(" (default backend: ");
+    printStr(host.resolveBackend(.auto).name());
+    printStr(")\n\nSupported targets:\n");
+    printStr("  x86_64-linux      ELF64 (native-elf or c11)\n");
+    printStr("  aarch64-linux     ELF64 (c11)\n");
+    printStr("  riscv64-linux     ELF64 (c11)\n");
+    printStr("  aarch64-macos     Mach-O (c11)\n");
+    printStr("  x86_64-macos      Mach-O (c11)\n");
+    printStr("  x86_64-windows    PE/COFF .exe (c11)\n");
+    printStr("  aarch64-windows   PE/COFF .exe (c11)\n");
+    printStr("  wasm32-wasi       WebAssembly .wasm (native-wasm or c11)\n");
+    printStr("  x86_64-freebsd    ELF64 (c11)\n");
+    printStr("  aarch64-freebsd   ELF64 (c11)\n");
+    printStr("\nBackends:\n");
+    printStr("  auto              native-elf (x86_64-linux), native-wasm (wasm32-wasi), c11 (others)\n");
+    printStr("  native | elf      Zero-dependency x86-64 ELF64 machine code backend\n");
+    printStr("  wasm              Zero-dependency wasm32-wasi .wasm binary emitter\n");
+    printStr("  c | c11           Portable C11 emitter + zig cc / CC cross-compiler\n");
+    printStr("  vm                Portable in-process IR VM (runs any program on any host)\n");
+}
+
+fn parseOptFlag(arg: []const u8) ?OptLevel {
+    if (eql(arg, "-O0")) return .O0;
+    if (eql(arg, "-O1")) return .O1;
+    if (eql(arg, "-O2")) return .O2;
+    return null;
+}
+
+fn parseFlagValue(args: []const []const u8, idx: *usize, prefix_eq: []const u8, exact: []const u8) ?[]const u8 {
+    const arg = args[idx.*];
+    if (std.mem.startsWith(u8, arg, prefix_eq)) {
+        return arg[prefix_eq.len..];
+    }
+    if (eql(arg, exact)) {
+        if (idx.* + 1 >= args.len) {
+            printErr("Error: missing value after '");
+            printErr(exact);
+            printErr("'\n");
+            sysExit(1);
+        }
+        idx.* += 1;
+        return args[idx.*];
+    }
+    return null;
+}
+
+fn parseTargetOrDie(spec: []const u8) Target {
+    return Target.parse(spec) orelse {
+        printErr("Error: unsupported target '");
+        printErr(spec);
+        printErr("' (run 'lir targets' for supported targets)\n");
+        sysExit(1);
+    };
+}
+
+fn parseBackendOrDie(spec: []const u8) BackendKind {
+    return BackendKind.parse(spec) orelse {
+        printErr("Error: unknown backend '");
+        printErr(spec);
+        printErr("' (expected auto, native, wasm, c, or vm)\n");
+        sysExit(1);
+    };
+}
+
 // ════════════════════════════════════════════════════════════════════════════
-// Build Command
+// CLI Commands
 // ════════════════════════════════════════════════════════════════════════════
 
-fn cmdBuild(args: []const [*:0]const u8) void {
-    const input_file = std.mem.span(args[0]);
-    var output_file: []const u8 = "a.out";
+fn cmdBuild(args: []const []const u8) void {
+    var input_file: ?[]const u8 = null;
+    var output_file: ?[]const u8 = null;
+    var opt_level: OptLevel = .O2;
+    var target = Target.host();
+    var backend_kind: BackendKind = .auto;
+    var emit_ir = false;
+    var emit_c = false;
 
-    var idx: usize = 1;
+    var idx: usize = 0;
     while (idx < args.len) : (idx += 1) {
-        const arg = std.mem.span(args[idx]);
-        if (eql(arg, "-o") and idx + 1 < args.len) {
-            output_file = std.mem.span(args[idx + 1]);
+        const arg = args[idx];
+        if (eql(arg, "-o")) {
+            if (idx + 1 >= args.len) {
+                printErr("Error: missing path after '-o'\n");
+                sysExit(1);
+            }
             idx += 1;
+            output_file = args[idx];
+        } else if (parseFlagValue(args, &idx, "--target=", "--target")) |spec| {
+            target = parseTargetOrDie(spec);
+        } else if (parseFlagValue(args, &idx, "--backend=", "--backend")) |spec| {
+            backend_kind = parseBackendOrDie(spec);
+        } else if (parseOptFlag(arg)) |ol| {
+            opt_level = if (ol == .O0) .O2 else ol;
+        } else if (eql(arg, "--emit-ir")) {
+            emit_ir = true;
+        } else if (eql(arg, "--emit-c")) {
+            emit_c = true;
+        } else if (arg.len > 0 and arg[0] == '-') {
+            printErr("Error: unknown option '");
+            printErr(arg);
+            printErr("'\n");
+            sysExit(1);
+        } else if (input_file == null) {
+            input_file = arg;
+        } else {
+            printErr("Error: unexpected extra positional argument '");
+            printErr(arg);
+            printErr("'\n");
+            sysExit(1);
         }
     }
 
-    const source_buf = util.readFileAlloc(std.heap.page_allocator, input_file) catch {
-        printErr("Error: cannot read source file or allocate its contents\n");
+    const in_path = input_file orelse {
+        printErr("Error: missing input .lir file\n");
         sysExit(1);
     };
-    defer std.heap.page_allocator.free(source_buf);
-    const source = source_buf;
-    var compiler = Compiler.init(source, input_file);
+
+    const alloc = std.heap.page_allocator;
+    const source_buf = util.readFileAlloc(alloc, in_path) catch {
+        printErr("Error: cannot read source file '");
+        printErr(in_path);
+        printErr("'\n");
+        sysExit(1);
+    };
+    defer alloc.free(source_buf);
+
+    var compiler = Compiler.initForTarget(source_buf, in_path, opt_level, target, backend_kind);
+    compiler.emit_ir = emit_ir;
+    compiler.emit_c = emit_c;
     const result = compiler.compile() catch |err| {
-        printErr("Compilation error: ");
+        printErr("Compilation failed: ");
         printErr(@errorName(err));
         printErr("\n");
         sysExit(1);
     };
+    defer alloc.free(result);
 
-    if (!writeFile(output_file, result)) {
+    var default_out_buf: [64]u8 = undefined;
+    const resolved_out: []const u8 = output_file orelse if (emit_c)
+        "a.c"
+    else
+        std.fmt.bufPrint(&default_out_buf, "a.out{s}", .{target.exeSuffix()}) catch "a.out";
+
+    const mode: u64 = if (emit_c or target.os == .wasi) 0o644 else 0o755;
+    if (!util.writeFileAtomic(resolved_out, result, mode)) {
         printErr("Error: cannot write '");
-        printErr(output_file);
+        printErr(resolved_out);
         printErr("'\n");
         sysExit(1);
     }
 
-    // chmod 755
-    _ = util.syscall3(0x5A, @intFromPtr(output_file.ptr), 0o755, 0);
-
-    printStr("Compiled ");
-    printStr(input_file);
+    printStr(if (emit_c) "Emitted C11 " else "Compiled ");
+    printStr(in_path);
     printStr(" -> ");
-    printStr(output_file);
+    printStr(resolved_out);
     printStr(" (");
     printUsize(result.len);
     printStr(" bytes)\n");
 }
 
-fn cmdRun(args: []const [*:0]const u8) void {
-    const input_file = std.mem.span(args[0]);
-    const tmp_out = "/tmp/lir_out";
-
-    const source_buf = util.readFileAlloc(std.heap.page_allocator, input_file) catch {
-        printErr("Error: cannot read source file or allocate its contents\n");
+fn cmdCheck(args: []const []const u8) void {
+    var in_path: ?[]const u8 = null;
+    var target = Target.host();
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (parseFlagValue(args, &idx, "--target=", "--target")) |spec| {
+            target = parseTargetOrDie(spec);
+        } else if (arg.len > 0 and arg[0] == '-') {
+            printErr("Error: unknown option '");
+            printErr(arg);
+            printErr("'\n");
+            sysExit(1);
+        } else if (in_path == null) {
+            in_path = arg;
+        }
+    }
+    const file = in_path orelse {
+        printErr("Error: missing input .lir file\n");
         sysExit(1);
     };
-    defer std.heap.page_allocator.free(source_buf);
-    const source = source_buf;
-    var compiler = Compiler.init(source, input_file);
-    const result = compiler.compile() catch |err| {
-        printErr("Compilation error: ");
+    const alloc = std.heap.page_allocator;
+    const source_buf = util.readFileAlloc(alloc, file) catch {
+        printErr("Error: cannot read source file '");
+        printErr(file);
+        printErr("'\n");
+        sysExit(1);
+    };
+    defer alloc.free(source_buf);
+
+    var compiler = Compiler.initForTarget(source_buf, file, .O2, target, .auto);
+    compiler.check() catch |err| {
+        printErr("Check failed: ");
         printErr(@errorName(err));
         printErr("\n");
         sysExit(1);
     };
+    printStr("OK: ");
+    printStr(file);
+    printStr("\n");
+}
 
-    if (!writeFile(tmp_out, result)) {
-        printErr("Error: cannot write temp file\n");
+fn cmdIr(args: []const []const u8) void {
+    var input_file: ?[]const u8 = null;
+    var opt_level: OptLevel = .O2;
+    var target = Target.host();
+
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (parseOptFlag(arg)) |ol| {
+            opt_level = ol;
+        } else if (parseFlagValue(args, &idx, "--target=", "--target")) |spec| {
+            target = parseTargetOrDie(spec);
+        } else if (input_file == null) {
+            input_file = arg;
+        }
+    }
+    const in_path = input_file orelse {
+        printErr("Error: missing input .lir file\n");
+        sysExit(1);
+    };
+    const alloc = std.heap.page_allocator;
+    const source_buf = util.readFileAlloc(alloc, in_path) catch {
+        printErr("Error: cannot read source file\n");
+        sysExit(1);
+    };
+    defer alloc.free(source_buf);
+
+    var compiler = Compiler.initForTarget(source_buf, in_path, opt_level, target, .auto);
+    compiler.emit_ir = true;
+    compiler.check() catch |err| {
+        printErr("IR generation failed: ");
+        printErr(@errorName(err));
+        printErr("\n");
+        sysExit(1);
+    };
+}
+
+fn findExeInPath(alloc: std.mem.Allocator, name: []const u8) ?[]u8 {
+    const path_env = std.process.getEnvVarOwned(alloc, "PATH") catch return null;
+    defer alloc.free(path_env);
+    const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    var it = std.mem.splitScalar(u8, path_env, sep);
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const full = std.fs.path.join(alloc, &.{ dir, name }) catch continue;
+        if (util.fileExists(full)) return full;
+        alloc.free(full);
+    }
+    return null;
+}
+
+fn executeCompiledArtifact(
+    alloc: std.mem.Allocator,
+    compiler: *Compiler,
+    prog_args: []const []const u8,
+) void {
+    const resolved_backend = compiler.target.resolveBackend(compiler.backend_kind);
+    if (resolved_backend == .vm) {
+        var vm_argv = std.ArrayListUnmanaged([]const u8){};
+        defer vm_argv.deinit(alloc);
+        vm_argv.append(alloc, compiler.filename) catch sysExit(1);
+        for (prog_args) |pa| vm_argv.append(alloc, pa) catch sysExit(1);
+        const res = compiler.runInVM(vm_argv.items, false) catch |err| {
+            printErr("VM execution failed: ");
+            printErr(@errorName(err));
+            printErr("\n");
+            sysExit(1);
+        };
+        if (res.exit_code != 0) sysExit(@bitCast(res.exit_code));
+        return;
+    }
+
+    const result = compiler.compile() catch |err| {
+        printErr("Compilation failed: ");
+        printErr(@errorName(err));
+        printErr("\n");
+        sysExit(1);
+    };
+    defer alloc.free(result);
+
+    var tdir_buf: [256]u8 = undefined;
+    const tdir = util.getTempDir(&tdir_buf);
+    const pid = util.sysGetPid();
+    const rand_id = util.randomU64();
+    const tmp_out = std.fmt.allocPrint(alloc, "{s}/lir_run_{d}_{x}{s}", .{ tdir, pid, rand_id, compiler.target.exeSuffix() }) catch {
+        printErr("Error: cannot format temp executable path\n");
+        sysExit(1);
+    };
+    defer {
+        std.fs.cwd().deleteFile(tmp_out) catch {};
+        alloc.free(tmp_out);
+    }
+
+    if (!util.writeFileAtomic(tmp_out, result, 0o700)) {
+        printErr("Error: cannot write temp executable\n");
         sysExit(1);
     }
-    _ = util.syscall3(0x5A, @intFromPtr(tmp_out.ptr), 0o755, 0);
 
-    const pid = util.syscall3(56, 17, 0, 0);
-    if (@as(i64, @bitCast(pid)) == 0) {
-        _ = util.syscall3(59, @intFromPtr(tmp_out.ptr), 0, 0);
+    if (compiler.target.os == .wasi or resolved_backend == .native_wasm) {
+        var child_argv = std.ArrayListUnmanaged([]const u8){};
+        defer child_argv.deinit(alloc);
+
+        if (findExeInPath(alloc, if (builtin.os.tag == .windows) "wasmtime.exe" else "wasmtime")) |wt| {
+            defer alloc.free(wt);
+            child_argv.append(alloc, wt) catch sysExit(1);
+            child_argv.append(alloc, tmp_out) catch sysExit(1);
+            for (prog_args) |pa| child_argv.append(alloc, pa) catch sysExit(1);
+            var child = std.process.Child.init(child_argv.items, alloc);
+            const term = child.spawnAndWait() catch {
+                printErr("Error: failed to execute wasmtime\n");
+                sysExit(1);
+            };
+            std.fs.cwd().deleteFile(tmp_out) catch {};
+            switch (term) {
+                .Exited => |code| if (code != 0) sysExit(@intCast(code)),
+                .Signal => |sig| sysExit(@intCast(128 +% sig)),
+                else => sysExit(1),
+            }
+            return;
+        }
+        if (findExeInPath(alloc, if (builtin.os.tag == .windows) "node.exe" else "node")) |node_exe| {
+            defer alloc.free(node_exe);
+            const script = "import{readFileSync}from'fs';import{WASI}from'wasi';const a=process.argv.slice(1);const w=new WASI({version:'preview1',args:a,env:process.env});const m=await WebAssembly.compile(readFileSync(a[0]));const i=await WebAssembly.instantiate(m,w.getImportObject());w.start(i);";
+            child_argv.append(alloc, node_exe) catch sysExit(1);
+            child_argv.append(alloc, "--input-type=module") catch sysExit(1);
+            child_argv.append(alloc, "-e") catch sysExit(1);
+            child_argv.append(alloc, script) catch sysExit(1);
+            child_argv.append(alloc, tmp_out) catch sysExit(1);
+            for (prog_args) |pa| child_argv.append(alloc, pa) catch sysExit(1);
+            var child = std.process.Child.init(child_argv.items, alloc);
+            const term = child.spawnAndWait() catch {
+                printErr("Error: failed to execute node WASI runner\n");
+                sysExit(1);
+            };
+            std.fs.cwd().deleteFile(tmp_out) catch {};
+            switch (term) {
+                .Exited => |code| if (code != 0) sysExit(@intCast(code)),
+                .Signal => |sig| sysExit(@intCast(128 +% sig)),
+                else => sysExit(1),
+            }
+            return;
+        }
+        printErr("Error: no WASI runtime found (install wasmtime or node); use --backend=vm or 'lir build --target=wasm'\n");
         sysExit(1);
-    } else {
-        var status: u32 = 0;
-        _ = util.syscall3(61, pid, @intFromPtr(&status), 0);
+    }
+
+    if (!compiler.target.isHost()) {
+        printErr("Error: cannot execute non-host binary directly; use --backend=vm to run on host or 'lir build --target=...' to emit binary\n");
+        sysExit(1);
+    }
+
+    var child_argv = std.ArrayListUnmanaged([]const u8){};
+    defer child_argv.deinit(alloc);
+    child_argv.append(alloc, tmp_out) catch sysExit(1);
+    for (prog_args) |pa| child_argv.append(alloc, pa) catch sysExit(1);
+
+    var child = std.process.Child.init(child_argv.items, alloc);
+    const term = child.spawnAndWait() catch {
+        printErr("Error: failed to execute compiled program\n");
+        sysExit(1);
+    };
+    std.fs.cwd().deleteFile(tmp_out) catch {};
+    switch (term) {
+        .Exited => |code| if (code != 0) sysExit(@intCast(code)),
+        .Signal => |sig| sysExit(@intCast(128 +% sig)),
+        else => sysExit(1),
     }
 }
 
+fn cmdRun(args: []const []const u8) void {
+    var input_file: ?[]const u8 = null;
+    var opt_level: OptLevel = .O2;
+    var target = Target.host();
+    var backend_kind: BackendKind = .auto;
+    var prog_args_start: usize = args.len;
+
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (eql(arg, "--")) {
+            prog_args_start = idx + 1;
+            break;
+        } else if (parseFlagValue(args, &idx, "--target=", "--target")) |spec| {
+            target = parseTargetOrDie(spec);
+        } else if (parseFlagValue(args, &idx, "--backend=", "--backend")) |spec| {
+            backend_kind = parseBackendOrDie(spec);
+        } else if (parseOptFlag(arg)) |ol| {
+            opt_level = if (ol == .O0) .O2 else ol;
+        } else if (arg.len > 0 and arg[0] == '-' and input_file == null) {
+            printErr("Error: unknown option '");
+            printErr(arg);
+            printErr("'\n");
+            sysExit(1);
+        } else if (input_file == null) {
+            input_file = arg;
+        } else {
+            prog_args_start = idx;
+            break;
+        }
+    }
+
+    const in_path = input_file orelse {
+        printErr("Error: missing input .lir file\n");
+        sysExit(1);
+    };
+
+    const alloc = std.heap.page_allocator;
+    const source_buf = util.readFileAlloc(alloc, in_path) catch {
+        printErr("Error: cannot read source file\n");
+        sysExit(1);
+    };
+    defer alloc.free(source_buf);
+
+    var compiler = Compiler.initForTarget(source_buf, in_path, opt_level, target, backend_kind);
+    const prog_args = if (prog_args_start < args.len) args[prog_args_start..] else &[_][]const u8{};
+    executeCompiledArtifact(alloc, &compiler, prog_args);
+}
+
 fn cmdInit(name: []const u8) void {
+    if (name.len == 0 or name.len > 128) {
+        printErr("Error: project name must be 1..128 characters\n");
+        sysExit(1);
+    }
+    for (name) |c| {
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '-' or c == '_' or c == '.';
+        if (!ok) {
+            printErr("Error: project name contains unsafe characters (allowed: A-Z, a-z, 0-9, -, _, .)\n");
+            sysExit(1);
+        }
+    }
     printStr("Initializing project '");
     printStr(name);
     printStr("'...\n");
 
-    const src_dir = "src";
-    _ = util.syscall3(83, @intFromPtr(src_dir.ptr), 0o755, 0);
+    std.fs.cwd().makePath("src") catch {};
 
     var manifest_buf: [512]u8 = undefined;
-    var pos: usize = 0;
-    const parts = [_][]const u8{
-        "{\n  \"name\": \"",
-        name,
-        "\",\n  \"version\": \"0.1.0\",\n  \"entry\": \"main.lir\",\n  \"source_dir\": \"src\"\n}\n",
-    };
-    for (parts) |part| {
-        for (part) |ch| {
-            if (pos < manifest_buf.len) {
-                manifest_buf[pos] = ch;
-                pos += 1;
-            }
-        }
-    }
-    if (!writeFile("project.manifest", manifest_buf[0..pos])) {
+    const manifest = std.fmt.bufPrint(&manifest_buf,
+        \\{{
+        \\  "name": "{s}",
+        \\  "version": "0.1.0",
+        \\  "entry": "main.lir",
+        \\  "source_dir": "src"
+        \\}}
+        \\
+    , .{name}) catch "";
+    if (!writeFile("project.manifest", manifest)) {
         printErr("Error: cannot create project.manifest\n");
         sysExit(1);
     }
@@ -239,187 +637,95 @@ fn cmdInit(name: []const u8) void {
     printStr("Created project.manifest\nCreated src/main.lir\n\nNext: lir build src/main.lir\n");
 }
 
-fn fileExists(path: [*:0]const u8) bool {
-    const fd = util.sysOpen(path, 0, 0);
-    if (fd < 0) return false;
-    util.sysClose(@intCast(fd));
-    return true;
-}
+fn cmdTest(args: []const []const u8) void {
+    var arg_path: ?[]const u8 = null;
+    var opt_level: OptLevel = .O2;
+    var target = Target.host();
+    var backend_kind: BackendKind = .auto;
 
-fn cmdTest() void {
-    const test_path: [*:0]const u8 = if (fileExists("src/tests.lir"))
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const s = args[idx];
+        if (eql(s, "--help") or eql(s, "-h")) {
+            printStr("Usage: lir test [file.lir] [-O0|-O1|-O2] [--target <triple>] [--backend <kind>]\n");
+            return;
+        } else if (parseFlagValue(args, &idx, "--target=", "--target")) |spec| {
+            target = parseTargetOrDie(spec);
+        } else if (parseFlagValue(args, &idx, "--backend=", "--backend")) |spec| {
+            backend_kind = parseBackendOrDie(spec);
+        } else if (parseOptFlag(s)) |ol| {
+            opt_level = if (ol == .O0) .O2 else ol;
+        } else if (s.len > 0 and s[0] == '-') {
+            printErr("Error: unknown option '");
+            printErr(s);
+            printErr("'\n");
+            sysExit(1);
+        } else if (arg_path == null) {
+            arg_path = s;
+        }
+    }
+    const test_path: []const u8 = arg_path orelse if (util.fileExists("src/tests.lir"))
         "src/tests.lir"
-    else if (fileExists("src/main.lir"))
+    else if (util.fileExists("src/main.lir"))
         "src/main.lir"
     else
         "tests/fixtures/test.lir";
     printStr("Running tests in ");
-    printStr(std.mem.span(test_path));
+    printStr(test_path);
     printStr("...\n");
-    cmdRun(&[_][*:0]const u8{test_path});
-}
 
-fn getHomeDir(buf: []u8) ?[]const u8 {
-    var env_buf: [4096]u8 = undefined;
-    const fd = sysOpen("/proc/self/environ", 0, 0);
-    if (fd < 0) return null;
-    const n = sysRead(@intCast(fd), &env_buf, 4096);
-    sysClose(@intCast(fd));
-    if (n <= 0) return null;
+    const alloc = std.heap.page_allocator;
+    const source_buf = util.readFileAlloc(alloc, test_path) catch {
+        printErr("Error: cannot read test file '");
+        printErr(test_path);
+        printErr("'\n");
+        sysExit(1);
+    };
+    defer alloc.free(source_buf);
 
-    const env_data = env_buf[0..@intCast(n)];
-    var start: usize = 0;
-    for (env_data, 0..) |b, idx| {
-        if (b == 0) {
-            const entry = env_data[start..idx];
-            if (entry.len >= 5 and eql(entry[0..5], "HOME=")) {
-                const home = entry[5..];
-                if (home.len <= buf.len) {
-                    @memcpy(buf[0..home.len], home);
-                    return buf[0..home.len];
-                }
-            }
-            start = idx + 1;
-        }
-    }
-    return null;
+    var compiler = Compiler.initForTarget(source_buf, test_path, opt_level, target, backend_kind);
+    compiler.test_mode = true;
+    executeCompiledArtifact(alloc, &compiler, &[_][]const u8{});
 }
 
 fn cmdInstall() void {
-    var self_buf: [4096]u8 = undefined;
-    const n = util.sysReadLink("/proc/self/exe", &self_buf) orelse {
+    const alloc = std.heap.page_allocator;
+    const exe_path = std.fs.selfExePathAlloc(alloc) catch {
         printErr("Error: cannot locate current executable\n");
         sysExit(1);
     };
-    if (n >= self_buf.len) {
-        printErr("Error: executable path is too long\n");
-        sysExit(1);
-    }
-    self_buf[n] = 0;
-    const exe_data = self_buf[0..n];
+    defer alloc.free(exe_path);
 
-    const bin_buf = util.readFileAlloc(std.heap.page_allocator, exe_data) catch {
-        printErr("Error: cannot read executable or allocate its contents\n");
+    const bin_buf = util.readFileAlloc(alloc, exe_path) catch {
+        printErr("Error: cannot read executable contents\n");
         sysExit(1);
     };
-    defer std.heap.page_allocator.free(bin_buf);
-    const read_len = bin_buf.len;
+    defer alloc.free(bin_buf);
 
-    const target_path = "/usr/local/bin/lir";
-    if (util.writeFile(target_path, bin_buf[0..read_len])) {
-        _ = util.syscall3(0x5A, @intFromPtr(target_path.ptr), 0o755, 0);
-        printStr("Installed LIR to /usr/local/bin/lir\n");
-    } else {
-        var home_buf: [256]u8 = undefined;
-        if (getHomeDir(&home_buf)) |home| {
-            var user_bin_dir: [512]u8 = undefined;
-            var pos: usize = 0;
-            @memcpy(user_bin_dir[pos..][0..home.len], home); pos += home.len;
-            const suffix = "/.lir/bin";
-            @memcpy(user_bin_dir[pos..][0..suffix.len], suffix); pos += suffix.len;
-            user_bin_dir[pos] = 0;
-            _ = util.syscall3(83, @intFromPtr(user_bin_dir[0..pos].ptr), 0o755, 0); // mkdir -p
-
-            const exe_suffix = "/lir";
-            @memcpy(user_bin_dir[pos..][0..exe_suffix.len], exe_suffix); pos += exe_suffix.len;
-            user_bin_dir[pos] = 0;
-
-            if (util.writeFile(user_bin_dir[0..pos], bin_buf[0..read_len])) {
-                _ = util.syscall3(0x5A, @intFromPtr(user_bin_dir[0..pos].ptr), 0o755, 0);
-                printStr("Installed LIR to ");
-                printStr(user_bin_dir[0..pos]);
-                printStr("\n");
-                return;
-            }
+    if (comptime builtin.os.tag != .windows) {
+        const target_path = "/usr/local/bin/lir";
+        if (util.writeFileAtomic(target_path, bin_buf, 0o755)) {
+            printStr("Installed LIR to /usr/local/bin/lir\n");
+            return;
         }
-        printErr("Error: failed to install LIR binary\n");
-        sysExit(1);
     }
+
+    var home_buf: [512]u8 = undefined;
+    const home_opt = util.getEnvVar("HOME", &home_buf) orelse util.getEnvVar("USERPROFILE", &home_buf);
+    if (home_opt) |home| {
+        const bin_dir = std.fmt.allocPrint(alloc, "{s}/.lir/bin", .{home}) catch sysExit(1);
+        defer alloc.free(bin_dir);
+        std.fs.cwd().makePath(bin_dir) catch {};
+        const exe_name = if (builtin.os.tag == .windows) "lir.exe" else "lir";
+        const exe_target = std.fmt.allocPrint(alloc, "{s}/{s}", .{ bin_dir, exe_name }) catch sysExit(1);
+        defer alloc.free(exe_target);
+        if (util.writeFileAtomic(exe_target, bin_buf, 0o755)) {
+            printStr("Installed LIR to ");
+            printStr(exe_target);
+            printStr("\n");
+            return;
+        }
+    }
+    printErr("Error: failed to install LIR binary\n");
+    sysExit(1);
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// COMPILER (orchestrates the pipeline)
-// ════════════════════════════════════════════════════════════════════════════
-
-const Compiler_ = struct {
-    source: []const u8,
-    filename: []const u8,
-
-    pub fn init(source: []const u8, filename: []const u8) Compiler_ {
-        return .{ .source = source, .filename = filename };
-    }
-
-    pub fn compile(self: *Compiler_) ![]const u8 {
-        // Phase 1: Lex
-        var lexer = lex.Lexer.init(self.source);
-        lexer.tokenize();
-        if (lexer.overflowed) {
-            printErr("Lexical error: token capacity exceeded (maximum 4096 tokens)\n");
-            return error.TooManyTokens;
-        }
-        if (lexer.invalid) {
-            printErr("Lexical error at line ");
-            printUsize(lexer.invalid_line);
-            printErr(": invalid character or unterminated string literal\n");
-            return error.InvalidToken;
-        }
-
-        // Phase 2: Parse
-        var ast = AST.init();
-        var parser_inst = parser_mod.Parser{ .lex = &lexer, .pos = 0, .ast = &ast, .src = self.source };
-        parser_inst.parse();
-        if (parser_inst.invalid_syntax) return error.InvalidSyntax;
-        if (parser_inst.unsupported_float_literal) return error.UnsupportedFloatLiteral;
-        if (ast.overflowed) {
-            printErr("Parse error: AST or struct metadata capacity exceeded\n");
-            return error.TooManyASTNodes;
-        }
-        if (parser_inst.invalid_integer_literal) {
-            printErr("Integer literal error at line ");
-            printUsize(parser_inst.invalid_integer_line);
-            printErr(": malformed or outside the supported i64 range\n");
-            return error.InvalidIntegerLiteral;
-        }
-
-        // Phase 2.5: Optimize the AST
-        var optimizer = Optimizer.init(&ast, self.source);
-        optimizer.optimize();
-
-        // Phase 2.75: Lower AST to IR
-        const ir_gen = std.heap.page_allocator.create(ir_gen_mod.IRGen) catch return error.OutOfMemory;
-        defer std.heap.page_allocator.destroy(ir_gen);
-        ir_gen.init(self.source, &ast);
-        ir_gen.generate();
-        if (ir_gen.mod.string_overflowed) {
-            printErr("IR generation error: string table capacity exceeded\n");
-            return error.StringTableOverflow;
-        }
-        ir_verify_mod.verify(&ir_gen.mod, self.source) catch |err| {
-            printErr("IR verification failed before code generation\n");
-            return err;
-        };
-
-        // Phase 3: Codegen from IR
-        const ir_cg = std.heap.page_allocator.create(ir_codegen_mod.IRCodegen) catch return error.OutOfMemory;
-        defer std.heap.page_allocator.destroy(ir_cg);
-        ir_cg.init(self.source, &ir_gen.mod);
-        ir_cg.compile();
-        if (ir_cg.invalid_reference) return error.UndefinedFunctionCall;
-        if (ir_cg.overflowed) return error.CodeTooLarge;
-
-        // Phase 3.5: Patch references
-        ir_cg.patchStrings();
-
-        // Phase 4: Generate ELF
-        // Allocate exactly the ELF size once: no oversized scratch buffer and
-        // no second allocation/copy of the final executable.
-        const output_size = ir_cg.requiredOutputSize();
-        const output = std.heap.page_allocator.alloc(u8, output_size) catch return error.OutOfMemory;
-        const size = ir_cg.generateELF(output);
-        if (size != output.len) {
-            std.heap.page_allocator.free(output);
-            return error.InvalidELFSize;
-        }
-        return output;
-    }
-};

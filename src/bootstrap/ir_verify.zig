@@ -18,6 +18,8 @@ pub const VerifyError = error{
     InvalidLocalSlot,
     InvalidParameterSlot,
     StackFrameTooLarge,
+    MidBlockTerminator,
+    MalformedPhi,
 };
 
 fn validRange(source: []const u8, start: u32, len: u32) bool {
@@ -27,6 +29,7 @@ fn validRange(source: []const u8, start: u32, len: u32) bool {
 }
 
 pub fn verify(module: *const ir.IRModule, source: []const u8) VerifyError!void {
+    if (module.string_overflowed) return error.TooManyStrings;
     if (module.fn_count > module.fns.len) return error.TooManyFunctions;
     if (module.string_count > module.string_offsets.len or module.string_len > module.strings.len)
         return error.TooManyStrings;
@@ -40,36 +43,55 @@ pub fn verify(module: *const ir.IRModule, source: []const u8) VerifyError!void {
 
     if (module.struct_count > module.struct_defs.len) return error.TooManyStructs;
     for (module.struct_defs[0..module.struct_count]) |st| {
-        if (!validRange(source, st.name_start, st.name_len)) return error.InvalidStructNameRange;
+        const ssrc = module.sourceFor(st.source_id, source);
+        if (!validRange(ssrc, st.name_start, st.name_len)) return error.InvalidStructNameRange;
         if (st.field_count > st.field_offsets.len) return error.InvalidStructFieldCount;
-        if (st.total_size % 8 != 0 or st.total_size / 8 != st.field_count) return error.InvalidStructLayout;
-        for (st.field_offsets[0..st.field_count], 0..) |off, index| {
-            if (off != index * 8 or off >= st.total_size) return error.InvalidStructLayout;
+        if (st.total_size % 8 != 0) return error.InvalidStructLayout;
+        var prev_end: u32 = 0;
+        for (st.field_offsets[0..st.field_count]) |off| {
+            if ((!st.is_union and off < prev_end) or off >= st.total_size or off % 8 != 0) return error.InvalidStructLayout;
+            prev_end = off + 8;
         }
     }
 
     for (module.fns[0..module.fn_count]) |*function| {
-        if (!validRange(source, function.name_start, function.name_len)) return error.InvalidFunctionNameRange;
+        const fsrc = module.sourceFor(function.source_id, source);
+        if (!validRange(fsrc, function.name_start, function.name_len)) return error.InvalidFunctionNameRange;
         if (function.block_count == 0 or function.block_count > function.blocks.len) return error.InvalidBlockCount;
         if (function.param_count > function.param_slots.len) return error.InvalidBlockCount;
         for (function.param_slots[0..function.param_count]) |slot| {
             if (slot == 0 or slot > function.total_locals) return error.InvalidParameterSlot;
         }
 
-        // Bound the current backend's combined local/register stack frame before
-        // its u32 size arithmetic and signed stack displacement calculations.
         var max_vreg: u32 = 0;
-        for (function.blocks[0..function.block_count]) |*block| {
+        for (function.blocks[0..function.block_count], 0..) |*block, bi| {
             if (block.inst_count > block.insts.len) return error.InvalidInstructionCount;
-            for (block.insts[0..block.inst_count]) |inst| {
+            var seen_non_phi = false;
+            for (block.insts[0..block.inst_count], 0..) |inst, idx| {
+                if (inst.op == .phi) {
+                    if (bi == 0 or seen_non_phi) return error.MalformedPhi;
+                } else {
+                    seen_non_phi = true;
+                }
+                if (inst.op.isTerminator() and idx + 1 < block.inst_count) {
+                    return error.MidBlockTerminator;
+                }
                 max_vreg = @max(max_vreg, inst.dest);
                 max_vreg = @max(max_vreg, inst.src1);
                 max_vreg = @max(max_vreg, inst.src2);
                 if (inst.arg_count > inst.args.len) return error.InvalidCallArgumentCount;
                 for (inst.args[0..inst.arg_count]) |arg| max_vreg = @max(max_vreg, arg);
+                if (inst.op == .phi) {
+                    for (inst.phi_blocks[0..inst.arg_count]) |pb| {
+                        if (pb >= function.block_count) return error.InvalidBranchTarget;
+                    }
+                }
                 switch (inst.op) {
                     .load_local, .store_local, .addr_of => {
                         if (inst.slot == 0 or inst.slot > function.total_locals) return error.InvalidLocalSlot;
+                    },
+                    .alloca => {
+                        if (inst.slot == 0 or inst.slot > function.total_locals or inst.imm <= 0) return error.InvalidLocalSlot;
                     },
                     else => {},
                 }
@@ -79,7 +101,6 @@ pub fn verify(module: *const ir.IRModule, source: []const u8) VerifyError!void {
         if (stack_slots > (16 * 1024 * 1024) / 8) return error.StackFrameTooLarge;
 
         for (function.blocks[0..function.block_count]) |*block| {
-            if (block.inst_count > block.insts.len) return error.InvalidInstructionCount;
             for (block.insts[0..block.inst_count]) |inst| {
                 switch (inst.op) {
                     .jump => {
@@ -92,23 +113,17 @@ pub fn verify(module: *const ir.IRModule, source: []const u8) VerifyError!void {
                     .const_str => {
                         if (inst.str_idx >= module.string_count) return error.InvalidStringIndex;
                     },
-                    .call => {
+                    .call, .fn_addr => {
                         if (inst.arg_count > inst.args.len) return error.InvalidCallArgumentCount;
-                        if (!validRange(source, inst.fn_name_start, inst.fn_name_len)) return error.InvalidCallNameRange;
+                        if (inst.callee_fn_idx >= 0) {
+                            if (@as(u32, @intCast(inst.callee_fn_idx)) >= module.fn_count) return error.InvalidCallNameRange;
+                        } else {
+                            const csrc = module.sourceFor(inst.fn_source_id, source);
+                            if (!validRange(csrc, inst.fn_name_start, inst.fn_name_len)) return error.InvalidCallNameRange;
+                        }
                     },
                     else => {
-                        if (inst.op == .call_print or inst.op == .call_println or inst.op == .call_print_int or
-                            inst.op == .call_exit or inst.op == .call_sizeof or inst.op == .call_syscall or
-                            inst.op == .call_memcpy or inst.op == .call_memset or inst.op == .call_printptr or
-                            inst.op == .call_malloc or inst.op == .call_free or inst.op == .call_array_new or
-                            inst.op == .call_array_push or inst.op == .call_array_get or inst.op == .call_array_set or
-                            inst.op == .call_array_len or inst.op == .call_array_free or inst.op == .call_string_new or
-                            inst.op == .call_string_len or inst.op == .call_string_sub or inst.op == .call_string_eq or
-                            inst.op == .call_string_concat or inst.op == .call_string_split or inst.op == .call_open or
-                            inst.op == .call_read or inst.op == .call_write or inst.op == .call_close)
-                        {
-                            if (inst.arg_count > inst.args.len) return error.InvalidCallArgumentCount;
-                        }
+                        if (inst.arg_count > inst.args.len) return error.InvalidCallArgumentCount;
                     },
                 }
             }

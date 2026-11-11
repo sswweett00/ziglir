@@ -1,174 +1,145 @@
 // ════════════════════════════════════════════════════════════════════════════
-// UTILITIES — Syscall wrappers, file I/O, string helpers
+// UTILITIES — Cross-platform OS, file I/O, CSPRNG, stdio, string helpers
+// Works cleanly on Linux, macOS, Windows, FreeBSD, and WASI without inline asm.
 // ════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
+const builtin = @import("builtin");
 
-// Linux syscall numbers (x86-64)
-const SYS_read: u64 = 0;
-const SYS_write: u64 = 1;
-const SYS_openat: u64 = 257;
-const SYS_close: u64 = 3;
-const SYS_lseek: u64 = 8;
-const SYS_exit: u64 = 60;
-
-pub fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) u64 {
-    return asm volatile ("syscall"
-        : [ret] "={rax}" (-> u64),
-        : [num] "{rax}" (num),
-          [a1] "{rdi}" (a1),
-          [a2] "{rsi}" (a2),
-          [a3] "{rdx}" (a3),
-        : "rcx", "r11", "memory"
-    );
+pub fn sysGetPid() u64 {
+    return switch (builtin.os.tag) {
+        .linux => @intCast(@max(@as(i64, @intCast(std.os.linux.getpid())), 0)),
+        .windows => @intCast(std.os.windows.GetCurrentProcessId()),
+        .macos, .ios, .tvos, .watchos => @intCast(@max((struct {
+            extern "c" fn getpid() c_int;
+        }).getpid(), 0)),
+        .wasi => 1,
+        else => if (builtin.link_libc) @intCast(@max(std.c.getpid(), 0)) else 1,
+    };
 }
 
-pub fn syscall4(num: u64, a1: u64, a2: u64, a3: u64, a4: u64) u64 {
-    return asm volatile ("syscall"
-        : [ret] "={rax}" (-> u64),
-        : [num] "{rax}" (num),
-          [a1] "{rdi}" (a1),
-          [a2] "{rsi}" (a2),
-          [a3] "{rdx}" (a3),
-          [a4] "{r10}" (a4),
-        : "rcx", "r11", "memory"
-    );
+pub fn sysGetRandom(buf: []u8) bool {
+    std.crypto.random.bytes(buf);
+    return true;
 }
 
-pub fn sysWrite(fd: u64, buf: [*]const u8, len: u64) i64 {
-    return @bitCast(syscall3(SYS_write, fd, @intFromPtr(buf), len));
+pub fn randomU64() u64 {
+    return std.crypto.random.int(u64);
 }
 
-pub fn sysOpen(path: [*]const u8, flags: u64, mode: u64) i64 {
-    const AT_FDCWD: u64 = @bitCast(@as(i64, -100));
-    return @bitCast(syscall4(SYS_openat, AT_FDCWD, @intFromPtr(path), flags, mode));
+pub fn sysUnlink(path: [*:0]const u8) i64 {
+    const slice = std.mem.span(path);
+    std.fs.cwd().deleteFile(slice) catch return -1;
+    return 0;
 }
 
-pub fn sysClose(fd: u64) void {
-    _ = syscall3(SYS_close, fd, 0, 0);
-}
-
-pub fn sysRead(fd: u64, buf: [*]u8, len: u64) i64 {
-    return @bitCast(syscall3(SYS_read, fd, @intFromPtr(buf), len));
-}
-
-pub fn sysReadLink(path: []const u8, buf: []u8) ?usize {
-    const res = syscall3(89, @intFromPtr(path.ptr), @intFromPtr(buf.ptr), buf.len);
-    const n: i64 = @bitCast(res);
-    if (n <= 0) return null;
-    return @intCast(n);
-}
-
-pub fn sysLseek(fd: u64, offset: i64, whence: u64) i64 {
-    return @bitCast(syscall3(SYS_lseek, fd, @as(u64, @bitCast(offset)), whence));
+pub fn sysMkdir(path: [*:0]const u8, mode: u64) i64 {
+    _ = mode;
+    const slice = std.mem.span(path);
+    std.fs.cwd().makePath(slice) catch return -1;
+    return 0;
 }
 
 pub fn sysExit(code: u64) noreturn {
-    _ = syscall3(SYS_exit, code, 0, 0);
-    unreachable;
+    std.process.exit(@truncate(code));
+}
+
+pub fn getTempDir(buf: []u8) []const u8 {
+    inline for (.{ "TMPDIR", "TEMP", "TMP" }) |key| {
+        if (getEnvVar(key, buf)) |val| {
+            if (val.len > 0) return val;
+        }
+    }
+    if (builtin.os.tag == .windows) {
+        const fb = ".";
+        @memcpy(buf[0..fb.len], fb);
+        return buf[0..fb.len];
+    }
+    const fb = "/tmp";
+    @memcpy(buf[0..fb.len], fb);
+    return buf[0..fb.len];
+}
+
+pub fn getEnvVar(name: []const u8, buf: []u8) ?[]const u8 {
+    const val = std.process.getEnvVarOwned(std.heap.page_allocator, name) catch return null;
+    defer std.heap.page_allocator.free(val);
+    if (val.len > buf.len) return null;
+    @memcpy(buf[0..val.len], val);
+    return buf[0..val.len];
 }
 
 pub fn printStr(s: []const u8) void {
-    _ = sysWrite(1, s.ptr, s.len);
+    std.io.getStdOut().writeAll(s) catch {};
 }
 
 pub fn printErr(s: []const u8) void {
-    _ = sysWrite(2, s.ptr, s.len);
+    std.io.getStdErr().writeAll(s) catch {};
 }
 
 pub fn readFile(path: []const u8, buf: []u8) ?usize {
-    var path_z: [1024]u8 = undefined;
-    if (path.len >= 1024) return null;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
-
-    const fd: i64 = sysOpen(path_z[0..].ptr, 0, 0);
-    if (fd < 0) return null;
-    const file_fd: u64 = @intCast(fd);
-    const size = sysLseek(file_fd, 0, 2);
-    if (size < 0) {
-        sysClose(file_fd);
-        return null;
-    }
-    _ = sysLseek(file_fd, 0, 0);
-    if (size > @as(i64, @intCast(buf.len))) {
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    const stat = file.stat() catch return null;
+    if (stat.size > buf.len) {
         printErr("Error: file too large for buffer (");
-        printUsize(@intCast(size));
+        printErrUsize(@intCast(stat.size));
         printErr(" bytes)\n");
-        sysClose(file_fd);
         return null;
     }
-    const read_size: usize = @intCast(size);
-    var total: usize = 0;
-    while (total < read_size) {
-        const n = sysRead(file_fd, buf.ptr + total, read_size - total);
-        if (n <= 0) {
-            sysClose(file_fd);
-            return null;
-        }
-        total += @intCast(n);
-    }
-    sysClose(file_fd);
-    return total;
+    const n = file.readAll(buf[0..@intCast(stat.size)]) catch return null;
+    return n;
 }
 
 pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var path_z: [1024]u8 = undefined;
-    if (path.len >= path_z.len) return error.PathTooLong;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
-
-    const fd = sysOpen(path_z[0..].ptr, 0, 0);
-    if (fd < 0) return error.OpenFailed;
-    const file_fd: u64 = @intCast(fd);
-    const size = sysLseek(file_fd, 0, 2);
-    if (size < 0) {
-        sysClose(file_fd);
-        return error.SeekFailed;
-    }
-    if (sysLseek(file_fd, 0, 0) < 0) {
-        sysClose(file_fd);
-        return error.SeekFailed;
-    }
-
-    const len: usize = @intCast(size);
-    const data = allocator.alloc(u8, len) catch {
-        sysClose(file_fd);
-        return error.OutOfMemory;
-    };
-    var total: usize = 0;
-    while (total < len) {
-        const n = sysRead(file_fd, data.ptr + total, len - total);
-        if (n <= 0) {
-            allocator.free(data);
-            sysClose(file_fd);
-            return error.ReadFailed;
-        }
-        total += @intCast(n);
-    }
-    sysClose(file_fd);
-    return data;
+    return std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024 * 1024);
 }
 
 pub fn writeFile(path: []const u8, data: []const u8) bool {
-    var path_z: [1024]u8 = undefined;
-    if (path.len >= 1024) return false;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
+    const file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch return false;
+    defer file.close();
+    file.writeAll(data) catch return false;
+    return true;
+}
 
-    const fd: i64 = sysOpen(path_z[0..].ptr, 0x241, 0o644); // O_WRONLY|O_CREAT|O_TRUNC
-    if (fd < 0) return false;
-    const file_fd: u64 = @intCast(fd);
-    var written: u64 = 0;
-    while (written < data.len) {
-        const n = sysWrite(file_fd, data.ptr + written, data.len - written);
-        if (n <= 0) {
-            sysClose(file_fd);
+pub fn fileExists(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
+}
+
+/// Write data to a temporary sibling file with CSPRNG suffix + exclusive creation,
+/// set permissions on POSIX platforms, and atomically rename into place so failed
+/// builds never leave partial executables.
+pub fn writeFileAtomic(path: []const u8, data: []const u8, mode: u64) bool {
+    if (path.len == 0 or path.len >= 960) return false;
+
+    var tmp_buf: [1024]u8 = undefined;
+    const tmp_slice = std.fmt.bufPrint(&tmp_buf, "{s}.lir_tmp_{d}_{x}", .{ path, sysGetPid(), randomU64() }) catch return false;
+
+    const create_flags: std.fs.File.CreateFlags = if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi)
+        .{ .exclusive = true }
+    else
+        .{ .exclusive = true, .mode = @intCast(mode & 0o777) };
+
+    const file = std.fs.cwd().createFile(tmp_slice, create_flags) catch return false;
+    var ok = false;
+    defer if (!ok) {
+        std.fs.cwd().deleteFile(tmp_slice) catch {};
+    };
+
+    file.writeAll(data) catch {
+        file.close();
+        return false;
+    };
+    if (comptime builtin.os.tag != .windows and builtin.os.tag != .wasi) {
+        file.chmod(@intCast(mode & 0o777)) catch {
+            file.close();
             return false;
-        }
-        written += @intCast(n);
+        };
     }
-    sysClose(file_fd);
+    file.close();
+
+    std.fs.cwd().rename(tmp_slice, path) catch return false;
+    ok = true;
     return true;
 }
 
@@ -177,8 +148,7 @@ pub fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-pub fn printUsize(val: usize) void {
-    var buf: [20]u8 = undefined;
+fn formatUsize(val: usize, buf: *[20]u8) []const u8 {
     var v = val;
     var i: usize = 20;
     if (v == 0) {
@@ -191,7 +161,17 @@ pub fn printUsize(val: usize) void {
             v /= 10;
         }
     }
-    printStr(buf[i..20]);
+    return buf[i..20];
+}
+
+pub fn printUsize(val: usize) void {
+    var buf: [20]u8 = undefined;
+    printStr(formatUsize(val, &buf));
+}
+
+pub fn printErrUsize(val: usize) void {
+    var buf: [20]u8 = undefined;
+    printErr(formatUsize(val, &buf));
 }
 
 pub fn write16(buf: []u8, val: u16) void {

@@ -1,7 +1,7 @@
 // Threading and Mutex Demo in LIR
 
-fn worker(counter: i64) -> i64 {
-    let i = 0
+fn worker(counter: *i64) -> i64 {
+    var i = 0
     while i < 100000 {
         let cur = *counter
         *counter = cur + 1
@@ -10,8 +10,8 @@ fn worker(counter: i64) -> i64 {
     return 0
 }
 
-fn mutex_worker(mtx: i64) -> i64 {
-    let i = 0
+fn mutex_worker(mtx: *i64) -> i64 {
+    var i = 0
     while i < 100000 {
         @mutex_lock(mtx)
         let cur = *mtx

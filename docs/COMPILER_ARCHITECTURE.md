@@ -2,7 +2,7 @@
 
 ## Mission
 
-Ziglir is a compiler written in Zig that directly emits native machine code. The compiler must not depend on GCC, Clang, LLVM, or another compiler as a hidden implementation layer. Its first supported target remains Linux x86-64 ELF until another backend has its own conformance suite.
+Ziglir is a compiler written in Zig that directly emits native machine code without requiring GCC, Clang, or LLVM as a mandatory dependency. Direct zero-dependency backends exist for Linux x86-64 ELF (`ir_codegen.zig`) and `wasm32-wasi` (`wasm_backend.zig`), complemented by a portable in-process IR VM (`ir_vm.zig`) and an optional C11 cross-target backend (`c_backend.zig`) verified via differential parity tests against the canonical x86-64 ELF backend.
 
 The design optimizes in this order:
 
