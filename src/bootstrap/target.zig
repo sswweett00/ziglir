@@ -117,6 +117,23 @@ pub const Target = struct {
         return self.arch == h.arch and self.os == h.os;
     }
 
+    /// Returns whether this architecture/OS pair is implemented by the bootstrap compiler.
+    /// Keep this list aligned with Target.parse and the backend toolchain support matrix.
+    pub fn isSupported(self: Target) bool {
+        return switch (self.os) {
+            .linux => self.arch == .x86_64 or self.arch == .aarch64 or self.arch == .riscv64,
+            .macos => self.arch == .x86_64 or self.arch == .aarch64,
+            .windows => self.arch == .x86_64 or self.arch == .aarch64,
+            .wasi => self.arch == .wasm32,
+            .freebsd => self.arch == .x86_64 or self.arch == .aarch64,
+        };
+    }
+
+    /// The direct WebAssembly emitter only supports the wasm32-wasi ABI pair.
+    pub fn isWasm32Wasi(self: Target) bool {
+        return self.arch == .wasm32 and self.os == .wasi;
+    }
+
     pub fn binaryFormat(self: Target) BinaryFormat {
         return switch (self.os) {
             .linux, .freebsd => .elf,
@@ -169,7 +186,7 @@ pub const Target = struct {
     pub fn resolveBackend(self: Target, requested: BackendKind) BackendKind {
         if (requested != .auto) return requested;
         if (self.arch == .x86_64 and self.os == .linux) return .native_elf;
-        if (self.arch == .wasm32 or self.os == .wasi) return .native_wasm;
+        if (self.isWasm32Wasi()) return .native_wasm;
         return .c;
     }
 

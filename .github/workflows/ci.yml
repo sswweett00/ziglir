@@ -25,6 +25,9 @@ jobs:
       - name: Run Unit Tests (ReleaseSafe)
         run: zig build test -Doptimize=ReleaseSafe
 
+      - name: Run Unit Tests (ReleaseFast)
+        run: zig build test -Doptimize=ReleaseFast
+
       - name: Build LIR Compiler (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
 

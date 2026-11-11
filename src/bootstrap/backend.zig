@@ -20,6 +20,7 @@ pub const BackendKind = target_mod.BackendKind;
 pub const VMResult = ir_vm_mod.VMResult;
 
 pub const BackendError = error{
+    UnsupportedTarget,
     UnsupportedTargetForNativeElf,
     UnsupportedTargetForNativeWasm,
     InvalidBackendForBuild,
@@ -39,6 +40,7 @@ pub fn emitCSource(
     source: []const u8,
     target: Target,
 ) ![]u8 {
+    if (!target.isSupported()) return error.UnsupportedTarget;
     return try c_backend_mod.emitC(alloc, module, source, target);
 }
 
@@ -49,6 +51,7 @@ pub fn emitBinary(
     target: Target,
     requested_backend: BackendKind,
 ) ![]u8 {
+    if (!target.isSupported()) return error.UnsupportedTarget;
     const kind = target.resolveBackend(requested_backend);
     switch (kind) {
         .native_elf => {
@@ -70,7 +73,7 @@ pub fn emitBinary(
             return output;
         },
         .native_wasm => {
-            if (target.arch != .wasm32 and target.os != .wasi) {
+            if (!target.isWasm32Wasi()) {
                 return error.UnsupportedTargetForNativeWasm;
             }
             return try wasm_backend_mod.emitWasm(alloc, module, source);
