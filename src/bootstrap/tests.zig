@@ -2634,6 +2634,48 @@ test "target descriptor parsing, aliases, and backend resolution" {
     try std.testing.expect(main.Target.parse("mips-plan9") == null);
 }
 
+test "target validation rejects unsupported architecture and OS combinations" {
+    const invalid_targets = [_]main.Target{
+        .{ .arch = .x86_64, .os = .wasi },
+        .{ .arch = .wasm32, .os = .linux },
+        .{ .arch = .riscv64, .os = .macos },
+        .{ .arch = .aarch64, .os = .wasi },
+    };
+    const src = "fn main() -> i64 { return 0 }";
+
+    for (invalid_targets) |target| {
+        try std.testing.expect(!target.isSupported());
+        try std.testing.expect(target.resolveBackend(.auto) != .native_wasm);
+
+        var compiler = main.Compiler.initForTarget(src, "<invalid_target>", .O2, target, .auto);
+        compiler.quiet = true;
+        try std.testing.expectError(error.UnsupportedTarget, compiler.compile());
+    }
+}
+
+test "explicit native backends reject incompatible valid targets" {
+    const src = "fn main() -> i64 { return 0 }";
+    const linux = main.Target.parse("x86_64-linux") orelse return error.TestUnexpectedResult;
+    const wasi = main.Target.parse("wasm32-wasi") orelse return error.TestUnexpectedResult;
+
+    var wasm_on_linux = main.Compiler.initForTarget(src, "<wasm_on_linux>", .O2, linux, .native_wasm);
+    wasm_on_linux.quiet = true;
+    try std.testing.expectError(error.UnsupportedTargetForNativeWasm, wasm_on_linux.compile());
+
+    var elf_on_wasi = main.Compiler.initForTarget(src, "<elf_on_wasi>", .O2, wasi, .native_elf);
+    elf_on_wasi.quiet = true;
+    try std.testing.expectError(error.UnsupportedTargetForNativeElf, elf_on_wasi.compile());
+}
+
+test "C source emission rejects unsupported target combinations" {
+    const src = "fn main() -> i64 { return 0 }";
+    const invalid = main.Target{ .arch = .wasm32, .os = .linux };
+    var compiler = main.Compiler.initForTarget(src, "<invalid_c_target>", .O2, invalid, .c);
+    compiler.quiet = true;
+    compiler.emit_c = true;
+    try std.testing.expectError(error.UnsupportedTarget, compiler.compile());
+}
+
 test "target-aware @target_os, @target_arch, and @target_ptr_bits lowering" {
     const src =
         \\fn main() -> i64 {
