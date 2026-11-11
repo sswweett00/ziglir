@@ -13,7 +13,7 @@
 
 // n adet boşluk bas
 fn sp(n: i32) {
-    let i: i32 = 0
+    var i: i32 = 0
     while i < n {
         print(" ")
         i = i + 1
@@ -22,7 +22,7 @@ fn sp(n: i32) {
 
 // n adet yatay çizgi karakteri bas
 fn hline(n: i32) {
-    let i: i32 = 0
+    var i: i32 = 0
     while i < n {
         print("─")
         i = i + 1
@@ -31,7 +31,7 @@ fn hline(n: i32) {
 
 // n adet dolu blok bas (progress bar dolu kısım)
 fn bar(n: i32) {
-    let i: i32 = 0
+    var i: i32 = 0
     while i < n {
         print("█")
         i = i + 1
@@ -40,7 +40,7 @@ fn bar(n: i32) {
 
 // n adet boş blok bas (progress bar boş kısım)
 fn shade(n: i32) {
-    let i: i32 = 0
+    var i: i32 = 0
     while i < n {
         print("░")
         i = i + 1

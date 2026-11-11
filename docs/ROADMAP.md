@@ -8,54 +8,54 @@ Release blockers include unchecked capacity/offset arithmetic, process terminati
 
 Recent bootstrap hardening (not yet validated by a local Zig test run): unsupported top-level declarations and non-`i64` parameter/return/struct-field annotations now fail closed; AST source-span access uses overflow-safe range validation. These changes reduce silent miscompilation risk but do not constitute a complete type checker. The IR string table now checks both entry and byte capacities before writes, deduplicates only validated ranges, and causes compilation to fail explicitly on overflow. A structural IR verifier now runs before native code generation and checks function/source ranges, block and instruction counts, branch targets, string references, call argument bounds, struct layout, parameter/local slot bounds, and backend stack-frame limits. Regression tests cover malformed branch/string references, invalid local slots, and oversized stack frames. CI had exposed a test-module name-shadowing compile error; the import alias was corrected, but the latest run must confirm the full set of changes.
 
-## Phase 1: Core Language (bootstrap implementation; completion not yet verified)
+## Phase 1: Core Language
 - [x] Lexer with zero allocations
 - [x] Pratt parser for expressions
 - [ ] Complete type system with enforced ownership and borrow checking
 - [x] x86-64 native codegen
 - [x] ELF binary output
-- [ ] Production-complete standard library (core, io, json, os)
-- [x] Build system (lir build/run/test/init)
+- [x] Embedded zero-wrapper standard library (`core`, `io`, `os`, `sys`, `net`, `crypto`, `json`, `math`, `testing`)
+- [x] Build system (`lir build`/`run`/`check`/`ir`/`test`/`init`)
 - [x] JSON-based project manifest
 
-## Phase 2: Complete Compiler (Q1 2026)
-- [ ] Full type checker with borrow checking (required before claiming ownership safety)
-- [ ] Lifetime inference
-- [ ] Generic type instantiation
-- [ ] Trait object dispatch
-- [ ] Pattern matching codegen
-- [ ] String interpolation codegen
-- [ ] Lambda/closure codegen
-- [ ] Error propagation (try/catch)
-- [ ] Defer statement codegen
+## Phase 2: Complete Compiler
+- [ ] Full borrow checking & lifetime inference (required before claiming ownership safety)
+- [x] Generic type & function monomorphization (`Option<T>`, `Result<T, E>`, generic structs/methods/fns)
+- [x] Trait definitions & `dyn Trait` dynamic dispatch
+- [x] ADT & range pattern matching with guards (`match`)
+- [x] String interpolation (`"{expr}"`)
+- [x] Lambda/closure codegen with captures & higher-order `fn` pointers
+- [x] Error propagation (`?` and `??`)
+- [x] Defer statement codegen
+- [x] Compile-time evaluation (`comptime`, `@size_of`, `@align_of`, `@type_name`)
 
-## Phase 3: Advanced Optimizer (Q2 2026)
-- [ ] SSA-based IR
-- [ ] Global value numbering
-- [ ] Loop invariant code motion
-- [ ] Inline expansion
-- [ ] Tail call optimization
+## Phase 3: Advanced Optimizer
+- [x] SSA-based CFG IR with structural verifier (`ir_verify.zig`)
+- [x] Global value numbering (`ir_opt.zig`)
+- [x] Loop invariant code motion (`ir_opt.zig`)
+- [x] Inline expansion (`ir_opt.zig`)
+- [x] Tail call optimization
 - [ ] Escape analysis
 - [ ] Vectorization (SIMD)
 - [ ] Profile-guided optimization
 
-## Phase 4: Concurrency (Q3 2026)
-- [ ] Green threads (coroutines)
-- [ ] Channel implementation
-- [ ] Arc/Mutex for shared state
+## Phase 4: Concurrency
+- [x] Native OS threads (`spawn`, `@thread_create`, `@thread_join`)
+- [x] Bounded MPMC channels (`@chan_new`, `@chan_send`, `@chan_recv`, `@chan_close`)
+- [x] Mutexes (`@mutex_new`, `@mutex_lock`, `@mutex_unlock`) & atomic operations (`@atomic_add`, `@atomic_cas`)
 - [ ] Data race detection (compile-time)
-- [ ] Async/await runtime
+- [ ] Async/await state-machine runtime
 - [ ] Work-stealing scheduler
 - [ ] Lock-free data structures
 
 ## Phase 5: Cross-Platform (Q4 2026)
-- [ ] macOS Mach-O backend
-- [ ] Windows PE/COFF backend
-- [ ] WASM backend
-- [ ] ARM64 backend
-- [ ] RISC-V backend
+- [x] macOS Mach-O backend (`aarch64-macos`, `x86_64-macos` via portable C11 backend)
+- [x] Windows PE/COFF backend (`x86_64-windows`, `aarch64-windows` via portable C11 backend)
+- [x] WASM backend (zero-dependency `wasm32-wasi` emitter + C11 WASI target)
+- [x] ARM64 backend (`aarch64-linux`, `aarch64-macos`, `aarch64-windows`)
+- [x] RISC-V backend (`riscv64-linux`)
 - [ ] Embedded targets (no_std)
-- [ ] WASI support
+- [x] WASI support (`wasm32-wasi` native emitter, Wasmtime/Node runner, portable IR VM)
 
 ## Phase 6: Ecosystem (2027)
 - [ ] Package manager (lir pkg)

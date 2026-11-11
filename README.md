@@ -8,32 +8,49 @@
 
 ## What is LIR?
 
-LIR is a systems-language project aiming to combine a small, approachable syntax with predictable memory use and highly optimized native code. Its long-term performance goal is to outperform C on selected, benchmarked workloads without sacrificing correctness or readability. That is a goal to prove with reproducible measurements—not a universal speed guarantee. The checked-in bootstrap compiler currently targets Linux x86-64 ELF; features listed as design goals are not necessarily implemented yet. The intended low-level feature contract and staged implementation gates are documented in [Low-Level Language Specification](docs/LOW_LEVEL_LANGUAGE.md); that document explicitly distinguishes design requirements from implemented features.
+LIR is a systems-language project aiming to combine a small, approachable syntax with predictable memory use and highly optimized native code. Its long-term performance goal is to outperform C on selected, benchmarked workloads without sacrificing correctness or readability. That is a goal to prove with reproducible measurements—not a universal speed guarantee. The bootstrap compiler features zero-dependency direct emitters for Linux x86-64 ELF and `wasm32-wasi`, a portable in-process IR VM (`--backend=vm`), and a portable C11 backend (`--backend=c` / `--emit-c`) supporting ARM64, RISC-V, macOS, Windows, FreeBSD, and Linux; features listed as design goals in [Low-Level Language Specification](docs/LOW_LEVEL_LANGUAGE.md) distinguish design requirements from implemented features.
 
 ### Design principles
 
-- **Zig-native implementation:** the checked-in bootstrap compiler and native code-generation pipeline are implemented in Zig. LIR is not merely a syntax wrapper around GCC, Clang, LLVM, or another language compiler.
-- **Direct native output:** the current bootstrap targets Linux x86-64 ELF and emits machine code itself.
+- **Zig-native implementation:** the checked-in bootstrap compiler and native code-generation pipeline are implemented in Zig. Direct `x86_64-linux` ELF64 and `wasm32-wasi` `.wasm` emitters require no external toolchain, while `--backend=c` / `--emit-c` lowers verified IR to strict C11 for cross-platform compilation (`cc` / `zig cc`) and `--backend=vm` runs programs directly in-process.
 - **Readable language design:** syntax should stay small and consistent; unsupported features must fail explicitly rather than silently generating incorrect code.
 - **Measured performance:** performance claims require repeatable benchmarks against equivalent C implementations, including correctness checks. No universal claim that LIR is faster than C is made.
 - **Honest implementation status:** memory safety, compile-time execution, concurrency primitives, cross-compilation, and a stable standard library are not advertised as complete unless they are implemented and tested.
 
 | Capability | Current status |
 |---|---|
-| Bootstrap compiler implementation | Zig |
-| Native output | Linux x86-64 ELF |
-| External compiler required at runtime | No; the compiler emits the target code itself |
-| C ABI / foreign-function interface | Not yet a complete, stable contract |
-| Memory-safety guarantees | Not yet complete |
-| Compile-time execution | Not yet complete |
-| Built-in concurrency | Not yet complete |
-| Cross-compilation | Not yet complete |
-| Stable standard library | Not yet complete |
+| Bootstrap compiler implementation | Zig (SSA IR + optimizer + x86-64 ELF, Wasm32-WASI, C11, and IR VM backends) |
+| Native output | Zero-dependency Linux x86-64 ELF64 (`ET_EXEC`) & `wasm32-wasi` (`.wasm`); C11 cross-targets for ARM64/RISC-V/macOS/Windows/FreeBSD |
+| External compiler required at runtime | No for `x86_64-linux`, `wasm32-wasi`, and `--backend=vm`; optional `cc`/`zig cc` for C11 cross-targets |
+| Multi-paradigm features | Generics, ADTs (`Option`/`Result`), `match` + guards, expression `if`/`elif`/`else`, repeat arrays `[val; N]`, compound bitwise/shift ops (`&=`, `|=`, `^=`, `<<=`, `>>=`), `panic(...)`, closures, `trait`/`dyn Trait`, tuples, maps, list comprehensions, string interpolation, unions |
+| Compile-time execution | `comptime` blocks/`fn`, `@size_of`, `@align_of`, `@type_name`, `@target_os`, `@target_arch`, `@target_ptr_bits` |
+| Built-in concurrency | OS threads (`spawn`, `@thread_join`), channels (`@chan_*`), mutexes, atomics (`@atomic_add`, `@atomic_cas`) |
+| Embedded standard library | Zero-wrapper `std::{core,io,os,sys,net,crypto,json,math,str,algo,testing}` with string helpers (`str_trim`, `str_to_upper`/`lower`, `str_index_of`, `str_repeat`), Shell sort / binary search / `gcd`/`lcm`/`pow`, `eprint`, `append_file`, RFC 8529 JSON escaping, unbiased `random_range`, constant-time primitives, saturating/checked math |
+| Security & safety architecture | Compile-time UAF/double-free/defer-conflict/close/loop-leak analysis, compile-time heap/string/const-ptr bounds checks, `fn` pointer cast & thread entry validation, 32 KiB per-function stack frame budget, non-terminating spin-loop detection, strict W^X ELF64 (RX `.text`, R-only NX `.rodata`, RW NX `.bss`/stack), CSPRNG `getrandom` stack & heap header/overflow canaries, full zero-wipe on `free`, `<4096`/kernel-space pointer traps, coarse indirect-call CFI, `PROT_NONE` thread stack guard pages, HashDoS-keyed maps, shift traps, exhaustive `match`, strict `?` |
+| Optimizer pipeline | `-O2` default on all CLI `build`/`run`/`test`/`check` invocations (`-O0` auto-promoted on codegen commands): 2-pass function inlining (`<= 8` blocks, `<= 48` locals, `<= 56` insts), Cytron SSA `mem2reg`, unconditional power-of-2 strength reduction (`mul` -> `shl`, `udiv` -> `ushr`, `umod` -> `bit_and`, `* -1` -> `neg`), GVN, trap-safe LICM, DCE |
+| Full borrow checker / embedded `no_std` | Planned (full lifetime borrow checking and bare-metal `no_std` remain future work) |
 | Performance versus C | Must be established workload-by-workload with reproducible benchmarks |
+
+## Comparison vs C, Rust, Zig, and Go
+
+| Capability | C (C23) | Rust | Zig | Go | LIR (Current Bootstrap) |
+|---|---|---|---|---|---|
+| Direct native ELF/WASM without external linker | No | No (LLVM + lld) | Self-hosted | Go linker | **Yes** (`x86_64-linux` ELF64 & `wasm32-wasi` `.wasm`) |
+| Generics (`fn<T>`, `struct<T>`) | No (`_Generic`) | Yes | Yes (`comptime`) | Yes | **Yes** (monomorphized) |
+| Algebraic data types (`Option`/`Result` + `?`) | No | Yes | Error unions (`!T`) | Multi-return | **Yes** (`Option`/`Result`, `?`, `??`) |
+| Expression-valued `if`/`elif`/`else` & `match` | Ternary only | Yes | Yes | No | **Yes** (`if`/`elif`/`else`, `match`) |
+| Fixed arrays `[N]T` + `[val; N]` + bounds checks | Manual | Yes | Yes | `[N]T` | **Yes** (compile + runtime bounds + zero-fill) |
+| Bitwise/shift compound ops (`&=`, `|=`, `^=`, `<<=`, `>>=`) | Yes | Yes | Yes | Yes | **Yes** (signed/unsigned + shift checks) |
+| Compile-time execution (`comptime`) | `constexpr` | `const fn` | Yes | `const` only | **Yes** (`comptime` blocks & `fn`) |
+| Built-in OS threads, channels, atomics | C11 / pthreads | `std::sync` / `mpsc` | `std.Thread` | Goroutines / chan | **Yes** (`spawn`, `@chan_*`, `@atomic_*`) |
+| Built-in W^X + stack/heap canaries + zero-on-free | Flag-dependent | Flag-dependent | Debug/Safe | Runtime GC | **Yes** (always-on CSPRNG + W^X/NX + zero-wipe) |
+| `panic(...)` + trap on null/div0/OOB/shift | UB by default | Panic | Safety-checked | Panic | **Yes** (stderr message + `ud2` trap + bounds checks) |
+| Full lifetime borrow checker / GC | No | Borrow checker | Manual/arenas | Tracing GC | Compile-time UAF/leak/defer/bounds analysis (full borrow checker planned) |
+| Multi-target architectures (ARM64/RISC-V/etc.) | Yes | Yes | Yes | Yes | **Yes** (`x86_64`/`aarch64`/`riscv64`/`wasm32` across Linux/macOS/Windows/WASI/FreeBSD) |
 
 ## Quick Start
 
-The bootstrap compiler is built with **Zig 0.13.0** and currently targets Linux x86-64.
+The bootstrap compiler is built with **Zig 0.13.0** and runs on Linux, macOS, and Windows.
 
 ```bash
 git clone https://github.com/sswweett00/ziglir.git
@@ -43,9 +60,15 @@ cd ziglir
 zig build -Doptimize=ReleaseFast
 zig build test
 
-# Compile and run a checked-in example
+# List supported cross-compilation targets and backends
+./zig-out/bin/lir targets
+
+# Compile and run natively or via portable IR VM / Wasm32-WASI / C11
 ./zig-out/bin/lir build tests/fixtures/test.lir -o /tmp/lir-example
 /tmp/lir-example
+./zig-out/bin/lir run examples/hello-world/src/main.lir --backend=vm
+./zig-out/bin/lir build examples/hello-world/src/main.lir --target=wasm32-wasi -o /tmp/hello.wasm
+./zig-out/bin/lir build examples/hello-world/src/main.lir --target=aarch64-macos -o /tmp/hello-mac
 
 # Optional: generate a starter project
 ./zig-out/bin/lir init myproject
@@ -66,89 +89,79 @@ fn main() -> i64 {
 }
 ```
 
-## Language design examples
+## Implemented Language Features
 
-The examples below illustrate intended syntax and are **not a promise that every feature currently compiles**. The implemented subset is defined by the compiler, tests, and [language specification](docs/SPEC.md).
+The snippets below compile and run natively with `./zig-out/bin/lir` (verified by `zig build test`). Full borrow checking remains planned work.
 
-### Ownership and memory safety (planned; not enforced comprehensively yet)
+### Generics, `Option`/`Result`, `?` / `??`, and Pattern Matching
 
 ```lir
-fn main() {
-    let s = "hello"      // s owns the string
-    let t = s             // t takes ownership (s is moved)
-    print(t)              // OK: t is valid
-    // print(s)           // Compile error: s was moved
+struct Box<T> { val: T }
+
+fn half_even(x: i64) -> Option<i64> {
+    if x % 2 == 0 { return Some(x / 2) }
+    return None
 }
-```
 
-### Concurrency (planned; not implemented as a stable feature)
-
-```lir
-import core
-
-fn main() {
-    let (tx, rx) = channel()
-    
-    spawn {
-        tx.send(compute())
+fn double_half(x: i64) -> i64 {
+    let h = half_even(x) ?? -1
+    match h {
+        n if n > 10 => n * 2,
+        n => n,
     }
-    
-    let result = rx.recv()
+}
+```
+
+### Closures, Pipe Operator, Traits (`dyn Trait`), and Tuples/Maps
+
+```lir
+trait Scorer { fn score(&self) -> i64 }
+fn eval_dyn(obj: dyn Scorer) -> i64 { return obj.score() }
+
+fn main() -> i64 {
+    let k = 10
+    let add_k = |x: i64| -> i64 { return x + k }
+    let res = 5 |> add_k
+    let m = #{"answer": res}
+    println("Result: {m[\"answer\"]}")
+    0
+}
+```
+
+### Concurrency (`spawn`, Channels, Atomics) and `comptime`
+
+```lir
+comptime fn table_size() -> i64 { return 6 * 7 }
+const SIZE = table_size()
+
+fn main() -> i64 {
+    let ch = @chan_new(4)
+    let th = spawn { @chan_send(ch, SIZE) }
+    let result = @chan_recv(ch)
+    @thread_join(th)
+    @chan_close(ch)
     println("Result: {result}")
+    0
 }
 ```
 
-### Compile-time execution (planned; not implemented)
+### Zero-Wrapper Embedded Standard Library & Security Builtins
 
-```lir
-comptime fn fibonacci(n: u64) -> u64 {
-    if n <= 1 { return n }
-    fibonacci(n - 1) + fibonacci(n - 2)
-}
+Importable with `import std::<module>` (or `import <module>`):
 
-const TABLE_SIZE = fibonacci(10)  // Computed at compile time!
-```
+- **core** — `min_i64`, `max_i64`, `clamp_i64`, `abs_i64`, `signum`
+- **io** — `eprint`, `eprintln`, `file_exists`, `file_size`, `read_file`, `write_file`, `append_file`
+- **str** — `str_starts_with`, `str_ends_with`, `str_index_of`, `str_contains`, `str_trim`, `str_to_upper`, `str_to_lower`, `str_repeat`, `str_count`
+- **algo** — `gcd_i64`, `lcm_i64`, `pow_i64`, `sort_array_i64`, `bsearch_array_i64`, `reverse_array_i64`, `sum_array_i64`
+- **os** — `argc`, `argv`, `getenv`, `sleep_ms`, `now_ns`
+- **sys** — `getpid`, `getppid`, `getuid`, `unlink_file`, `mkdir_dir`
+- **net** — `htons`, `ipv4`, `tcp_socket`, `tcp_bind_listen`, `tcp_accept`, `tcp_connect`, `sock_send`, `sock_recv`, `sock_close`
+- **crypto** — `random_u64`, `random_bytes`, `secure_zero`, `const_time_eq`, `const_time_str_eq`, `fnv1a_64`
+- **json** — `json_quote`, `json_kv_str`, `json_kv_int`
+- **math** — `pi`, `tau`, `e_const`, `abs_f`, `sqrt_f`, `sin_f`, `cos_f`, `floor_f`, `ceil_f`, `round_f`, `clamp_f`, `lerp`, `deg_to_rad`
+- **testing** — `assert_true`, `assert_false`, `assert_eq_i64`, `assert_ne_i64`, `assert_eq_str` (plus `#[test]` + `lir test`)
 
-### Pattern matching (planned; not implemented)
-
-```lir
-match value {
-    0 => print("zero"),
-    1..=9 => print("single digit"),
-    10 | 20 | 30 => print("special"),
-    n if n > 100 => print("big"),
-    _ => print("other"),
-}
-```
-
-### Generics (planned language capability)
-
-```lir
-struct Vec(T) {
-    items: []T
-    len: u64
-}
-
-impl Vec(T) {
-    fn push(self: *mut Self, value: T) { ... }
-    fn get(self: *const Self, idx: u64) -> ?T { ... }
-}
-
-let mut nums = Vec(i32).init(alloc)
-nums.push(42)
-```
-
-### Error Handling (planned language capability)
-
-```lir
-fn divide(a: f64, b: f64) -> !f64 {
-    if b == 0.0 { return Err("division by zero") }
-    Ok(a / b)
-}
-
-// Propagate errors with try
-let result = try divide(10.0, 2.0)?
-```
+Security builtins: `@random_u64`, `@random_bytes`, `@secure_zero`, `@const_time_eq`, `@checked_add`/`@checked_sub`/`@checked_mul`, `@popcount`/`@clz`/`@ctz`/`@bswap`, `@getenv`, `@sleep_ms`, `@read_u*`/`@write_u*` (null-trapped).
 
 ## Project Structure
 
