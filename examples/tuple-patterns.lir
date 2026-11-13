@@ -1,0 +1,36 @@
+fn classify(pair: (i64, i64)) -> i64 {
+    return match pair {
+        (0, value) if value > 10 => value + 100,
+        (0, _) => 10,
+        (left, right) => left + right,
+    }
+}
+
+fn nested(value: ((i64, bool), string)) -> i64 {
+    return match value {
+        ((1, true), "ready") => 100,
+        ((number, _), text) if text == "ready" => number,
+        ((_, _), _) => -1,
+    }
+}
+
+fn guarded(value: i64) -> i64 {
+    return match value {
+        _ if value < 0 => -1,
+        _ if value == 0 => 0,
+        _ => 1,
+    }
+}
+
+fn main() -> i64 {
+    printInt(classify((0, 20)))
+    printInt(classify((0, 5)))
+    printInt(classify((3, 4)))
+    printInt(nested(((1, true), "ready")))
+    printInt(nested(((9, false), "ready")))
+    printInt(nested(((9, true), "waiting")))
+    printInt(guarded(-8))
+    printInt(guarded(0))
+    printInt(guarded(8))
+    return 0
+}

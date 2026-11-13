@@ -1,0 +1,19 @@
+import "finance.lir"
+#[test]
+fn strict_input() {
+    @assert_eq(strict_uint("123", 123), 123)
+    @assert_eq(strict_uint("124", 123), -1)
+    @assert_eq(strict_uint("-1", 100), -1)
+    @assert_eq(strict_uint("1.2", 100), -1)
+    @assert_eq(strict_uint("", 100), -1)
+    @assert_eq(strict_uint("99999999999999999", 100), -1)
+    @assert_eq(strict_uint("12x", 100), -1)
+}
+#[test]
+fn money_rules() {
+    @assert_eq(monthly_interest(100000, 1200), 1000)
+    @assert_eq(monthly_interest(50, 1200), 1)
+    @assert_eq(monthly_interest(-100, 1200), 0)
+    @assert_eq(actual_payment(150, 200), 150)
+    @assert_eq(actual_payment(300, 200), 200)
+}

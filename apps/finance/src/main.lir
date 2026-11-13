@@ -1,0 +1,21 @@
+import "finance.lir"
+fn main() -> i64 {
+    if @argc() != 9 {
+        println("{\"error\":\"Expected income expense savings debt apr payment return months (cents and basis points)\"}")
+        return 2
+    }
+    let income = strict_uint(@argv(1), 100000000)
+    let expense = strict_uint(@argv(2), 100000000)
+    let savings = strict_uint(@argv(3), 100000000)
+    let debt = strict_uint(@argv(4), 100000000)
+    let apr = strict_uint(@argv(5), 3600)
+    let payment = strict_uint(@argv(6), 100000000)
+    let growth = strict_uint(@argv(7), 2000)
+    let months = strict_uint(@argv(8), 360)
+    if income < 0 or expense < 0 or savings < 0 or debt < 0 or apr < 0 or payment < 0 or growth < 0 or months < 1 {
+        println("{\"error\":\"Invalid input or supported range exceeded\"}")
+        return 2
+    }
+    project(income, expense, savings, debt, apr, payment, growth, months)
+    return 0
+}

@@ -1,0 +1,17 @@
+// ** is right-associative and binds more tightly than unary + and -.
+fn power(base: i64, exponent: i64) -> i64 { return base ** exponent }
+
+fn main() -> i64 {
+    printInt(2 ** 3 ** 2)
+    printInt(-2 ** 2)
+    printInt((-2) ** 3)
+    printInt(2 * 3 ** 2 + 1)
+    const folded = 3 ** 4
+    printInt(folded)
+    printInt(power(0, 0))
+    printInt(power(17, 0))
+    printInt(power(2, 63))
+    printInt(power(2, 64))
+    printInt(power(-1, 9223372036854775807))
+    return 0
+}

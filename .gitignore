@@ -33,9 +33,14 @@ zig-out/
 
 # Local test outputs
 /test_output.txt
+__pycache__/
+*.pyc
 
 # Editor, package and local agent state
 .kilo/
 .freebuff/
 node_modules/
 target/
+
+# Built browser demonstration
+/examples/browser-counter/app.wasm

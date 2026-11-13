@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101a1a">
+<title>LIR Finance — Senaryo Stüdyosu</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<aside class="sidebar">
+<a class="brand" href="#"><span class="brand-icon">L</span> LIR<span class="brand-light">finance</span></a>
+<div class="workspace"><span class="workspace-icon">K</span><div>Kişisel çalışma alanı<small>Yerel · Özel · Size ait</small></div></div>
+<div class="nav-label">ÇALIŞMA ALANI</div>
+<a class="nav-item active" href="#overview"><span>◈</span> Senaryo stüdyosu <i>01</i></a>
+<a class="nav-item" href="#projection"><span>↗</span> Nakit akışı</a>
+<a class="nav-item" href="#comparison"><span>⊞</span> Karşılaştırmalar</a>
+<div class="sidebar-bottom"><span class="live-dot"></span> LIR / WebAssembly<small>Hesaplamalar cihazınızdan çıkmaz.</small><div class="engine-badge">64-bit tam sayı hesaplama</div></div>
+</aside>
+<main id="overview">
+<header><div class="breadcrumb">Çalışma alanı <span>/</span> Senaryo stüdyosu</div><div class="header-right"><span class="privacy">◉ Yerel hesaplama</span><span class="avatar">KS</span></div></header>
+<section class="heading"><div><div class="eyebrow">FİNANSAL YOL HARİTANIZ</div><h1>Bugünün kararları.<br><em>Yarının olasılıkları.</em></h1><p>Bütçenizi keşfedin, senaryoları karşılaştırın. Kontrol sizde.</p></div><div class="heading-actions"><button id="export" class="button secondary" disabled>↓ Raporu indir</button><button id="save" class="button dark" disabled>＋ Senaryoyu kaydet</button></div></section>
+<div class="top-grid">
+<section class="card parameters"><div class="card-title"><h2>Senaryo parametreleri</h2><span class="tag">TRY ₺</span></div><p class="muted">Bir değişkeni güncelleyin. Büyük resmi görün.</p>
+<form id="form">
+<div class="section-label">AYLIK BÜTÇE</div>
+<div class="input-grid"><label>Aylık net gelir <span>₺</span><input id="income" type="number" value="50000" min="0" max="1000000" step="0.01" required></label><label>Aylık gider <span>₺</span><input id="expense" type="number" value="30000" min="0" max="1000000" step="0.01" required></label></div>
+<div class="section-label">VARLIKLAR VE BORÇLAR</div>
+<div class="input-grid"><label>Mevcut birikim <span>₺</span><input id="savings" type="number" value="100000" min="0" max="1000000" step="0.01" required></label><label>Kalan borç <span>₺</span><input id="debt" type="number" value="200000" min="0" max="1000000" step="0.01" required></label><label>Yıllık borç faizi <span>%</span><input id="apr" type="number" value="12" min="0" max="36" step="0.01" required></label><label>Aylık borç ödemesi <span>₺</span><input id="payment" type="number" value="8000" min="0" max="1000000" step="0.01" required></label></div>
+<div class="section-label">PROJEKSİYON</div>
+<div class="input-grid"><label>Yıllık birikim getirisi <span>%</span><input id="growth" type="number" value="6" min="0" max="20" step="0.01" required></label><label>Süre <span>ay</span><input id="months" type="number" value="24" min="1" max="360" step="1" required></label></div>
+<button id="calculate" class="button dark calculate" type="submit">Senaryoyu hesapla <span>↗</span></button>
+</form></section>
+<div class="results"><section class="hero-card"><div class="hero-top"><span>PROJEKSİYON SONU NET VARLIK</span><span class="hero-icon">↗</span></div><div id="net" class="hero-number">—</div><div class="hero-footer"><span id="net-change">Hesaplama bekleniyor</span><span id="period" class="hero-pill">24 aylık görünüm</span></div><div class="hero-decoration"></div></section>
+<div class="metric-grid"><section class="card metric"><span class="metric-icon green">↙</span><span>Toplam birikim</span><strong id="assets">—</strong><small>Getiri ve nakit akışı dahil</small></section><section class="card metric"><span class="metric-icon orange">↗</span><span>Kalan borç</span><strong id="remaining-debt">—</strong><small id="debt-free">Ödeme takvimi</small></section></div>
+<section class="insight"><div class="insight-icon">✦</div><div><strong>Bir sonraki adımınız için bir içgörü</strong><p id="insight">LIR hesaplama motoru hazırlanıyor…</p></div></section>
+<div id="status" class="status" role="status" aria-live="polite">Hesaplama motoru yükleniyor…</div></div></div>
+<section id="projection" class="card projection"><div class="card-title"><div><h2>Geleceğinizin çizgisi</h2><p class="muted">Aylık varlık, borç ve net değer projeksiyonu</p></div><div class="legend"><span class="legend-assets">Birikim</span><span class="legend-debt">Borç</span><span class="legend-net">Net varlık</span></div></div><div id="chart" class="chart" role="img" aria-label="Aylık finans projeksiyonu"></div><div class="chart-footer"><span>Bugün</span><span id="chart-end">24. ay</span></div></section>
+<section id="comparison" class="comparison-section"><div class="section-heading"><div><h2>Olasılıkları yan yana görün</h2><p class="muted">Baz senaryo ve iki otomatik stres testi. Tümü LIR ile hesaplanır.</p></div></div><div class="scenario-grid" id="scenarios"></div></section>
+<section class="card saved"><div class="card-title"><div><h2>Kaydedilen senaryolar</h2><p class="muted">Yalnızca bu tarayıcıda saklanır. En fazla 10 senaryo.</p></div><button id="clear" class="text-button">Tümünü sil</button></div><div id="saved-list"></div></section>
+<details class="card ledger"><summary>Aylık hesap dökümü <span>↓</span></summary><div class="table-wrap"><table><thead><tr><th>Ay</th><th>Birikim</th><th>Borç</th><th>Net varlık</th><th>Net nakit akışı</th></tr></thead><tbody id="ledger"></tbody></table></div></details>
+<footer><span class="footer-brand">LIR<span>finance</span></span><p>Planlama aracıdır, yatırım tavsiyesi değildir. Sabit oranlar, aylık yuvarlama; vergi, ücret ve enflasyon hariç.</p><span>LIR ENGINE · v0.1</span></footer>
+</main>
+<script type="module" src="./app.mjs"></script>
+</body></html>

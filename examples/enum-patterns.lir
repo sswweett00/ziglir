@@ -1,0 +1,69 @@
+enum Inner {
+    Number(i64),
+    Flag(bool),
+    Empty,
+}
+
+enum Event {
+    Data((i64, bool)),
+    Nested(Inner),
+    Text(string),
+    Stop,
+}
+
+fn classify(event: Event) -> i64 {
+    return match event {
+        Event::Nested(Inner::Number(0)) => 100,
+        Event::Nested(Inner::Number(n)) if n > 10 => n + 200,
+        Event::Nested(Inner::Flag(true)) => 300,
+        Event::Nested(_) => 400,
+        Event::Data((0, true)) => 500,
+        Event::Data((1..10, true)) => 608,
+        Event::Data((_, false)) => 700,
+        Event::Data(_) => 800,
+        Event::Text("ready") => 900,
+        Event::Text(text) if text == "waiting" => 901,
+        Event::Text(_) => 902,
+        Event::Stop => 1000,
+    }
+}
+
+fn make_option(n: i64) -> Option<i64> {
+    if n == 0 { return None }
+    return Some(n)
+}
+
+fn classify_option(value: Option<i64>) -> i64 {
+    return match value {
+        Some(7) => 70,
+        Some(8..=10) => 90,
+        Some(n) => n,
+        None => -1,
+    }
+}
+
+fn main() -> i64 {
+    printInt(classify(Event::Stop))
+    printInt(classify(Event::Nested(Inner::Empty)))
+    printInt(classify(Event::Nested(Inner::Number(0))))
+    printInt(classify(Event::Nested(Inner::Number(12))))
+    printInt(classify(Event::Nested(Inner::Number(2))))
+    printInt(classify(Event::Nested(Inner::Flag(true))))
+    printInt(classify(Event::Nested(Inner::Flag(false))))
+    printInt(classify(Event::Data((0, true))))
+    printInt(classify(Event::Data((8, true))))
+    printInt(classify(Event::Data((8, false))))
+    printInt(classify(Event::Data((10, true))))
+    printInt(classify(Event::Data((20, true))))
+    printInt(classify(Event::Text("ready")))
+    printInt(classify(Event::Text("waiting")))
+    printInt(classify(Event::Text("other")))
+    printInt(classify_option(make_option(7)))
+    printInt(classify_option(make_option(9)))
+    printInt(classify_option(make_option(5)))
+    printInt(classify_option(make_option(8)))
+    printInt(classify_option(make_option(10)))
+    printInt(classify_option(make_option(11)))
+    printInt(classify_option(make_option(0)))
+    return 0
+}

@@ -1,0 +1,7 @@
+// The browser passes the number of clicks as arguments. LIR owns the arithmetic.
+fn main() -> i64 {
+    let clicks = @argc() - 1
+    printInt(clicks)
+    printInt(clicks * clicks)
+    return 0
+}

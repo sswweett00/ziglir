@@ -60,7 +60,8 @@ const eql = util.eql;
 const printStr = util.printStr;
 const printErr = util.printErr;
 const printUsize = util.printUsize;
-const writeFile = util.writeFile;
+const project = @import("project.zig");
+const manifest = @import("manifest.zig");
 const sysExit = util.sysExit;
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -88,32 +89,17 @@ pub fn main() !void {
     } else if (eql(command, "targets")) {
         printTargets();
     } else if (eql(command, "build")) {
-        if (args.len < 3) {
-            printErr("Error: usage: lir build <file.lir> [-o output] [-O0|-O1|-O2] [--target <triple>] [--backend <kind>] [--emit-ir] [--emit-c]\n");
-            sysExit(1);
-        }
         cmdBuild(args[2..]);
     } else if (eql(command, "run")) {
-        if (args.len < 3) {
-            printErr("Error: usage: lir run <file.lir> [-O0|-O1|-O2] [--target <triple>] [--backend <kind>] [-- args...]\n");
-            sysExit(1);
-        }
         cmdRun(args[2..]);
     } else if (eql(command, "check")) {
-        if (args.len < 3) {
-            printErr("Error: usage: lir check <file.lir> [--target <triple>]\n");
-            sysExit(1);
-        }
         cmdCheck(args[2..]);
     } else if (eql(command, "ir")) {
-        if (args.len < 3) {
-            printErr("Error: usage: lir ir <file.lir> [-O0|-O1|-O2] [--target <triple>]\n");
-            sysExit(1);
-        }
         cmdIr(args[2..]);
     } else if (eql(command, "test")) {
         cmdTest(args[2..]);
     } else if (eql(command, "init")) {
+        if (args.len > 3) unexpectedArgument(args[3]);
         const name = if (args.len >= 3) args[2] else "myproject";
         cmdInit(name);
     } else if (eql(command, "install")) {
@@ -133,22 +119,24 @@ fn printUsage() void {
         \\Usage: lir <command> [options]
         \\
         \\Commands:
-        \\  build <file.lir>    Compile LIR source to native or cross-platform binary
+        \\  build [file|dir]    Compile LIR source to native or cross-platform binary
         \\    -o <path>           Output binary (or C file when --emit-c is passed)
         \\    -O0 | -O1 | -O2     Optimization level (default: -O2)
         \\    --target <triple>   Target platform (run 'lir targets' for list)
         \\    --backend <kind>    Backend: auto | native | wasm | c | vm
         \\    --emit-ir           Print lowered & optimized IR to stdout
         \\    --emit-c            Emit standalone portable C11 source instead of linking
-        \\  run <file.lir>      Compile and execute in one step (supports --backend=vm/wasm/c/native)
-        \\  check <file.lir>    Type-check and verify IR without emitting binary
-        \\  ir <file.lir>       Dump lowered & optimized IR
-        \\  test [file.lir]     Run #[test] suite
+        \\  run [file|dir]      Compile and execute in one step (supports --backend=vm/wasm/c/native)
+        \\  check [file|dir]    Type-check and verify IR without emitting binary
+        \\  ir [file|dir]       Dump lowered & optimized IR
+        \\  test [file|dir]     Run #[test] suite
         \\  targets             List supported cross-compilation targets and host defaults
         \\  init [name]         Create a new project
         \\  install             Install lir binary to system PATH
         \\  help                Show this help
         \\  version             Show version
+        \\
+        \\With no file/dir, commands load ./project.manifest.
         \\
         \\Examples:
         \\  lir build main.lir -O2 -o main
@@ -185,6 +173,13 @@ fn printTargets() void {
     printStr("  wasm              Zero-dependency wasm32-wasi .wasm binary emitter\n");
     printStr("  c | c11           Portable C11 emitter + zig cc / CC cross-compiler\n");
     printStr("  vm                Portable in-process IR VM (runs any program on any host)\n");
+}
+
+fn unexpectedArgument(arg: []const u8) noreturn {
+    printErr("Error: unexpected argument '");
+    printErr(arg);
+    printErr("'\n");
+    sysExit(1);
 }
 
 fn parseOptFlag(arg: []const u8) ?OptLevel {
@@ -234,6 +229,15 @@ fn parseBackendOrDie(spec: []const u8) BackendKind {
 // CLI Commands
 // ════════════════════════════════════════════════════════════════════════════
 
+fn selectInput(input: ?[]const u8, test_mode: bool) manifest.Selection {
+    return manifest.select(std.heap.page_allocator, input, test_mode) catch |err| {
+        printErr("Error: cannot resolve project input: ");
+        printErr(@errorName(err));
+        printErr(". Use a source file, or a project directory containing project.manifest.\n");
+        sysExit(1);
+    };
+}
+
 fn cmdBuild(args: []const []const u8) void {
     var input_file: ?[]const u8 = null;
     var output_file: ?[]const u8 = null;
@@ -258,7 +262,7 @@ fn cmdBuild(args: []const []const u8) void {
         } else if (parseFlagValue(args, &idx, "--backend=", "--backend")) |spec| {
             backend_kind = parseBackendOrDie(spec);
         } else if (parseOptFlag(arg)) |ol| {
-            opt_level = if (ol == .O0) .O2 else ol;
+            opt_level = ol;
         } else if (eql(arg, "--emit-ir")) {
             emit_ir = true;
         } else if (eql(arg, "--emit-c")) {
@@ -278,10 +282,9 @@ fn cmdBuild(args: []const []const u8) void {
         }
     }
 
-    const in_path = input_file orelse {
-        printErr("Error: missing input .lir file\n");
-        sysExit(1);
-    };
+    const selection = selectInput(input_file, false);
+    defer selection.deinit(std.heap.page_allocator);
+    const in_path = selection.input;
 
     const alloc = std.heap.page_allocator;
     const source_buf = util.readFileAlloc(alloc, in_path) catch {
@@ -303,11 +306,13 @@ fn cmdBuild(args: []const []const u8) void {
     };
     defer alloc.free(result);
 
-    var default_out_buf: [64]u8 = undefined;
-    const resolved_out: []const u8 = output_file orelse if (emit_c)
-        "a.c"
-    else
-        std.fmt.bufPrint(&default_out_buf, "a.out{s}", .{target.exeSuffix()}) catch "a.out";
+    const default_output = std.fmt.allocPrint(alloc, "{s}{s}{s}", .{
+        selection.output_base orelse "a",
+        if (emit_c) ".c" else ".out",
+        if (emit_c) "" else target.exeSuffix(),
+    }) catch sysExit(1);
+    defer alloc.free(default_output);
+    const resolved_out = output_file orelse default_output;
 
     const mode: u64 = if (emit_c or target.os == .wasi) 0o644 else 0o755;
     if (!util.writeFileAtomic(resolved_out, result, mode)) {
@@ -341,12 +346,13 @@ fn cmdCheck(args: []const []const u8) void {
             sysExit(1);
         } else if (in_path == null) {
             in_path = arg;
+        } else {
+            unexpectedArgument(arg);
         }
     }
-    const file = in_path orelse {
-        printErr("Error: missing input .lir file\n");
-        sysExit(1);
-    };
+    const selection = selectInput(in_path, false);
+    defer selection.deinit(std.heap.page_allocator);
+    const file = selection.input;
     const alloc = std.heap.page_allocator;
     const source_buf = util.readFileAlloc(alloc, file) catch {
         printErr("Error: cannot read source file '");
@@ -380,14 +386,17 @@ fn cmdIr(args: []const []const u8) void {
             opt_level = ol;
         } else if (parseFlagValue(args, &idx, "--target=", "--target")) |spec| {
             target = parseTargetOrDie(spec);
+        } else if (arg.len > 0 and arg[0] == '-') {
+            unexpectedArgument(arg);
         } else if (input_file == null) {
             input_file = arg;
+        } else {
+            unexpectedArgument(arg);
         }
     }
-    const in_path = input_file orelse {
-        printErr("Error: missing input .lir file\n");
-        sysExit(1);
-    };
+    const selection = selectInput(input_file, false);
+    defer selection.deinit(std.heap.page_allocator);
+    const in_path = selection.input;
     const alloc = std.heap.page_allocator;
     const source_buf = util.readFileAlloc(alloc, in_path) catch {
         printErr("Error: cannot read source file\n");
@@ -490,7 +499,7 @@ fn executeCompiledArtifact(
         }
         if (findExeInPath(alloc, if (builtin.os.tag == .windows) "node.exe" else "node")) |node_exe| {
             defer alloc.free(node_exe);
-            const script = "import{readFileSync}from'fs';import{WASI}from'wasi';const a=process.argv.slice(1);const w=new WASI({version:'preview1',args:a,env:process.env});const m=await WebAssembly.compile(readFileSync(a[0]));const i=await WebAssembly.instantiate(m,w.getImportObject());w.start(i);";
+            const script = "import{readFileSync}from'fs';import{WASI}from'wasi';const a=process.argv.slice(1);const w=new WASI({version:'preview1',args:a,env:process.env});const m=await WebAssembly.compile(readFileSync(a[0]));const i=await WebAssembly.instantiate(m,w.getImportObject());process.exitCode=w.start(i);";
             child_argv.append(alloc, node_exe) catch sysExit(1);
             child_argv.append(alloc, "--input-type=module") catch sysExit(1);
             child_argv.append(alloc, "-e") catch sysExit(1);
@@ -555,7 +564,7 @@ fn cmdRun(args: []const []const u8) void {
         } else if (parseFlagValue(args, &idx, "--backend=", "--backend")) |spec| {
             backend_kind = parseBackendOrDie(spec);
         } else if (parseOptFlag(arg)) |ol| {
-            opt_level = if (ol == .O0) .O2 else ol;
+            opt_level = ol;
         } else if (arg.len > 0 and arg[0] == '-' and input_file == null) {
             printErr("Error: unknown option '");
             printErr(arg);
@@ -569,10 +578,9 @@ fn cmdRun(args: []const []const u8) void {
         }
     }
 
-    const in_path = input_file orelse {
-        printErr("Error: missing input .lir file\n");
-        sysExit(1);
-    };
+    const selection = selectInput(input_file, false);
+    defer selection.deinit(std.heap.page_allocator);
+    const in_path = selection.input;
 
     const alloc = std.heap.page_allocator;
     const source_buf = util.readFileAlloc(alloc, in_path) catch {
@@ -587,54 +595,19 @@ fn cmdRun(args: []const []const u8) void {
 }
 
 fn cmdInit(name: []const u8) void {
-    if (name.len == 0 or name.len > 128) {
-        printErr("Error: project name must be 1..128 characters\n");
+    project.create(std.fs.cwd(), name) catch |err| {
+        printErr("Error: cannot initialize project '");
+        printErr(name);
+        printErr("': ");
+        printErr(@errorName(err));
+        printErr(" (use a new directory name; existing work is never overwritten)\n");
         sysExit(1);
-    }
-    for (name) |c| {
-        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '-' or c == '_' or c == '.';
-        if (!ok) {
-            printErr("Error: project name contains unsafe characters (allowed: A-Z, a-z, 0-9, -, _, .)\n");
-            sysExit(1);
-        }
-    }
-    printStr("Initializing project '");
+    };
+    printStr("Created ");
     printStr(name);
-    printStr("'...\n");
-
-    std.fs.cwd().makePath("src") catch {};
-
-    var manifest_buf: [512]u8 = undefined;
-    const manifest = std.fmt.bufPrint(&manifest_buf,
-        \\{{
-        \\  "name": "{s}",
-        \\  "version": "0.1.0",
-        \\  "entry": "main.lir",
-        \\  "source_dir": "src"
-        \\}}
-        \\
-    , .{name}) catch "";
-    if (!writeFile("project.manifest", manifest)) {
-        printErr("Error: cannot create project.manifest\n");
-        sysExit(1);
-    }
-
-    const main_src =
-        \\// Main entry point
-        \\import core
-        \\
-        \\fn main() -> i64 {
-        \\    println("Hello from LIR!")
-        \\    0
-        \\}
-        \\
-    ;
-    if (!writeFile("src/main.lir", main_src)) {
-        printErr("Error: cannot create src/main.lir\n");
-        sysExit(1);
-    }
-
-    printStr("Created project.manifest\nCreated src/main.lir\n\nNext: lir build src/main.lir\n");
+    printStr("/project.manifest, src/main.lir, src/lib.lir, src/tests.lir and .gitignore\n\nNext: cd ");
+    printStr(name);
+    printStr(" && lir run\n");
 }
 
 fn cmdTest(args: []const []const u8) void {
@@ -647,14 +620,14 @@ fn cmdTest(args: []const []const u8) void {
     while (idx < args.len) : (idx += 1) {
         const s = args[idx];
         if (eql(s, "--help") or eql(s, "-h")) {
-            printStr("Usage: lir test [file.lir] [-O0|-O1|-O2] [--target <triple>] [--backend <kind>]\n");
+            printStr("Usage: lir test [file|dir] [-O0|-O1|-O2] [--target <triple>] [--backend <kind>]\n");
             return;
         } else if (parseFlagValue(args, &idx, "--target=", "--target")) |spec| {
             target = parseTargetOrDie(spec);
         } else if (parseFlagValue(args, &idx, "--backend=", "--backend")) |spec| {
             backend_kind = parseBackendOrDie(spec);
         } else if (parseOptFlag(s)) |ol| {
-            opt_level = if (ol == .O0) .O2 else ol;
+            opt_level = ol;
         } else if (s.len > 0 and s[0] == '-') {
             printErr("Error: unknown option '");
             printErr(s);
@@ -662,14 +635,13 @@ fn cmdTest(args: []const []const u8) void {
             sysExit(1);
         } else if (arg_path == null) {
             arg_path = s;
+        } else {
+            unexpectedArgument(s);
         }
     }
-    const test_path: []const u8 = arg_path orelse if (util.fileExists("src/tests.lir"))
-        "src/tests.lir"
-    else if (util.fileExists("src/main.lir"))
-        "src/main.lir"
-    else
-        "tests/fixtures/test.lir";
+    const selection = selectInput(arg_path, true);
+    defer selection.deinit(std.heap.page_allocator);
+    const test_path = selection.input;
     printStr("Running tests in ");
     printStr(test_path);
     printStr("...\n");

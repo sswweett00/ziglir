@@ -1,0 +1,30 @@
+fn identity(x: i64) -> i64 { return +x }
+
+fn main() -> i64 {
+    let mut i = 0
+    let mut total = 0
+    loop {
+        i += 1
+        if i == 2 { continue }
+        total += i
+        if i == 5 { break }
+    }
+    printInt(total)
+    loop {
+        defer println("leaving loop")
+        break
+    }
+    let mut outer = 0
+    loop {
+        loop { break }
+        outer += 1
+        if outer == 3 { break }
+    }
+    printInt(outer)
+    printInt(identity(-7))
+    const positive = +12
+    printInt(positive)
+    let x: f64 = +1.5
+    printFloat(x)
+    return 0
+}

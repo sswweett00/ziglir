@@ -4091,7 +4091,9 @@ pub const IRCodegen = struct {
                 self.mov64imm(0, 1);
                 self.mov64imm(7, 1);
                 self.syscallInst();
-                self.movRegReg(7, 6);
+                // float_to_str returns allocation + 8 (past the string length).
+                // free must receive the original allocation, not its interior.
+                self.emitLeaRegDisp(7, 6, -8);
                 self.emitCallReloc(.free_fn, 0);
                 if (inst.op == .call_println_float) {
                     const nl_idx = self.addString("\n");

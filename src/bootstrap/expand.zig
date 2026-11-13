@@ -8,6 +8,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
+const util = @import("util.zig");
 const lex = @import("lexer.zig");
 const parser_mod = @import("parser.zig");
 const diag_mod = @import("diag.zig");
@@ -137,12 +138,14 @@ const ComptimeEval = struct {
                 const op: TokenKind = @enumFromInt(n.op);
                 return switch (sub) {
                     .int => |iv| switch (op) {
+                        .plus => .{ .int = iv },
                         .minus => .{ .int = std.math.negate(iv) catch return null },
                         .bang => .{ .int = if (iv == 0) 1 else 0 },
                         .tilde => .{ .int = ~iv },
                         else => null,
                     },
                     .float => |fv| switch (op) {
+                        .plus => .{ .float = fv },
                         .minus => .{ .float = -fv },
                         else => null,
                     },
@@ -209,6 +212,7 @@ const ComptimeEval = struct {
                     .plus => .{ .int = std.math.add(i64, li, ri) catch return null },
                     .minus => .{ .int = std.math.sub(i64, li, ri) catch return null },
                     .star => .{ .int = std.math.mul(i64, li, ri) catch return null },
+                    .star_star => .{ .int = util.powWrapping(li, ri) orelse return null },
                     .slash => if (ri != 0) .{ .int = @divTrunc(li, ri) } else null,
                     .percent => if (ri != 0) .{ .int = @rem(li, ri) } else null,
                     .lshift => if (ri >= 0 and ri < 64) .{ .int = li << @intCast(ri) } else null,
@@ -269,6 +273,23 @@ const ComptimeEval = struct {
                 self.depth += 1;
                 defer self.depth -= 1;
 
+                // The scalar comptime evaluator is not a typed call resolver.
+                // Fail closed instead of folding new call forms before Sema can
+                // validate their names, parameter types, and defaults.
+                var scan = n.child2;
+                var extended = false;
+                while (scan != 0) : (scan = self.ast.nodes[scan].child1) {
+                    if ((self.ast.nodes[scan].flags & 128) != 0) extended = true;
+                }
+                scan = self.ast.nodes[fn_node].child0;
+                while (scan != 0) : (scan = self.ast.nodes[scan].child1) {
+                    if (self.ast.nodes[scan].child2 != 0) extended = true;
+                }
+                if (extended) {
+                    self.diag.addAt(.err, n.source_id, n.line, n.col, 1, "named/defaulted function calls are not supported in compile-time evaluation");
+                    self.failed = true;
+                    return null;
+                }
                 var fn_env = Env{};
                 var p = self.ast.nodes[fn_node].child0;
                 var a = n.child2;
@@ -1227,13 +1248,17 @@ fn monomorphizeAll(ast: *AST) void {
                                 }
                             } else {
                                 // Infer from arguments
-                                var p = ast.nodes[gt.node_or_def_idx].child0;
+                                var positional = ast.nodes[gt.node_or_def_idx].child0;
                                 var a = n.child2;
-                                while (p != 0 and a != 0) : ({
-                                    p = ast.nodes[p].child1;
-                                    a = ast.nodes[a].child1;
-                                }) {
-                                    if (ast.nodes[p].type_tag == .generic_param and ast.nodes[p].child0 < 4) {
+                                while (a != 0) : (a = ast.nodes[a].child1) {
+                                    var p = positional;
+                                    if ((ast.nodes[a].flags & 128) != 0) {
+                                        p = ast.nodes[gt.node_or_def_idx].child0;
+                                        while (p != 0 and !std.mem.eql(u8, ast.nodeText(p), ast.nodeText(a))) p = ast.nodes[p].child1;
+                                    } else if (positional != 0) {
+                                        positional = ast.nodes[positional].child1;
+                                    }
+                                    if (p != 0 and ast.nodes[p].type_tag == .generic_param and ast.nodes[p].child0 < 4) {
                                         targs[ast.nodes[p].child0] = inferExprTypeSimple(ast, ast.nodes[a].child0);
                                     }
                                 }
@@ -1482,6 +1507,7 @@ fn synthesizeTestRunner(ast: *AST) void {
 pub fn expand(ast: *AST, diag: *DiagList, test_mode: bool) !void {
     injectStdGenerics(ast);
     evalComptimeAll(ast, diag);
+    if (diag.hasErrors()) return error.InvalidComptime;
     monomorphizeAll(ast);
     if (test_mode) synthesizeTestRunner(ast);
 }
