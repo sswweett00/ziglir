@@ -85,7 +85,7 @@ pub fn main() !void {
     if (eql(command, "help") or eql(command, "--help") or eql(command, "-h")) {
         printUsage();
     } else if (eql(command, "version") or eql(command, "--version") or eql(command, "-V")) {
-        printStr("lir 2.2.0\n");
+        printStr("lir 2.2.0 (ZigLIR compiler; implemented in Zig)\n");
     } else if (eql(command, "targets")) {
         printTargets();
     } else if (eql(command, "build")) {

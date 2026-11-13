@@ -818,6 +818,7 @@ pub const IRGen = struct {
     }
 
     fn applyCompoundOp(self: *IRGen, op: TokenKind, old_v: u16, rhs_v: u16, is_uns: bool, is_flt: bool) u16 {
+        if (op == .star_star_eq) return self.genPower(old_v, rhs_v);
         const ir_op: IROp = if (is_flt) switch (op) {
             .plus_eq => .fadd,
             .minus_eq => .fsub,
@@ -1702,15 +1703,34 @@ pub const IRGen = struct {
                     }
                     const src_ty = si.node_types[node.child0];
                     const dst_ty = si.node_types[idx];
-                    if (src_ty != .float and dst_ty == .float) {
+                    if (src_ty.isInt() and dst_ty == .float) {
                         const dv = self.allocVreg();
-                        self.emit(.{ .op = .itof, .dest = dv, .src1 = src_v });
+                        self.emit(.{ .op = if (src_ty.isUnsigned()) .uitof else .itof, .dest = dv, .src1 = src_v });
+                        if (dst_ty.float == 32) {
+                            const rounded = self.allocVreg();
+                            self.emit(.{ .op = .f64_to_f32, .dest = rounded, .src1 = dv });
+                            return rounded;
+                        }
                         return dv;
                     }
-                    if (src_ty == .float and dst_ty != .float) {
-                        const dv = self.allocVreg();
-                        self.emit(.{ .op = .ftoi, .dest = dv, .src1 = src_v });
-                        return dv;
+                    if (src_ty == .float and dst_ty.isInt()) {
+                        const converted = self.allocVreg();
+                        self.emit(.{ .op = if (dst_ty.isUnsigned()) .ftou else .ftoi, .dest = converted, .src1 = src_v });
+                        const narrow_op: ?IROp = switch (node.type_tag) {
+                            .i8 => .sext8,
+                            .i16 => .sext16,
+                            .i32 => .sext32,
+                            .u8 => .zext8,
+                            .u16 => .zext16,
+                            .u32 => .zext32,
+                            else => null,
+                        };
+                        if (narrow_op) |op| {
+                            const narrowed = self.allocVreg();
+                            self.emit(.{ .op = op, .dest = narrowed, .src1 = converted });
+                            return narrowed;
+                        }
+                        return converted;
                     }
                     if (src_ty == .float and dst_ty == .float and src_ty.float != dst_ty.float) {
                         const dv = self.allocVreg();

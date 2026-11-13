@@ -94,6 +94,7 @@ pub const TokenKind = enum(u8) {
     plus_eq,
     minus_eq,
     star_eq,
+    star_star_eq,
     slash_eq,
     percent_eq,
     amp_eq,
@@ -471,6 +472,10 @@ pub const Lexer = struct {
                 } else .minus,
                 '*' => if (self.peek() == '*') blk: {
                     _ = self.advance();
+                    if (self.peek() == '=') {
+                        _ = self.advance();
+                        break :blk .star_star_eq;
+                    }
                     break :blk .star_star;
                 } else if (self.peek() == '=') blk: {
                     _ = self.advance();

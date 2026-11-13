@@ -52,7 +52,16 @@ and messages remain backend-specific, but execution must not succeed.
 The result is computed modulo 2^64 and interpreted as signed `i64`, consistently
 at compile time and runtime. `0 ** 0` is defined as `1`. Exponentiation by squaring
 requires at most 63 iterations for a nonnegative `i64` exponent; it does not loop
-once per exponent value. There is no `**=` operator in this release.
+once per exponent value. The compound assignment `**=` is also available on
+mutable `i64` variables. It uses the same wrapping result and exponent rules; the
+target is evaluated once. A statically known negative exponent is rejected,
+while a dynamic negative exponent traps at runtime.
+
+```lir
+var value = 2
+value **= 3  // value is now 8
+value **= 2  // value is now 64
+```
 
 ## Eight integer intrinsics
 
@@ -82,6 +91,40 @@ IR passes. Support for evaluating arbitrary intrinsic calls in `const` or
 `comptime` contexts is not introduced by this change; the power operator and
 unary plus have explicit constant-evaluator integration.
 
+## Explicit integer-to-float conversions
+
+Integer-to-float casts preserve the source integer's signedness across all
+execution backends. Signed values use signed conversion; unsigned values (in
+particular `u64` values with bit 63 set) use unsigned conversion and therefore
+remain nonnegative. Casting to `f32` rounds to IEEE-754 binary32 precision before
+widening the compiler's canonical float slot back to binary64 storage.
+
+Float-to-integer casts truncate toward zero. Unsigned destinations use an
+unsigned conversion path, accept values in `[0, 2^64)`, and trap on negative,
+NaN, or out-of-range inputs. Signed destinations use the signed `i64` range and
+trap on NaN or out-of-range inputs. Narrow integer destinations then retain the
+low target-width bits (sign-extending signed results and zero-extending unsigned
+results), matching the language's explicit integer narrowing behavior.
+
+```lir
+fn main() -> i64 {
+    let high = ((9223372036854775807 as u64 + 1 as u64) as f64)
+    let max = ((-1) as u64) as f64
+    let rounded = ((16777217 as u32) as f32) as f64
+    // high == 2^63; max rounds to 2^64 in binary64;
+    // rounded == 16777216 because binary32 cannot represent 16777217.
+    if high == 9223372036854775808.0 and max == 18446744073709551616.0 and
+        rounded == 16777216.0 { return 0 }
+    return 1
+}
+```
+
+The test matrix checks zero, small unsigned values, the signed boundary, `u32`
+maximum, `u64` maximum, binary32 rounding, unsigned float-to-integer values
+above `i64::MAX`, the `u64` boundary, and narrowing casts through native ELF,
+IR VM, C11, and wasm32-wasi at `-O0`, `-O1`, and `-O2`. Negative, NaN, and
+out-of-range unsigned conversions trap. This does not add 128-bit integers.
+
 ## Regression coverage
 
 ```sh
@@ -92,9 +135,10 @@ zig build test
 ```
 
 The backend suite requires a host C compiler and Node 22+ or Wasmtime. It now
-runs nine positive fixtures at three optimization levels on four backends
-(108 executions), plus 12 dynamic-negative-exponent trap checks. Numeric expected
-values include independent Python integer/bit-pattern calculations, not merely
+runs twelve positive fixtures at three optimization levels on four backends
+(144 executions), plus 24 dynamic-negative-exponent trap checks for `**` and
+`**=`. Numeric expected values include independent Python integer/bit-pattern
+calculations, not merely
 agreement between LIR backends. Diagnostics cover invalid operand types, argument
 counts, negative constant exponents, and malformed loop syntax. Generated test
 programs and compiler outputs live in temporary directories.

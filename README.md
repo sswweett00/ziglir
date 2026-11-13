@@ -8,7 +8,7 @@
 
 ## What is LIR?
 
-LIR is a systems-language project aiming to combine a small, approachable syntax with predictable memory use and highly optimized native code. Its long-term performance goal is to outperform C on selected, benchmarked workloads without sacrificing correctness or readability. That is a goal to prove with reproducible measurements—not a universal speed guarantee. The bootstrap compiler features zero-dependency direct emitters for Linux x86-64 ELF and `wasm32-wasi`, a portable in-process IR VM (`--backend=vm`), and a portable C11 backend (`--backend=c` / `--emit-c`) supporting ARM64, RISC-V, macOS, Windows, FreeBSD, and Linux; features listed as design goals in [Low-Level Language Specification](docs/LOW_LEVEL_LANGUAGE.md) distinguish design requirements from implemented features.
+LIR is a systems-language project aiming to combine a small, approachable syntax with predictable memory use and highly optimized native code. Its Zig-written compiler is named **ZigLIR**; the command-line executable remains `lir`. Its long-term performance goal is to outperform C on selected, benchmarked workloads without sacrificing correctness or readability. That is a goal to prove with reproducible measurements—not a universal speed guarantee. The bootstrap compiler features zero-dependency direct emitters for Linux x86-64 ELF and `wasm32-wasi`, a portable in-process IR VM (`--backend=vm`), and a portable C11 backend (`--backend=c` / `--emit-c`) supporting ARM64, RISC-V, macOS, Windows, FreeBSD, and Linux; features listed as design goals in [Low-Level Language Specification](docs/LOW_LEVEL_LANGUAGE.md) distinguish design requirements from implemented features.
 
 ### Design principles
 
@@ -124,7 +124,9 @@ fn main() -> i64 {
 ## New language extensions
 
 The bootstrap now supports **`loop`**, **unary `+`**, right-associative integer
-`**` exponentiation, and eight typed integer intrinsics:
+`**` exponentiation and mutable-`i64` `**=` assignment, correctly signed/unsigned
+conversions between integers and `f32`/`f64` (including range traps and
+narrow-width rounding), and eight typed integer intrinsics:
 `@rotl`, `@rotr`, `@bit_reverse`, `@is_power_of_two`, `@signum`,
 `@wrapping_add`, `@wrapping_sub`, and `@wrapping_mul`.
 

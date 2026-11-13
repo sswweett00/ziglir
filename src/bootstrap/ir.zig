@@ -46,7 +46,9 @@ pub const IROp = enum {
     fcmp_gt,
     fcmp_ge,
     itof,
+    uitof,
     ftoi,
+    ftou,
     f32_to_f64,
     f64_to_f32,
     // Width casts / extensions
@@ -592,7 +594,7 @@ fn formatInst(inst: IRInst, module: *const IRModule, source: []const u8, writer:
         .field_store => try writer.print("*(v{d} + {d}) = v{d}\n", .{ inst.src1, inst.field_offset, inst.src2 }),
         .add, .sub, .mul, .div, .udiv, .@"mod", .umod, .shl, .shr, .ushr, .bit_and, .bit_or, .bit_xor, .fadd, .fsub, .fmul, .fdiv => try writer.print("v{d} = {s} v{d}, v{d}\n", .{ inst.dest, @tagName(inst.op), inst.src1, inst.src2 }),
         .cmp_eq, .cmp_ne, .cmp_lt, .cmp_le, .cmp_gt, .cmp_ge, .ucmp_lt, .ucmp_le, .ucmp_gt, .ucmp_ge, .fcmp_eq, .fcmp_ne, .fcmp_lt, .fcmp_le, .fcmp_gt, .fcmp_ge => try writer.print("v{d} = {s} v{d}, v{d}\n", .{ inst.dest, @tagName(inst.op), inst.src1, inst.src2 }),
-        .neg, .fneg, .itof, .ftoi, .f32_to_f64, .f64_to_f32, .bit_not, .logic_not, .sext8, .sext16, .sext32, .zext8, .zext16, .zext32 => try writer.print("v{d} = {s} v{d}\n", .{ inst.dest, @tagName(inst.op), inst.src1 }),
+        .neg, .fneg, .itof, .uitof, .ftoi, .ftou, .f32_to_f64, .f64_to_f32, .bit_not, .logic_not, .sext8, .sext16, .sext32, .zext8, .zext16, .zext32 => try writer.print("v{d} = {s} v{d}\n", .{ inst.dest, @tagName(inst.op), inst.src1 }),
         .fn_addr => try writer.print("v{d} = fn_addr #{d}\n", .{ inst.dest, inst.callee_fn_idx }),
         .call_indirect => try writer.print("v{d} = call_indirect v{d}({d} args)\n", .{ inst.dest, inst.src1, inst.arg_count }),
         .jump => try writer.print("jump B{d}\n", .{inst.target_block}),

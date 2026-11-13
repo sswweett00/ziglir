@@ -1207,7 +1207,9 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
                     .fcmp_gt => try w.print("    v{d} = (lir_u2d(v{d}) > lir_u2d(v{d})) ? 1ULL : 0ULL;\n", .{ inst.dest, inst.src1, inst.src2 }),
                     .fcmp_ge => try w.print("    v{d} = (lir_u2d(v{d}) >= lir_u2d(v{d})) ? 1ULL : 0ULL;\n", .{ inst.dest, inst.src1, inst.src2 }),
                     .itof => try w.print("    v{d} = lir_d2u((double)(int64_t)v{d});\n", .{ inst.dest, inst.src1 }),
+                    .uitof => try w.print("    v{d} = lir_d2u((double)(uint64_t)v{d});\n", .{ inst.dest, inst.src1 }),
                     .ftoi => try w.print("    do {{ double _df = lir_u2d(v{d}); if (isnan(_df) || _df < -9223372036854775808.0 || _df >= 9223372036854775808.0) lir_trap(); v{d} = (uint64_t)(int64_t)_df; }} while (0);\n", .{ inst.src1, inst.dest }),
+                    .ftou => try w.print("    do {{ double _df = lir_u2d(v{d}); if (isnan(_df) || _df < 0.0 || _df >= 18446744073709551616.0) lir_trap(); v{d} = (uint64_t)_df; }} while (0);\n", .{ inst.src1, inst.dest }),
                     .f64_to_f32 => try w.print("    v{d} = lir_f2u((float)lir_u2d(v{d}));\n", .{ inst.dest, inst.src1 }),
                     .f32_to_f64 => try w.print("    v{d} = lir_d2u((double)lir_u2f(v{d}));\n", .{ inst.dest, inst.src1 }),
                     .jump => {

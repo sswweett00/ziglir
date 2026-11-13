@@ -17,6 +17,7 @@ pub const VerifyError = error{
     InvalidStructLayout,
     InvalidLocalSlot,
     InvalidParameterSlot,
+    InvalidVirtualRegister,
     StackFrameTooLarge,
     MidBlockTerminator,
     MalformedPhi,
@@ -59,6 +60,7 @@ pub fn verify(module: *const ir.IRModule, source: []const u8) VerifyError!void {
         if (!validRange(fsrc, function.name_start, function.name_len)) return error.InvalidFunctionNameRange;
         if (function.block_count == 0 or function.block_count > function.blocks.len) return error.InvalidBlockCount;
         if (function.param_count > function.param_slots.len) return error.InvalidBlockCount;
+        if (function.vreg_count == 0) return error.InvalidVirtualRegister;
         for (function.param_slots[0..function.param_count]) |slot| {
             if (slot == 0 or slot > function.total_locals) return error.InvalidParameterSlot;
         }
@@ -76,11 +78,20 @@ pub fn verify(module: *const ir.IRModule, source: []const u8) VerifyError!void {
                 if (inst.op.isTerminator() and idx + 1 < block.inst_count) {
                     return error.MidBlockTerminator;
                 }
+                if ((inst.dest != 0 and inst.dest >= function.vreg_count) or
+                    (inst.src1 != 0 and inst.src1 >= function.vreg_count) or
+                    (inst.src2 != 0 and inst.src2 >= function.vreg_count))
+                {
+                    return error.InvalidVirtualRegister;
+                }
                 max_vreg = @max(max_vreg, inst.dest);
                 max_vreg = @max(max_vreg, inst.src1);
                 max_vreg = @max(max_vreg, inst.src2);
                 if (inst.arg_count > inst.args.len) return error.InvalidCallArgumentCount;
-                for (inst.args[0..inst.arg_count]) |arg| max_vreg = @max(max_vreg, arg);
+                for (inst.args[0..inst.arg_count]) |arg| {
+                    if (arg != 0 and arg >= function.vreg_count) return error.InvalidVirtualRegister;
+                    max_vreg = @max(max_vreg, arg);
+                }
                 if (inst.op == .phi) {
                     for (inst.phi_blocks[0..inst.arg_count]) |pb| {
                         if (pb >= function.block_count) return error.InvalidBranchTarget;

@@ -1,0 +1,8 @@
+// Exercise native decimal formatting over 200,000 nonnegative i64 values.
+// The benchmark harness discards stdout so output volume does not dominate.
+fn main() -> i64 {
+    for value in 0..200000 {
+        printInt(value)
+    }
+    return 0
+}

@@ -78,6 +78,40 @@ fn main() -> i64 {
     return 0
 }
 ''', "-1\n2\n48\n4\n", 0),
+    ("integer_power_assignment", '''
+fn main() -> i64 {
+    var value = 2
+    value **= 3
+    printInt(value)
+    value **= 2
+    printInt(value)
+    return 0
+}
+''', "8\n64\n", 0),
+    ("unsigned_float_casts", '''
+fn main() -> i64 {
+    let zero = (0 as u64) as f64
+    let one = (1 as u64) as f64
+    let high_bit = ((9223372036854775807 as u64 + 1 as u64) as f64)
+    let max_u64 = ((-1) as u64) as f64
+    let max_u32 = (4294967295 as u32) as f64
+    let f32_round = ((16777217 as u32) as f32) as f64
+    let f64_to_u64_high = (9223372036854775808.0 as u64) as f64
+    let f64_to_u64_near_max = (18446744073709549568.0 as u64) as f64
+    let f64_to_u8 = (255.9 as u8) as i64
+    let f64_to_u8_wrap = (256.9 as u8) as i64
+    if zero == 0.0 { println("zero-ok") } else { println("zero-bad") }
+    if one == 1.0 { println("one-ok") } else { println("one-bad") }
+    if high_bit == 9223372036854775808.0 { println("high-ok") } else { println("high-bad") }
+    if max_u64 == 18446744073709551616.0 { println("max64-ok") } else { println("max64-bad") }
+    if max_u32 == 4294967295.0 { println("max32-ok") } else { println("max32-bad") }
+    if f32_round == 16777216.0 { println("f32-round-ok") } else { println("f32-round-bad") }
+    if f64_to_u64_high == 9223372036854775808.0 { println("ftou-high-ok") } else { println("ftou-high-bad") }
+    if f64_to_u64_near_max == 18446744073709549568.0 { println("ftou-max-ok") } else { println("ftou-max-bad") }
+    if f64_to_u8 == 255 and f64_to_u8_wrap == 0 { println("ftou-narrow-ok") } else { println("ftou-narrow-bad") }
+    return 0
+}
+''', "zero-ok\none-ok\nhigh-ok\nmax64-ok\nmax32-ok\nf32-round-ok\nftou-high-ok\nftou-max-ok\nftou-narrow-ok\n", 0),
 )
 
 
@@ -107,7 +141,34 @@ def integer_edge_case():
             "".join(f"{value}\n" for value in expected), 0)
 
 
-CASES += (integer_edge_case(),)
+def signed_constant_division_case():
+    """Verify magic-number division against Python's exact signed arithmetic."""
+    divisors = (3, 7, 8, 97, 1009, 1000000007,
+                (1 << 62) + 1, (1 << 63) - 1, -7, -1009)
+    values = (-(1 << 63), -(1 << 63) + 1, -1234567, -1009, -7, -1,
+              0, 1, 7, 1009, 1234567, (1 << 63) - 1)
+    helpers = []
+    calls = []
+    expected = []
+    for divisor in divisors:
+        ident = f"d{abs(divisor)}_{'neg' if divisor < 0 else 'pos'}"
+        helpers.append(f"fn div_{ident}(x: i64) -> i64 {{ return x / ({divisor}) }}")
+        helpers.append(f"fn rem_{ident}(x: i64) -> i64 {{ return x % ({divisor}) }}")
+        for value in values:
+            literal = str(value) if value != -(1 << 63) else "(-9223372036854775807 - 1)"
+            calls.append(f"printInt(div_{ident}({literal}))")
+            calls.append(f"printInt(rem_{ident}({literal}))")
+            quotient = abs(value) // abs(divisor)
+            if (value < 0) != (divisor < 0):
+                quotient = -quotient
+            remainder = value - quotient * divisor
+            expected.extend((quotient, remainder))
+    source = helpers + ["fn main() -> i64 {"] + calls + ["return 0 }"]
+    return ("signed_constant_division", "\n".join(source),
+            "".join(f"{value}\n" for value in expected), 0)
+
+
+CASES += (integer_edge_case(), signed_constant_division_case())
 
 
 class BackendTests(unittest.TestCase):
@@ -131,21 +192,49 @@ class BackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="lir-power-trap-") as temp:
             cwd = pathlib.Path(temp)
             path = cwd / "main.lir"
-            path.write_text("fn power(x: i64, n: i64) -> i64 { return x ** n }\n"
-                            "fn main() -> i64 { printInt(power(2, -1)) return 0 }")
-            check = subprocess.run([str(COMPILER), "check", str(path)],
-                                   capture_output=True, text=True, timeout=30)
-            self.assertEqual(check.returncode, 0, check.stderr)
-            for backend in BACKENDS:
-                for level in LEVELS:
-                    with self.subTest(backend=backend, level=level):
-                        args = [str(COMPILER), "run", str(path), "--backend=" + backend, level]
-                        if backend == "wasm":
-                            args.append("--target=wasm32-wasi")
-                        result = subprocess.run(args, cwd=cwd, capture_output=True,
-                                                text=True, timeout=30)
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertEqual(result.stdout, "")
+            sources = (
+                "fn power(x: i64, n: i64) -> i64 { return x ** n }\n"
+                "fn main() -> i64 { printInt(power(2, -1)) return 0 }",
+                "fn main() -> i64 { var value = 2 let exponent = -1 "
+                "value **= exponent return value }",
+            )
+            for source in sources:
+                path.write_text(source)
+                check = subprocess.run([str(COMPILER), "check", str(path)],
+                                       capture_output=True, text=True, timeout=30)
+                self.assertEqual(check.returncode, 0, check.stderr)
+                for backend in BACKENDS:
+                    for level in LEVELS:
+                        with self.subTest(source=source, backend=backend, level=level):
+                            args = [str(COMPILER), "run", str(path), "--backend=" + backend, level]
+                            if backend == "wasm":
+                                args.append("--target=wasm32-wasi")
+                            result = subprocess.run(args, cwd=cwd, capture_output=True,
+                                                    text=True, timeout=30)
+                            self.assertNotEqual(result.returncode, 0)
+                            self.assertEqual(result.stdout, "")
+
+    def test_invalid_float_to_unsigned_traps(self):
+        sources = (
+            "fn main() -> i64 { printInt((-1.0 as u64) as i64) return 0 }",
+            "fn main() -> i64 { printInt((18446744073709551616.0 as u64) as i64) return 0 }",
+            "fn main() -> i64 { printInt(((0.0 / 0.0) as u64) as i64) return 0 }",
+        )
+        with tempfile.TemporaryDirectory(prefix="lir-ftou-traps-") as temp:
+            cwd = pathlib.Path(temp)
+            path = cwd / "main.lir"
+            for source in sources:
+                path.write_text(source)
+                for backend in BACKENDS:
+                    for level in LEVELS:
+                        with self.subTest(source=source, backend=backend, level=level):
+                            args = [str(COMPILER), "run", str(path), "--backend=" + backend, level]
+                            if backend == "wasm":
+                                args.append("--target=wasm32-wasi")
+                            result = subprocess.run(args, cwd=cwd, capture_output=True,
+                                                    text=True, timeout=30)
+                            self.assertNotEqual(result.returncode, 0)
+                            self.assertEqual(result.stdout, "")
 
     def test_language_feature_diagnostics(self):
         invalid = [
@@ -177,6 +266,11 @@ class BackendTests(unittest.TestCase):
             result = subprocess.run([str(COMPILER), "check", str(path)],
                                     capture_output=True, text=True, timeout=30)
             self.assertNotEqual(result.returncode, 0)
+            path.write_text("fn main() -> i64 { var value = 2 value **= -1 return value }")
+            result = subprocess.run([str(COMPILER), "check", str(path)],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("nonnegative", result.stderr)
 
     def test_o0_build_ir_matches_unoptimized_ir_command(self):
         # This specifically detects silent CLI -O0 -> -O2 promotion, rather than
