@@ -252,17 +252,18 @@ test "lexer get handles out of bounds index" {
 }
 
 test "lexer recognizes all operator tokens" {
-    const source = "+ - * / % == != < > <= >= = += -= *= /= && || !";
+    const source = "+ - * ** **= / % == != < > <= >= = += -= *= /= && || !";
     const lexer = try std.testing.allocator.create(main.Lexer);
     defer std.testing.allocator.destroy(lexer);
     lexer.* = main.Lexer.init(source);
     lexer.tokenize();
 
     const expected = [_]main.TokenKind{
-        .plus,     .minus,   .star,      .slash,    .percent,
-        .eq,       .ne,      .lt,        .gt,       .le,
-        .ge,       .assign,  .plus_eq,   .minus_eq, .star_eq,
-        .slash_eq, .and_and, .pipe_pipe, .bang,
+        .plus,       .minus,    .star,       .star_star, .star_star_eq,
+        .slash,      .percent,  .eq,         .ne,        .lt,
+        .gt,         .le,       .ge,         .assign,    .plus_eq,
+        .minus_eq,   .star_eq,  .slash_eq,   .and_and,   .pipe_pipe,
+        .bang,
     };
     for (expected, 0..) |k, i| {
         try std.testing.expectEqual(k, lexer.get(@intCast(i)).kind);
@@ -760,11 +761,31 @@ test "IR verifier rejects local slots outside the declared frame" {
     ir_mod.IRModule.initFnSlot(&module.fns[0], 0, 2, 0, 0, 0);
     module.fns[0].block_count = 1;
     module.fns[0].total_locals = 1;
+    module.fns[0].vreg_count = 2;
     module.fns[0].blocks[0].label = 0;
     module.fns[0].blocks[0].inst_count = 1;
     module.fns[0].blocks[0].insts[0] = .{ .op = .load_local, .dest = 1, .slot = 2 };
 
     try std.testing.expectError(error.InvalidLocalSlot, ir_verify.verify(module, "fn"));
+}
+
+test "IR verifier rejects virtual registers beyond the function register table" {
+    const module = try std.testing.allocator.create(ir_mod.IRModule);
+    defer std.testing.allocator.destroy(module);
+    module.init();
+    module.fn_count = 1;
+    ir_mod.IRModule.initFnSlot(&module.fns[0], 0, 2, 0, 0, 0);
+    module.fns[0].block_count = 1;
+    module.fns[0].blocks[0].label = 0;
+    module.fns[0].blocks[0].inst_count = 1;
+    module.fns[0].blocks[0].insts[0] = .{ .op = .const_int, .dest = 1, .imm = 4 };
+    try std.testing.expectError(error.InvalidVirtualRegister, ir_verify.verify(module, "fn"));
+
+    module.fns[0].blocks[0].insts[0] = .{ .op = .add, .src1 = 1 };
+    try std.testing.expectError(error.InvalidVirtualRegister, ir_verify.verify(module, "fn"));
+
+    module.fns[0].blocks[0].insts[0] = .{ .op = .call, .callee_fn_idx = 0, .arg_count = 1, .args = .{ 1 } ** 8 };
+    try std.testing.expectError(error.InvalidVirtualRegister, ir_verify.verify(module, "fn"));
 }
 
 test "IR verifier rejects stack frames above backend safety limit" {
@@ -2949,6 +2970,14 @@ test "Sema rejects mutability, borrow/escape, closure capture, loop leak, narrow
         .{
             .name = "immutable_ref_param_mutate",
             .src = "fn bad(p: &i64) { *p = 2 }\nfn main() -> i64 { var x = 1\n bad(&x)\n return x }",
+        },
+        .{
+            .name = "copied_shared_ref_keeps_borrow_live",
+            .src = "fn main() -> i64 { var x = 1\n var y = 2\n var r = &x\n let r2 = r\n r = &y\n x = 3\n return *r2 }",
+        },
+        .{
+            .name = "mutable_ref_cannot_be_aliased_by_copy",
+            .src = "fn main() -> i64 { var x = 1\n let mut r = &mut x\n let mut r2 = r\n *r2 = 2\n return x }",
         },
         .{
             .name = "escape_local_addr_return",

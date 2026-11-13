@@ -94,6 +94,40 @@ const TargetKind = enum(u8) {
     rodata,
 };
 
+const SignedDivMagic = struct { multiplier: i64, shift: u8 };
+
+// Hacker's Delight signed division by an invariant positive divisor. The
+// generated quotient is corrected toward zero, matching LIR's idiv semantics.
+fn signedDivMagic(divisor: i64) SignedDivMagic {
+    const d: u128 = @intCast(divisor);
+    const two63: u128 = @as(u128, 1) << 63;
+    const anc = two63 - 1 - (two63 % d);
+    var p: u32 = 63;
+    var q1 = two63 / anc;
+    var r1 = two63 - q1 * anc;
+    var q2 = two63 / d;
+    var r2 = two63 - q2 * d;
+    while (true) {
+        p += 1;
+        q1 *= 2;
+        r1 *= 2;
+        if (r1 >= anc) {
+            q1 += 1;
+            r1 -= anc;
+        }
+        q2 *= 2;
+        r2 *= 2;
+        if (r2 >= d) {
+            q2 += 1;
+            r2 -= d;
+        }
+        const delta = d - r2;
+        if (!(q1 < delta or (q1 == delta and r1 == 0))) break;
+    }
+    const multiplier: i64 = @bitCast(@as(u64, @truncate(q2 + 1)));
+    return .{ .multiplier = multiplier, .shift = @intCast(p - 64) };
+}
+
 const Reloc = struct {
     kind: RelocKind,
     opcode_pos: u32,
@@ -2376,6 +2410,49 @@ pub const IRCodegen = struct {
                     if (self.vregPhys(inst.dest) == null) self.storeRegToVreg(dst_reg, inst.dest);
                     return;
                 }
+                if (known_c and known_imm > 1) {
+                    const magic = signedDivMagic(known_imm);
+                    self.loadVregToReg(inst.src1, 0);
+                    self.movRegReg(11, 0); // preserve dividend for remainder / correction
+                    self.mov64imm(1, @bitCast(magic.multiplier));
+                    self.emit8(0x48);
+                    self.emit8(0xF7);
+                    self.emit8(0xE9); // imul rcx -> rdx:rax
+                    if (magic.multiplier < 0) {
+                        self.emit8(0x4C);
+                        self.emit8(0x01);
+                        self.emit8(0xDA); // add rdx, r11
+                    }
+                    if (magic.shift > 0) {
+                        self.emit8(0x48);
+                        self.emit8(0xC1);
+                        self.emit8(0xFA);
+                        self.emit8(magic.shift); // sar rdx, shift
+                    }
+                    self.movRegReg(0, 2);
+                    self.emit8(0x48);
+                    self.emit8(0xC1);
+                    self.emit8(0xE8);
+                    self.emit8(63); // shr rax, 63: adjust arithmetic shift toward zero
+                    self.emit8(0x48);
+                    self.emit8(0x01);
+                    self.emit8(0xC2); // add rdx, rax
+                    if (inst.op == .@"mod") {
+                        self.movRegReg(0, 2);
+                        self.mov64imm(1, @bitCast(known_imm));
+                        self.emit8(0x48);
+                        self.emit8(0x0F);
+                        self.emit8(0xAF);
+                        self.emit8(0xC1); // imul rax, rcx
+                        self.emit8(0x49);
+                        self.emit8(0x29);
+                        self.emit8(0xC3); // sub r11, rax
+                        self.storeRegToVreg(11, inst.dest);
+                    } else {
+                        self.storeRegToVreg(2, inst.dest);
+                    }
+                    return;
+                }
                 self.loadVregToReg(inst.src1, 0);
                 self.loadVregToReg(inst.src2, 1);
                 if (!(known_c and known_imm != 0)) {
@@ -2657,6 +2734,59 @@ pub const IRCodegen = struct {
                 self.emit8(0xC0);
                 self.storeRegToVreg(0, inst.dest);
             },
+            .uitof => {
+                self.loadVregToReg(inst.src1, 0);
+                // For values below 2^63 the signed conversion is already exact.
+                // For the upper half, convert ((x >> 1) | (x & 1)) and double;
+                // this preserves round-to-nearest-even for the full u64 range.
+                self.emit8(0x48);
+                self.emit8(0x85);
+                self.emit8(0xC0); // test rax, rax
+                const low_path = self.emitJccReloc(0x9, .code_offset, 0, fi); // jns
+                self.emit8(0x48);
+                self.emit8(0x89);
+                self.emit8(0xC1); // mov rcx, rax
+                self.emit8(0x48);
+                self.emit8(0xD1);
+                self.emit8(0xE9); // shr rcx, 1
+                self.emit8(0x48);
+                self.emit8(0x83);
+                self.emit8(0xE0);
+                self.emit8(0x01); // and rax, 1
+                self.emit8(0x48);
+                self.emit8(0x09);
+                self.emit8(0xC1); // or rcx, rax
+                self.emit8(0x66);
+                self.emit8(0x48);
+                self.emit8(0x0F);
+                self.emit8(0x6E);
+                self.emit8(0xC1); // movq xmm0, rcx
+                self.emit8(0xF2);
+                self.emit8(0x48);
+                self.emit8(0x0F);
+                self.emit8(0x2A);
+                self.emit8(0xC1); // cvtsi2sd xmm0, rcx
+                self.emit8(0xF2);
+                self.emit8(0x0F);
+                self.emit8(0x58);
+                self.emit8(0xC0); // addsd xmm0, xmm0
+                const done = self.emitJmpReloc(.code_offset, 0, fi);
+                const low_offset = self.code_len;
+                self.relocs[low_path].target_id = low_offset;
+                self.loadVregToReg(inst.src1, 0);
+                self.emit8(0xF2);
+                self.emit8(0x48);
+                self.emit8(0x0F);
+                self.emit8(0x2A);
+                self.emit8(0xC0); // cvtsi2sd xmm0, rax
+                self.relocs[done].target_id = self.code_len;
+                self.emit8(0x66);
+                self.emit8(0x48);
+                self.emit8(0x0F);
+                self.emit8(0x7E);
+                self.emit8(0xC0); // movq rax, xmm0
+                self.storeRegToVreg(0, inst.dest);
+            },
             .ftoi => {
                 self.loadVregToReg(inst.src1, 1); // rcx = raw f64 bits
                 // movq xmm0, rcx
@@ -2687,6 +2817,85 @@ pub const IRCodegen = struct {
                 const ftoi_done = self.code_len;
                 self.relocs[ftoi_ok1].target_id = ftoi_done;
                 self.relocs[ftoi_ok2].target_id = ftoi_done;
+                self.storeRegToVreg(0, inst.dest);
+            },
+            .ftou => {
+                self.loadVregToReg(inst.src1, 1); // rcx = raw f64 bits
+                self.emit8(0x66);
+                self.emit8(0x48);
+                self.emit8(0x0F);
+                self.emit8(0x6E);
+                self.emit8(0xC1); // movq xmm0, rcx
+                self.emit8(0x0F);
+                self.emit8(0x57);
+                self.emit8(0xC9); // xorps xmm1, xmm1
+                self.emit8(0x66);
+                self.emit8(0x0F);
+                self.emit8(0x2E);
+                self.emit8(0xC1); // ucomisd xmm0, xmm1
+                const bad_negative = self.emitJccReloc(0x2, .code_offset, 0, fi); // jb also catches unordered NaN
+
+                self.mov64imm(11, 0x43F0_0000_0000_0000); // 2^64
+                self.emit8(0x66);
+                self.emit8(0x49);
+                self.emit8(0x0F);
+                self.emit8(0x6E);
+                self.emit8(0xCB); // movq xmm1, r11
+                self.emit8(0x66);
+                self.emit8(0x0F);
+                self.emit8(0x2E);
+                self.emit8(0xC1); // ucomisd xmm0, xmm1
+                const bad_too_large = self.emitJccReloc(0x3, .code_offset, 0, fi); // jae
+
+                self.mov64imm(11, 0x43E0_0000_0000_0000); // 2^63
+                self.emit8(0x66);
+                self.emit8(0x49);
+                self.emit8(0x0F);
+                self.emit8(0x6E);
+                self.emit8(0xCB); // movq xmm1, r11
+                self.emit8(0x66);
+                self.emit8(0x0F);
+                self.emit8(0x2E);
+                self.emit8(0xC1); // ucomisd xmm0, xmm1
+                const high_path = self.emitJccReloc(0x3, .code_offset, 0, fi); // jae
+
+                self.emit8(0xF2);
+                self.emit8(0x48);
+                self.emit8(0x0F);
+                self.emit8(0x2C);
+                self.emit8(0xC0); // cvttsd2si rax, xmm0
+                const low_done = self.emitJmpReloc(.code_offset, 0, fi);
+
+                const high_offset = self.code_len;
+                self.relocs[high_path].target_id = high_offset;
+                self.mov64imm(11, 0x3FE0_0000_0000_0000); // 0.5
+                self.emit8(0x66);
+                self.emit8(0x49);
+                self.emit8(0x0F);
+                self.emit8(0x6E);
+                self.emit8(0xCB); // movq xmm1, r11
+                self.emit8(0xF2);
+                self.emit8(0x0F);
+                self.emit8(0x59);
+                self.emit8(0xC1); // mulsd xmm0, xmm1
+                self.emit8(0xF2);
+                self.emit8(0x48);
+                self.emit8(0x0F);
+                self.emit8(0x2C);
+                self.emit8(0xC0); // cvttsd2si rax, xmm0 (now below 2^63)
+                self.emit8(0x48);
+                self.emit8(0xD1);
+                self.emit8(0xE0); // shl rax, 1
+                const high_done = self.emitJmpReloc(.code_offset, 0, fi);
+
+                const trap_offset = self.code_len;
+                self.relocs[bad_negative].target_id = trap_offset;
+                self.relocs[bad_too_large].target_id = trap_offset;
+                self.emit8(0x0F);
+                self.emit8(0x0B); // ud2
+                const done_offset = self.code_len;
+                self.relocs[low_done].target_id = done_offset;
+                self.relocs[high_done].target_id = done_offset;
                 self.storeRegToVreg(0, inst.dest);
             },
             .f32_to_f64 => {
@@ -5258,15 +5467,30 @@ pub const IRCodegen = struct {
         self.emit8(0xB8);
         self.emit32(1);
 
+        // Unsigned divide by 10 via multiply-high: floor(x / 10) is
+        // (x * 0xCCCCCCCCCCCCCCCD) >> 67 for every u64 value.
+        self.mov64imm(9, 0xCCCCCCCCCCCCCCCD);
         const div_loop = self.code_len;
-        self.emit8(0x41);
-        self.emit8(0xB9);
-        self.emit32(10);
-        self.emit8(0x31);
-        self.emit8(0xD2);
+        self.movRegReg(10, 0); // preserve the current magnitude for remainder
         self.emit8(0x49);
         self.emit8(0xF7);
-        self.emit8(0xF1);
+        self.emit8(0xE1); // mul r9 -> rdx:rax
+        self.movRegReg(0, 2);
+        self.emit8(0x48);
+        self.emit8(0xC1);
+        self.emit8(0xE8);
+        self.emit8(3); // quotient in rax
+        self.emit8(0x48);
+        self.emit8(0x8D);
+        self.emit8(0x14);
+        self.emit8(0x80); // lea rdx, [rax + rax*4]
+        self.emit8(0x48);
+        self.emit8(0xD1);
+        self.emit8(0xE2); // shl rdx, 1 => quotient * 10
+        self.emit8(0x49);
+        self.emit8(0x29);
+        self.emit8(0xD2); // sub r10, rdx => remainder
+        self.movRegReg(2, 10);
         self.emit8(0x80);
         self.emit8(0xC2);
         self.emit8('0');

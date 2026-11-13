@@ -2,7 +2,7 @@
 
 ## Mission
 
-Ziglir is a compiler written in Zig that directly emits native machine code without requiring GCC, Clang, or LLVM as a mandatory dependency. Direct zero-dependency backends exist for Linux x86-64 ELF (`ir_codegen.zig`) and `wasm32-wasi` (`wasm_backend.zig`), complemented by a portable in-process IR VM (`ir_vm.zig`) and an optional C11 cross-target backend (`c_backend.zig`) verified via differential parity tests against the canonical x86-64 ELF backend.
+**ZigLIR** is the Zig-written compiler for the LIR language; its installed CLI is `lir`. The lexer, parser, semantic analyzer, IR, optimizer, x86-64 ELF emitter, and wasm32-wasi emitter are implemented in Zig. The direct ELF/WASM build path does not invoke LLVM, GCC, or Clang. The portable IR VM is also implemented in Zig. An optional C11 backend, itself implemented in Zig, emits C source for users who want to compile to additional targets with an external C compiler.
 
 The design optimizes in this order:
 
@@ -135,6 +135,22 @@ A change is not complete until relevant gates pass:
 10. **Performance gate:** a performance change must not regress correctness, compile-time memory, or unrelated benchmark workloads without an explicit trade-off.
 
 For every discovered miscompile, preserve the source as a regression fixture.
+
+## Signed division by invariant positive constants
+
+The native x86-64 backend lowers signed division and remainder by a known,
+positive, non-power-of-two constant using a 64-bit magic multiplier and shift
+rather than `idiv`. It applies the signed high-half correction and adjusts the
+arithmetic shift result toward zero, matching LIR's truncating signed division;
+remainder is computed as `dividend - quotient * divisor`. The existing power-of-
+two path remains separate. Dynamic and negative divisors keep the guarded
+hardware-division path.
+
+This lowering is target-specific, not an IR semantic change. Regression tests
+compare exact results against Python integer arithmetic across the full signed
+input boundaries, small and large positive divisors, negative divisors, and all
+four backends/optimization levels. Keep a lowering only with these correctness
+gates and repeatable benchmark evidence.
 
 ## Performance measurement
 

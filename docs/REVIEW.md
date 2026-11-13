@@ -68,6 +68,17 @@ limit; compiler paths are resolved before changing the working directory.
 Avoid adding more syntax before these correctness gates and reproducible
 performance baselines are established.
 
+## Ninth development pass: virtual-register bounds verification
+
+The structural IR verifier now rejects every nonzero destination, operand, or
+call/phi argument register whose index is outside that function's declared
+virtual-register table. This check runs before and after optimization and prevents
+malformed IR from reaching register allocation/code generation with an invalid
+index. It does not yet verify definition-before-use, dominance, or complete phi
+predecessor correspondence; those remain explicit audit items. A negative unit
+test covers an out-of-range destination, and the ReleaseFast compiler plus the
+backend/core/CLI/call/project/browser suites pass after the change.
+
 ## Second development pass: optimization and execution parity
 
 - Removed silent `-O0` promotion from `build`, `run`, and `test`. The default

@@ -1987,6 +1987,16 @@ pub const Sema = struct {
                     } else if (init_n.kind == .identifier) {
                         if (self.lookupVarIdx(self.text(init_idx))) |src_vi| {
                             self.vars[new_vi].holds_local_ref_closure = self.vars[src_vi].holds_local_ref_closure;
+                            if (self.vars[src_vi].borrow_target >= 0) {
+                                const bt: usize = @intCast(self.vars[src_vi].borrow_target);
+                                if (self.vars[src_vi].borrow_is_mut) {
+                                    self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, @max(n.text_len, 1), "mutable reference '{s}' cannot be copied into '{s}'; mutable references are exclusive", .{ self.vars[src_vi].name, var_name });
+                                } else if (bt < self.var_count) {
+                                    self.vars[new_vi].borrow_target = @intCast(bt);
+                                    self.vars[new_vi].borrow_is_mut = false;
+                                    self.vars[bt].shared_borrows +|= 1;
+                                }
+                            }
                             if (self.vars[src_vi].alias_root >= 0) {
                                 self.vars[new_vi].alias_root = self.vars[src_vi].alias_root;
                             } else if (self.vars[src_vi].res_state == .heap_alive or self.vars[src_vi].res_state == .fd_alive) {
@@ -2002,7 +2012,7 @@ pub const Sema = struct {
                             if (is_mb) {
                                 self.vars[tgt_vi].mut_borrowed = true;
                             } else {
-                                self.vars[tgt_vi].shared_borrows += 1;
+                                self.vars[tgt_vi].shared_borrows +|= 1;
                             }
                         }
                     }
@@ -2104,6 +2114,14 @@ pub const Sema = struct {
                         } else if (self.in_spawn and vi < self.closure_var_base) {
                             self.failAt(error.InvalidAssignmentTarget, n.source_id, n.line, n.col, n.text_len, "cannot mutate captured outer variable '{s}' inside spawn", .{vname});
                         } else if (n.op != @intFromEnum(TokenKind.assign)) {
+                            if (n.op == @intFromEnum(TokenKind.star_star_eq)) {
+                                if (!ve.ty.eql(SemaType.i64_t) or !rhs_ty.eql(SemaType.i64_t)) {
+                                    self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "integer power assignment requires an i64 target and exponent", .{});
+                                }
+                                if (self.evalConstExpr(n.child0)) |exponent| {
+                                    if (exponent < 0) self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "integer power exponent must be nonnegative", .{});
+                                }
+                            }
                             if (ve.res_state == .freed or ve.res_state == .maybe_freed) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "compile-time use-after-free on '{s}'", .{vname});
                             } else if (ve.res_state == .fd_closed or ve.res_state == .fd_maybe_closed) {
@@ -2121,7 +2139,7 @@ pub const Sema = struct {
                             } else if (ve.res_state == .fd_alive and ve.alloc_loop_depth > 0 and !self.exprUsesVar(n.child0, vname)) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "overwriting unclosed file descriptor '{s}' inside loop leaks resource", .{vname});
                             }
-                            if (self.vars[vi].borrow_target >= 0) {
+                            if (self.vars[vi].borrow_target >= 0 and !self.exprUsesVar(n.child0, vname)) {
                                 const old_bt: usize = @intCast(self.vars[vi].borrow_target);
                                 if (old_bt < self.var_count) {
                                     if (self.vars[vi].borrow_is_mut) {
@@ -2158,6 +2176,16 @@ pub const Sema = struct {
                                 } else if (rn.kind == .identifier) {
                                     if (self.lookupVarIdx(self.text(rhs_idx))) |src_vi| {
                                         self.vars[vi].holds_local_ref_closure = self.vars[src_vi].holds_local_ref_closure;
+                                        if (self.vars[src_vi].borrow_target >= 0) {
+                                            const bt: usize = @intCast(self.vars[src_vi].borrow_target);
+                                            if (self.vars[src_vi].borrow_is_mut) {
+                                                self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "mutable reference '{s}' cannot be copied into '{s}'; mutable references are exclusive", .{ self.vars[src_vi].name, vname });
+                                            } else if (bt < self.var_count) {
+                                                self.vars[vi].borrow_target = @intCast(bt);
+                                                self.vars[vi].borrow_is_mut = false;
+                                                self.vars[bt].shared_borrows +|= 1;
+                                            }
+                                        }
                                         if (self.vars[src_vi].alias_root >= 0) {
                                             self.vars[vi].alias_root = self.vars[src_vi].alias_root;
                                         } else if (self.vars[src_vi].res_state == .heap_alive or self.vars[src_vi].res_state == .fd_alive) {
@@ -2172,7 +2200,7 @@ pub const Sema = struct {
                                         if (is_mb) {
                                             self.vars[tgt_vi].mut_borrowed = true;
                                         } else {
-                                            self.vars[tgt_vi].shared_borrows += 1;
+                                            self.vars[tgt_vi].shared_borrows +|= 1;
                                         }
                                     }
                                 } else if (rn.kind == .call_expr and rn.child0 != 0 and self.ast.nodes[rn.child0].kind == .identifier) {

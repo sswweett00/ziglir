@@ -612,10 +612,16 @@ pub const VMState = struct {
                     .fcmp_gt => vregs[inst.dest] = @intFromBool(@as(f64, @bitCast(vregs[inst.src1])) > @as(f64, @bitCast(vregs[inst.src2]))),
                     .fcmp_ge => vregs[inst.dest] = @intFromBool(@as(f64, @bitCast(vregs[inst.src1])) >= @as(f64, @bitCast(vregs[inst.src2]))),
                     .itof => vregs[inst.dest] = @bitCast(@as(f64, @floatFromInt(@as(i64, @bitCast(vregs[inst.src1]))))),
+                    .uitof => vregs[inst.dest] = @bitCast(@as(f64, @floatFromInt(vregs[inst.src1]))),
                     .ftoi => {
                         const fv: f64 = @bitCast(vregs[inst.src1]);
                         if (std.math.isNan(fv) or fv < -9223372036854775808.0 or fv >= 9223372036854775808.0) return error.Trap;
                         vregs[inst.dest] = @bitCast(@as(i64, @intFromFloat(fv)));
+                    },
+                    .ftou => {
+                        const fv: f64 = @bitCast(vregs[inst.src1]);
+                        if (std.math.isNan(fv) or fv < 0.0 or fv >= 18446744073709551616.0) return error.Trap;
+                        vregs[inst.dest] = @intFromFloat(fv);
                     },
                     .f64_to_f32 => {
                         const f32v: f32 = @floatCast(@as(f64, @bitCast(vregs[inst.src1])));

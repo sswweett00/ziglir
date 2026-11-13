@@ -137,9 +137,11 @@ const OP_F64_DIV: u8 = 0xA3;
 
 const OP_I32_WRAP_I64: u8 = 0xA7;
 const OP_I64_TRUNC_F64_S: u8 = 0xB0;
+const OP_I64_TRUNC_F64_U: u8 = 0xB1;
 const OP_I64_EXTEND_I32_U: u8 = 0xAD;
 const OP_F32_DEMOTE_F64: u8 = 0xB6;
 const OP_F64_CONVERT_I64_S: u8 = 0xB9;
+const OP_F64_CONVERT_I64_U: u8 = 0xBA;
 const OP_F64_PROMOTE_F32: u8 = 0xBB;
 const OP_I32_REINTERPRET_F32: u8 = 0xBC;
 const OP_I64_REINTERPRET_F64: u8 = 0xBD;
@@ -1002,10 +1004,22 @@ fn emitUserFn(sec: *Buf, alloc: std.mem.Allocator, module: *const IRModule, sour
                     try b.b(OP_I64_REINTERPRET_F64);
                     try b.lset(vreg_base + inst.dest);
                 },
+                .uitof => {
+                    try b.lget(vreg_base + inst.src1);
+                    try b.b(OP_F64_CONVERT_I64_U);
+                    try b.b(OP_I64_REINTERPRET_F64);
+                    try b.lset(vreg_base + inst.dest);
+                },
                 .ftoi => {
                     try b.lget(vreg_base + inst.src1);
                     try b.b(OP_F64_REINTERPRET_I64);
                     try b.b(OP_I64_TRUNC_F64_S);
+                    try b.lset(vreg_base + inst.dest);
+                },
+                .ftou => {
+                    try b.lget(vreg_base + inst.src1);
+                    try b.b(OP_F64_REINTERPRET_I64);
+                    try b.b(OP_I64_TRUNC_F64_U);
                     try b.lset(vreg_base + inst.dest);
                 },
                 .f64_to_f32 => {

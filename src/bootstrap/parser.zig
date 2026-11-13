@@ -1749,7 +1749,7 @@ pub const Parser = struct {
             const expr = self.parseExpr();
             const pk = self.peek().kind;
             const is_assign = pk == .assign or pk == .plus_eq or pk == .minus_eq or
-                pk == .star_eq or pk == .slash_eq or pk == .percent_eq or
+                pk == .star_eq or pk == .star_star_eq or pk == .slash_eq or pk == .percent_eq or
                 pk == .amp_eq or pk == .pipe_eq or pk == .caret_eq or
                 pk == .lshift_eq or pk == .rshift_eq;
             if (is_assign) {
