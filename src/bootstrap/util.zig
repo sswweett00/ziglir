@@ -185,3 +185,16 @@ pub fn write32(buf: []u8, val: u32) void {
 pub fn write64(buf: []u8, val: u64) void {
     buf[0..8].* = .{ @truncate(val), @truncate(val >> 8), @truncate(val >> 16), @truncate(val >> 24), @truncate(val >> 32), @truncate(val >> 40), @truncate(val >> 48), @truncate(val >> 56) };
 }
+
+/// Integer exponentiation modulo 2^64. Negative exponents are not integers.
+pub fn powWrapping(base: i64, exponent: i64) ?i64 {
+    if (exponent < 0) return null;
+    var b = base;
+    var e: u64 = @intCast(exponent);
+    var result: i64 = 1;
+    while (e != 0) : (e >>= 1) {
+        if (e & 1 != 0) result *%= b;
+        b *%= b;
+    }
+    return result;
+}

@@ -392,6 +392,7 @@ pub const Optimizer = struct {
                 .plus => a +% b,
                 .minus => a -% b,
                 .star => a *% b,
+                .star_star => util.powWrapping(a, b) orelse return,
                 .slash => if (is_uns)
                     (if (ub != 0) @bitCast(ua / ub) else return)
                 else
@@ -613,6 +614,7 @@ pub const Optimizer = struct {
         // !int_literal or -int_literal
         if (inner.kind == .int_literal) {
             const result: i64 = switch (op) {
+                .plus => inner.int_val,
                 .minus => -%inner.int_val,
                 .bang => if (inner.int_val == 0) 1 else 0,
                 else => return,
@@ -733,9 +735,7 @@ pub const Optimizer = struct {
             if (!self.const_active[i]) continue;
             if (self.const_name_len[i] != node.text_len) continue;
             if (self.const_name_src[i] != node.source_id) continue;
-            if (eql(self.textOfSrc(self.const_name_start[i], self.const_name_len[i], node.source_id),
-                self.textOfSrc(node.text_start, node.text_len, node.source_id)))
-            {
+            if (eql(self.textOfSrc(self.const_name_start[i], self.const_name_len[i], node.source_id), self.textOfSrc(node.text_start, node.text_len, node.source_id))) {
                 self.ast.nodes[idx] = .{ .kind = .int_literal, .line = node.line, .source_id = node.source_id, .int_val = self.const_value[i] };
                 changed.* = true;
                 return;
@@ -1104,4 +1104,3 @@ pub const Optimizer = struct {
         };
     }
 };
-

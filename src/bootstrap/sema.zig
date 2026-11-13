@@ -3,6 +3,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
+const util = @import("util.zig");
 const lex = @import("lexer.zig");
 const parser_mod = @import("parser.zig");
 const diag_mod = @import("diag.zig");
@@ -213,6 +214,7 @@ const FnSig = struct {
     param_count: u32,
     param_types: [MAX_PARAMS]SemaType,
     param_is_mut: [MAX_PARAMS]bool = .{false} ** MAX_PARAMS,
+    param_nodes: [MAX_PARAMS]u32 = .{0} ** MAX_PARAMS,
     self_is_mut: bool = false,
     self_is_ref: bool = false,
     ret_type: SemaType,
@@ -272,6 +274,15 @@ const BuiltinSpec = struct {
 };
 
 const builtins = [_]BuiltinSpec{
+    .{ .name = "@rotl", .min_args = 2, .max_args = 2, .ret = SemaType.i64_t },
+    .{ .name = "@rotr", .min_args = 2, .max_args = 2, .ret = SemaType.i64_t },
+    .{ .name = "@bit_reverse", .min_args = 1, .max_args = 1, .ret = SemaType.i64_t },
+    .{ .name = "@is_power_of_two", .min_args = 1, .max_args = 1, .ret = .bool },
+    .{ .name = "@signum", .min_args = 1, .max_args = 1, .ret = SemaType.i64_t },
+    .{ .name = "@wrapping_add", .min_args = 2, .max_args = 2, .ret = SemaType.i64_t },
+    .{ .name = "@wrapping_sub", .min_args = 2, .max_args = 2, .ret = SemaType.i64_t },
+    .{ .name = "@wrapping_mul", .min_args = 2, .max_args = 2, .ret = SemaType.i64_t },
+
     .{ .name = "printInt", .min_args = 1, .max_args = 1, .ret = .void },
     .{ .name = "print", .min_args = 1, .max_args = 1, .ret = .void },
     .{ .name = "println", .min_args = 1, .max_args = 1, .ret = .void },
@@ -391,6 +402,13 @@ const builtins = [_]BuiltinSpec{
     .{ .name = "@write_u64", .min_args = 2, .max_args = 2, .ret = .void },
 };
 
+pub fn isIntegerIntrinsic(name: []const u8) bool {
+    inline for (.{ "@rotl", "@rotr", "@bit_reverse", "@is_power_of_two", "@signum", "@wrapping_add", "@wrapping_sub", "@wrapping_mul" }) |candidate| {
+        if (std.mem.eql(u8, name, candidate)) return true;
+    }
+    return false;
+}
+
 pub fn lookupBuiltin(name: []const u8) ?BuiltinSpec {
     for (builtins) |b| {
         if (std.mem.eql(u8, b.name, name)) return b;
@@ -419,8 +437,11 @@ pub const SemaInfo = struct {
     is_tail_expr: [MAX_AST_NODES]bool,
     is_len_prop: [MAX_AST_NODES]bool,
     is_const_val: [MAX_AST_NODES]bool,
+    is_pattern_binding: [MAX_AST_NODES]bool,
     const_vals: [MAX_AST_NODES]i64,
     method_fn_nodes: [MAX_AST_NODES]u32,
+    direct_call_fns: [MAX_AST_NODES]u32,
+    call_arg_targets: [MAX_AST_NODES]u8,
     is_method_auto_ref: [MAX_AST_NODES]bool,
     is_unsigned_op: [MAX_AST_NODES]bool,
     enum_def_idx: [MAX_AST_NODES]u16,
@@ -441,8 +462,11 @@ pub const SemaInfo = struct {
         @memset(&self.is_tail_expr, false);
         @memset(&self.is_len_prop, false);
         @memset(&self.is_const_val, false);
+        @memset(&self.is_pattern_binding, false);
         @memset(&self.const_vals, 0);
         @memset(&self.method_fn_nodes, 0);
+        @memset(&self.direct_call_fns, 0);
+        @memset(&self.call_arg_targets, 0);
         @memset(&self.is_method_auto_ref, false);
         @memset(&self.is_unsigned_op, false);
         @memset(&self.enum_def_idx, 0);
@@ -805,7 +829,7 @@ pub const Sema = struct {
             for (0..etd.param_count) |k| {
                 const et = SemaType.fromTypeTag(etd.param_tags[k], etd.param_extras[k], etd.param_elems[k]);
                 const at = SemaType.fromTypeTag(atd.param_tags[k], atd.param_extras[k], atd.param_elems[k]);
-                if (!et.compatibleWith(at)) return false;
+                if (!self.isExprCompatible(et, at, 0)) return false;
             }
         }
         if (expected == .fn_t and actual == .fn_t and expected.fn_t != actual.fn_t) {
@@ -906,6 +930,7 @@ pub const Sema = struct {
                 const sub = self.evalConstFloat(n.child0) orelse return null;
                 const op: TokenKind = @enumFromInt(n.op);
                 break :blk switch (op) {
+                    .plus => sub,
                     .minus => -sub,
                     else => null,
                 };
@@ -952,6 +977,7 @@ pub const Sema = struct {
                 const sub = self.evalConstExpr(n.child0) orelse return null;
                 const op: TokenKind = @enumFromInt(n.op);
                 break :blk switch (op) {
+                    .plus => sub,
                     .minus => std.math.negate(sub) catch null,
                     .bang => if (sub == 0) @as(i64, 1) else 0,
                     .tilde => ~sub,
@@ -966,6 +992,7 @@ pub const Sema = struct {
                     .plus => std.math.add(i64, lhs, rhs) catch null,
                     .minus => std.math.sub(i64, lhs, rhs) catch null,
                     .star => std.math.mul(i64, lhs, rhs) catch null,
+                    .star_star => util.powWrapping(lhs, rhs),
                     .slash => if (rhs != 0 and !(lhs == std.math.minInt(i64) and rhs == -1)) @divTrunc(lhs, rhs) else null,
                     .percent => if (rhs != 0 and !(lhs == std.math.minInt(i64) and rhs == -1)) @rem(lhs, rhs) else null,
                     .lshift => if (rhs >= 0 and rhs < 64) lhs << @intCast(rhs) else null,
@@ -1260,6 +1287,7 @@ pub const Sema = struct {
                 .has_explicit_ret = (n.type_tag != .none),
             };
             var p = n.child0;
+            var seen_default = false;
             while (p != 0) : (p = self.ast.nodes[p].child1) {
                 if (sig.param_count >= MAX_PARAMS) {
                     self.failAt(error.TooManyArguments, self.ast.nodes[p].source_id, self.ast.nodes[p].line, self.ast.nodes[p].col, 1, "function '{s}' exceeds maximum of {d} parameters", .{ fname, MAX_PARAMS });
@@ -1267,6 +1295,28 @@ pub const Sema = struct {
                 }
                 const pn = self.ast.nodes[p];
                 const pty = if (pn.type_tag == .none) SemaType.i64_t else SemaType.fromTypeTag(pn.type_tag, pn.child0, pn.elem_type);
+                sig.param_nodes[sig.param_count] = p;
+                if (pn.child2 != 0) {
+                    seen_default = true;
+                    const expr = pn.child2;
+                    const dn = self.ast.nodes[expr];
+                    if (owner != 0) self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, 1, "default parameters currently require a free function", .{});
+                    if (std.mem.eql(u8, fname, "main")) self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, 1, "entry-point parameters cannot have defaults", .{});
+                    const int_value = self.evalConstExpr(expr);
+                    const float_value = self.evalConstFloat(expr);
+                    if (dn.kind != .string_literal and int_value == null and float_value == null) {
+                        self.failAt(error.TypeMismatch, dn.source_id, dn.line, dn.col, 1, "default argument must be a scalar compile-time constant or string literal", .{});
+                    } else {
+                        const actual = self.analyzeExpr(expr);
+                        if (!self.isExprCompatible(pty, actual, expr)) self.failAt(error.TypeMismatch, dn.source_id, dn.line, dn.col, 1, "default argument type mismatches parameter", .{});
+                        if (dn.kind != .string_literal) {
+                            self.info.is_const_val[expr] = true;
+                            self.info.const_vals[expr] = if (float_value) |v| @bitCast(v) else int_value.?;
+                        }
+                    }
+                } else if (seen_default) {
+                    self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, 1, "required parameter cannot follow a default parameter", .{});
+                }
                 sig.param_types[sig.param_count] = pty;
                 sig.param_is_mut[sig.param_count] = (pn.flags & 1) != 0;
                 if (sig.param_count == 0 and owner > 0 and std.mem.eql(u8, self.text(p), "self")) {
@@ -1871,6 +1921,12 @@ pub const Sema = struct {
                     const rhs_ty = if (n.child0 != 0) self.analyzeExpr(n.child0) else SemaType.unknown;
                     self.markExprEscaped(n.child0);
                     const tdesc = if (rhs_ty == .tuple_t) self.getTupleDesc(rhs_ty.tuple_t) else null;
+                    var pattern_count: u32 = 0;
+                    var cursor = self.ast.nodes[n.child2].child0;
+                    while (cursor != 0) : (cursor = self.ast.nodes[cursor].child1) pattern_count += 1;
+                    if (tdesc == null or pattern_count != tdesc.?.param_count) {
+                        self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 1, "tuple destructuring requires a tuple with the same number of fields", .{});
+                    }
                     var p = self.ast.nodes[n.child2].child0;
                     var pi: usize = 0;
                     while (p != 0) : ({
@@ -2460,30 +2516,30 @@ pub const Sema = struct {
         return .void;
     }
 
-    fn bindVariantPayloads(self: *Sema, args_head: u32, ei: u32, vi: u32) void {
-        const ed = self.ast.enum_defs[ei];
-        const ev = ed.variants[vi];
+    // A constructor covers its whole variant only if every payload is
+    // irrefutable. Some(0) must not establish coverage for all Some values.
+    fn analyzeVariantPayloads(self: *Sema, pat: u32, args_head: u32, ei: u32, vi: u32) bool {
+        const ev = self.ast.enum_defs[ei].variants[vi];
         var ai = args_head;
+        var count: usize = 0;
+        while (ai != 0) : (ai = self.ast.nodes[ai].child1) count += 1;
+        if (count != ev.payload_count) {
+            const pattern = self.ast.nodes[pat];
+            self.failAt(error.InvalidArgumentCount, pattern.source_id, pattern.line, pattern.col, 1, "enum pattern expects {d} payload patterns, got {d}", .{ ev.payload_count, count });
+            return false;
+        }
+        ai = args_head;
         var pk: usize = 0;
+        var irrefutable = true;
         while (ai != 0) : ({
             ai = self.ast.nodes[ai].child1;
             pk += 1;
         }) {
-            const arg = self.ast.nodes[ai].child0;
-            if (arg == 0 or arg >= self.ast.count) continue;
-            const an = self.ast.nodes[arg];
-            if (an.kind == .identifier) {
-                const pname = self.text(arg);
-                if (!std.mem.eql(u8, pname, "_")) {
-                    const pty: SemaType = if (pk < ev.payload_count)
-                        SemaType.fromTypeTag(ev.payload_tags[pk], ev.payload_extras[pk], ev.payload_elems[pk])
-                    else
-                        SemaType.i64_t;
-                    self.addVar(pname, pty, false, an.source_id, an.line, an.col);
-                    self.info.node_types[arg] = pty;
-                }
-            }
+            const ty = SemaType.fromTypeTag(ev.payload_tags[pk], ev.payload_extras[pk], ev.payload_elems[pk]);
+            const coverage = self.analyzeMatchPattern(self.ast.nodes[ai].child0, ty);
+            if (coverage != .catch_all) irrefutable = false;
         }
+        return irrefutable;
     }
 
     const MatchPatCoverage = union(enum) {
@@ -2496,11 +2552,40 @@ pub const Sema = struct {
     fn analyzeMatchPattern(self: *Sema, pat: u32, scrut_ty: SemaType) MatchPatCoverage {
         if (pat == 0 or pat >= self.ast.count) return .specific;
         const pn = self.ast.nodes[pat];
+        self.info.node_types[pat] = scrut_ty;
+        if (pn.kind == .tuple_lit) {
+            if (scrut_ty != .tuple_t) {
+                self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, 1, "tuple pattern requires a tuple scrutinee", .{});
+                return .specific;
+            }
+            const td = self.getTupleDesc(scrut_ty.tuple_t) orelse return .specific;
+            if (pn.int_val != td.param_count) {
+                self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, 1, "tuple pattern has {d} fields, expected {d}", .{ pn.int_val, td.param_count });
+                return .specific;
+            }
+            self.info.node_types[pat] = scrut_ty;
+            var elem = pn.child0;
+            var k: usize = 0;
+            var irrefutable = true;
+            while (elem != 0 and k < td.param_count) : (k += 1) {
+                const ty = SemaType.fromTypeTag(td.param_tags[k], td.param_extras[k], td.param_elems[k]);
+                const cov = self.analyzeMatchPattern(self.ast.nodes[elem].child0, ty);
+                if (cov != .catch_all) irrefutable = false;
+                elem = self.ast.nodes[elem].child1;
+            }
+            return if (irrefutable) .catch_all else .specific;
+        }
         if (pn.kind == .binary_expr) {
             const op: TokenKind = @enumFromInt(pn.op);
             if (op == .dot_dot or op == .dot_dot_eq) {
-                _ = self.analyzeExpr(pn.child0);
-                _ = self.analyzeExpr(pn.child1);
+                const lo = self.analyzeExpr(pn.child0);
+                const hi = self.analyzeExpr(pn.child1);
+                if (scrut_ty != .int or !self.isExprCompatible(scrut_ty, lo, pn.child0) or !self.isExprCompatible(scrut_ty, hi, pn.child1)) {
+                    self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, 2, "range pattern requires compatible integer bounds", .{});
+                }
+                if (self.evalConstExpr(pn.child0) == null or self.evalConstExpr(pn.child1) == null) {
+                    self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, 2, "range pattern bounds must be compile-time constants", .{});
+                }
                 return .specific;
             }
         }
@@ -2518,14 +2603,12 @@ pub const Sema = struct {
                         self.info.is_const_val[pat] = true;
                         self.info.const_vals[pat] = ev.value;
                         self.info.node_types[pat] = .{ .enum_t = ei };
-                        if (pn.flags == 1 and pn.child2 != 0) {
-                            self.bindVariantPayloads(pn.child2, ei, @intCast(vi));
-                        }
-                        if (scrut_ty == .enum_t and scrut_ty.enum_t != ei) {
+                        const irrefutable = self.analyzeVariantPayloads(pat, pn.child2, ei, @intCast(vi));
+                        if (scrut_ty != .enum_t or scrut_ty.enum_t != ei) {
                             self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, pn.text_len, "pattern enum '{s}' does not match scrutinee enum", .{bname});
                             return .specific;
                         }
-                        return .{ .enum_variant = @intCast(vi) };
+                        return if (irrefutable) .{ .enum_variant = @intCast(vi) } else .specific;
                     }
                 }
             }
@@ -2543,8 +2626,8 @@ pub const Sema = struct {
                     self.info.is_const_val[pat] = true;
                     self.info.const_vals[pat] = ev.value;
                     self.info.node_types[pat] = .{ .enum_t = ei };
-                    self.bindVariantPayloads(pn.child2, ei, @intCast(vi));
-                    return .{ .enum_variant = @intCast(vi) };
+                    const irrefutable = self.analyzeVariantPayloads(pat, pn.child2, ei, @intCast(vi));
+                    return if (irrefutable) .{ .enum_variant = @intCast(vi) } else .specific;
                 }
             }
         }
@@ -2562,18 +2645,29 @@ pub const Sema = struct {
                         self.info.is_const_val[pat] = true;
                         self.info.const_vals[pat] = ev.value;
                         self.info.node_types[pat] = .{ .enum_t = ei };
-                        return .{ .enum_variant = @intCast(vi) };
+                        const irrefutable = self.analyzeVariantPayloads(pat, 0, ei, @intCast(vi));
+                        return if (irrefutable) .{ .enum_variant = @intCast(vi) } else .specific;
                     }
                 }
             }
             if (std.mem.eql(u8, pname, "_")) return .catch_all;
+            if (self.lookupVarIdx(pname)) |vi| {
+                if (self.vars[vi].scope_depth == self.scope_depth) {
+                    self.failAt(error.DuplicateDeclaration, pn.source_id, pn.line, pn.col, pn.text_len, "duplicate pattern binding '{s}'", .{pname});
+                    return .specific;
+                }
+            }
             if (self.lookupVar(pname) == null and self.lookupGlobalConst(pname) == null) {
                 self.addVar(pname, scrut_ty, false, pn.source_id, pn.line, pn.col);
                 self.info.node_types[pat] = scrut_ty;
+                self.info.is_pattern_binding[pat] = true;
                 return .catch_all;
             }
         }
-        _ = self.analyzeExpr(pat);
+        const pattern_ty = self.analyzeExpr(pat);
+        if (!self.isExprCompatible(scrut_ty, pattern_ty, pat)) {
+            self.failAt(error.TypeMismatch, pn.source_id, pn.line, pn.col, 1, "pattern type does not match scrutinee type", .{});
+        }
         if (scrut_ty == .bool) {
             if (self.evalConstExpr(pat)) |cv| {
                 return .{ .bool_val = (cv != 0) };
@@ -2614,6 +2708,16 @@ pub const Sema = struct {
     fn analyzeExpr(self: *Sema, idx: u32) SemaType {
         if (idx == 0 or idx >= self.ast.count) return .unknown;
         const n = self.ast.nodes[idx];
+        if (n.kind == .call_expr or n.kind == .method_call or n.kind == .scoped_access) {
+            var arg = n.child2;
+            while (arg != 0) : (arg = self.ast.nodes[arg].child1) {
+                const wrap = self.ast.nodes[arg];
+                if ((wrap.flags & 128) == 0) continue;
+                const direct = n.kind == .call_expr and n.child0 != 0 and self.ast.nodes[n.child0].kind == .identifier and
+                    lookupBuiltin(self.text(n.child0)) == null and self.lookupVar(self.text(n.child0)) == null and self.findFn(self.text(n.child0), 0) != null;
+                if (!direct) self.failAt(error.TypeMismatch, wrap.source_id, wrap.line, wrap.col, wrap.text_len, "named arguments currently require a direct free-function call", .{});
+            }
+        }
         const ty: SemaType = switch (n.kind) {
             .int_literal => if ((n.flags & 2) != 0) .null_t else if ((n.flags & 1) != 0) .bool else SemaType.i64_t,
             .float_literal => blk: {
@@ -2705,7 +2809,7 @@ pub const Sema = struct {
                     break :blk sub;
                 }
                 if (sub != .int and sub != .float and sub != .unknown and sub != .never) {
-                    self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 1, "unary '-' requires numeric operand", .{});
+                    self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 1, "unary sign requires numeric operand", .{});
                 }
                 if (sub == .float) self.info.is_float_op[idx] = true;
                 break :blk sub;
@@ -2788,6 +2892,15 @@ pub const Sema = struct {
                     if (lhs == .float or rhs == .float) self.info.is_float_op[idx] = true;
                     if (lhs.isUnsigned() or rhs.isUnsigned()) self.info.is_unsigned_op[idx] = true;
                     break :blk SemaType.bool;
+                }
+                if (op == .star_star) {
+                    if (!lhs.eql(SemaType.i64_t) or !rhs.eql(SemaType.i64_t)) {
+                        self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "integer power requires i64 operands", .{});
+                    }
+                    if (self.evalConstExpr(n.child1)) |exponent| {
+                        if (exponent < 0) self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "integer power exponent must be nonnegative", .{});
+                    }
+                    break :blk SemaType.i64_t;
                 }
                 if (lhs == .float or rhs == .float) {
                     self.info.is_float_op[idx] = true;
@@ -2873,7 +2986,7 @@ pub const Sema = struct {
             },
             .match_expr => blk: {
                 const scrut_ty = self.analyzeExpr(n.child0);
-                var result_ty: SemaType = .void;
+                var result_ty: SemaType = .unknown;
                 var has_catch_all = (n.child2 != 0);
                 var covered: [64]bool = .{false} ** 64;
                 var seen_false = false;
@@ -2897,6 +3010,8 @@ pub const Sema = struct {
                     self.pushScope();
                     const is_unguarded = (self.ast.nodes[arm].extra == 0);
                     var pat = self.ast.nodes[arm].child0;
+                    const has_alternatives = self.ast.stmt_chains[pat] != 0;
+                    const bindings_base = self.var_count;
                     while (pat != 0) : (pat = self.ast.stmt_chains[pat]) {
                         const cov = self.analyzeMatchPattern(pat, scrut_ty);
                         if (is_unguarded) {
@@ -2912,8 +3027,14 @@ pub const Sema = struct {
                             }
                         }
                     }
+                    if (has_alternatives and self.var_count != bindings_base) {
+                        self.failAt(error.TypeMismatch, n.source_id, self.ast.nodes[arm].line, self.ast.nodes[arm].col, 1, "bindings in alternative patterns are not yet supported; use separate arms", .{});
+                    }
                     if (self.ast.nodes[arm].extra != 0) {
-                        _ = self.analyzeExpr(self.ast.nodes[arm].extra);
+                        const guard_ty = self.analyzeExpr(self.ast.nodes[arm].extra);
+                        if (guard_ty != .bool and guard_ty != .never and guard_ty != .unknown) {
+                            self.failAt(error.TypeMismatch, n.source_id, self.ast.nodes[arm].line, self.ast.nodes[arm].col, 1, "match guard must be bool", .{});
+                        }
                     }
                     const arm_body = self.ast.nodes[arm].child1;
                     const arm_ty = self.analyzeArmBody(arm_body);
@@ -2933,7 +3054,11 @@ pub const Sema = struct {
                             }
                         }
                     }
-                    if (result_ty == .void and arm_ty != .void) result_ty = arm_ty;
+                    if (!arm_exits and arm_ty != .never) {
+                        if (result_ty == .unknown) result_ty = arm_ty else if (!self.isExprCompatible(result_ty, arm_ty, arm_body)) {
+                            self.failAt(error.TypeMismatch, n.source_id, self.ast.nodes[arm].line, self.ast.nodes[arm].col, 1, "match arms have incompatible result types", .{});
+                        }
+                    }
                 }
                 if (n.child2 != 0) {
                     for (0..saved_vc) |vi| {
@@ -2956,7 +3081,11 @@ pub const Sema = struct {
                             }
                         }
                     }
-                    if (result_ty == .void and def_ty != .void) result_ty = def_ty;
+                    if (!def_exits and def_ty != .never) {
+                        if (result_ty == .unknown) result_ty = def_ty else if (!self.isExprCompatible(result_ty, def_ty, n.child2)) {
+                            self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 5, "match arms have incompatible result types", .{});
+                        }
+                    }
                 }
                 if (have_merged) {
                     for (0..saved_vc) |vi| {
@@ -3002,7 +3131,7 @@ pub const Sema = struct {
                 } else {
                     self.info.enum_def_idx[idx] = 1;
                 }
-                break :blk result_ty;
+                break :blk if (result_ty == .unknown) SemaType.never else result_ty;
             },
             .array_lit => blk: {
                 if ((n.flags & 1) != 0) {
@@ -3098,29 +3227,13 @@ pub const Sema = struct {
                     self.markExprEscaped(e);
                     if (td.param_count < 8) {
                         const k = td.param_count;
-                        switch (ety) {
-                            .float => |fb| td.param_tags[k] = if (fb == 32) .f32 else .f64,
-                            .bool => td.param_tags[k] = .bool,
-                            .string => td.param_tags[k] = .string,
-                            .struct_t => |si| {
-                                td.param_tags[k] = .struct_type;
-                                td.param_extras[k] = si + 1;
-                            },
-                            .enum_t => |ei| {
-                                td.param_tags[k] = .enum_type;
-                                td.param_extras[k] = ei + 1;
-                            },
-                            .tuple_t => |ti| {
-                                td.param_tags[k] = .tuple;
-                                td.param_extras[k] = ti;
-                            },
-                            .fn_t => |fi| {
-                                td.param_tags[k] = .fn_ptr;
-                                td.param_extras[k] = fi;
-                            },
-                            else => td.param_tags[k] = .i64,
-                        }
+                        const spec = toTypeSpec(ety);
+                        td.param_tags[k] = spec.tag;
+                        td.param_extras[k] = spec.extra;
+                        td.param_elems[k] = spec.elem;
                         td.param_count += 1;
+                    } else {
+                        self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 1, "tuples support at most 8 fields", .{});
                     }
                 }
                 if (self.info.tuple_desc_count < self.info.tuple_descs.len) {
@@ -3796,6 +3909,13 @@ pub const Sema = struct {
                         if (argc < b.min_args or argc > b.max_args) {
                             self.failAt(error.InvalidArgumentCount, fn_node.source_id, fn_node.line, fn_node.col, fn_node.text_len, "builtin '{s}' expects {d}..{d} arguments, got {d}", .{ cname, b.min_args, b.max_args, argc });
                         }
+                        if (isIntegerIntrinsic(cname)) {
+                            for (arg_types[0..@min(argc, MAX_PARAMS)], 0..) |aty, arg_i| {
+                                if (!aty.eql(SemaType.i64_t) and aty != .never and aty != .unknown) {
+                                    self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, fn_node.text_len, "{s} argument {d} must be i64 (cast explicitly for bit-pattern operations)", .{ cname, arg_i + 1 });
+                                }
+                            }
+                        }
                         if (is_free_fn and argc >= 1) {
                             if (arg_types[0] != .ptr and arg_types[0] != .ptr_struct and arg_types[0] != .array and arg_types[0] != .map_t and arg_types[0] != .null_t and arg_types[0] != .unknown and arg_types[0] != .never) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, fn_node.text_len, "{s} expects a heap pointer or container", .{cname});
@@ -4232,20 +4352,43 @@ pub const Sema = struct {
                     }
 
                     if (self.findFn(cname, 0)) |sig| {
-                        if (argc > MAX_PARAMS) {
-                            self.failAt(error.TooManyArguments, fn_node.source_id, fn_node.line, fn_node.col, fn_node.text_len, "call to '{s}' exceeds maximum of {d} arguments", .{ cname, MAX_PARAMS });
-                        } else if (argc != sig.param_count) {
-                            self.failAt(error.InvalidArgumentCount, fn_node.source_id, fn_node.line, fn_node.col, fn_node.text_len, "function '{s}' expects {d} arguments, got {d}", .{ cname, sig.param_count, argc });
-                        } else {
-                            var k: u32 = 0;
-                            while (k < argc) : (k += 1) {
-                                if (!self.isExprCompatible(sig.param_types[k], arg_types[k], arg_nodes[k])) {
-                                    self.failAt(error.TypeMismatch, fn_node.source_id, fn_node.line, fn_node.col, fn_node.text_len, "argument {d} type mismatches parameter of '{s}'", .{ k + 1, cname });
-                                } else {
-                                    self.tagTraitImplIfDyn(sig.param_types[k], arg_types[k], arg_nodes[k]);
+                        self.info.direct_call_fns[idx] = sig.node_idx;
+                        var provided: [MAX_PARAMS]bool = .{false} ** MAX_PARAMS;
+                        var named_seen = false;
+                        var wrapper = n.child2;
+                        var k: u32 = 0;
+                        while (wrapper != 0 and k < MAX_PARAMS) : (k += 1) {
+                            const wn = self.ast.nodes[wrapper];
+                            var target: u32 = k;
+                            if ((wn.flags & 128) != 0) {
+                                named_seen = true;
+                                target = sig.param_count;
+                                for (sig.param_nodes[0..sig.param_count], 0..) |param, pi| {
+                                    if (std.mem.eql(u8, self.text(param), self.text(wrapper))) {
+                                        target = @intCast(pi);
+                                        break;
+                                    }
                                 }
-                                self.markExprEscaped(arg_nodes[k]);
+                                if (target == sig.param_count) self.failAt(error.InvalidArgumentCount, wn.source_id, wn.line, wn.col, wn.text_len, "unknown named argument '{s}'", .{self.text(wrapper)});
+                            } else if (named_seen) {
+                                self.failAt(error.InvalidArgumentCount, wn.source_id, wn.line, wn.col, 1, "positional argument cannot follow a named argument", .{});
                             }
+                            if (target < sig.param_count) {
+                                if (provided[target]) self.failAt(error.InvalidArgumentCount, wn.source_id, wn.line, wn.col, 1, "parameter '{s}' is supplied more than once", .{self.text(sig.param_nodes[target])});
+                                provided[target] = true;
+                                self.info.call_arg_targets[wrapper] = @intCast(target + 1);
+                                if (!self.isExprCompatible(sig.param_types[target], arg_types[k], arg_nodes[k])) {
+                                    self.failAt(error.TypeMismatch, wn.source_id, wn.line, wn.col, 1, "argument type mismatches parameter '{s}'", .{self.text(sig.param_nodes[target])});
+                                } else self.tagTraitImplIfDyn(sig.param_types[target], arg_types[k], arg_nodes[k]);
+                                self.markExprEscaped(arg_nodes[k]);
+                            } else if ((wn.flags & 128) == 0) {
+                                self.failAt(error.InvalidArgumentCount, n.source_id, n.line, n.col, 1, "too many arguments for function '{s}'", .{cname});
+                            }
+                            wrapper = wn.child1;
+                        }
+                        if (argc > MAX_PARAMS) self.failAt(error.TooManyArguments, n.source_id, n.line, n.col, 1, "call exceeds maximum of 8 arguments", .{});
+                        for (sig.param_nodes[0..sig.param_count], 0..) |param, pi| {
+                            if (!provided[pi] and self.ast.nodes[param].child2 == 0) self.failAt(error.InvalidArgumentCount, n.source_id, n.line, n.col, 1, "missing required argument '{s}'", .{self.text(param)});
                         }
                         break :blk if (sig.ret_type == .unknown) SemaType.i64_t else sig.ret_type;
                     }

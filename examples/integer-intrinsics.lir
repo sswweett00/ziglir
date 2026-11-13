@@ -1,0 +1,20 @@
+// 64-bit integer intrinsics: arguments are evaluated once, left to right.
+fn main() -> i64 {
+    printInt(@rotl(1, 63))
+    printInt(@rotr(1, 1))
+    printInt(@rotl(123, 64))
+    printInt(@rotr(1, -1))
+    printInt(@bit_reverse(1))
+    printInt(@bit_reverse(@bit_reverse(12345)))
+    printInt(@signum(-42))
+    printInt(@signum(0))
+    printInt(@signum(42))
+    printInt(@wrapping_add(9223372036854775807, 1))
+    printInt(@wrapping_sub(-9223372036854775807 - 1, 1))
+    printInt(@wrapping_mul(9223372036854775807, 2))
+    if @is_power_of_two(64) { println("power") }
+    if !@is_power_of_two(0) { println("zero") }
+    if !@is_power_of_two(-8) { println("negative") }
+    if !@is_power_of_two(63) { println("not power") }
+    return 0
+}

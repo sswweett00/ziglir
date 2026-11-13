@@ -66,6 +66,29 @@ jobs:
             exit 1
           fi
 
+      - name: Setup Node for WASI execution tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: CLI regression tests
+        run: python3 tests/cli_test.py ./zig-out/bin/lir
+
+      - name: Backend and optimization parity tests
+        run: python3 tests/backend_test.py ./zig-out/bin/lir
+
+      - name: Core language and pattern type-safety tests
+        run: python3 tests/core_test.py ./zig-out/bin/lir
+
+      - name: Named and optional argument tests
+        run: python3 tests/call_test.py ./zig-out/bin/lir
+
+      - name: Manifest project workflow tests
+        run: python3 tests/project_test.py ./zig-out/bin/lir
+
+      - name: Browser Wasm host conformance and execution
+        run: python3 tests/browser_test.py ./zig-out/bin/lir
+
       - name: Smoke-test performance benchmark harness
         run: python3 bench/bench.py ./zig-out/bin/lir tests/fixtures/test.lir --repeats 3
 

@@ -561,6 +561,7 @@ pub const Parser = struct {
     invalid_syntax: bool = false,
     unsupported_float_literal: bool = false,
     in_cond_header: bool = false,
+    in_match_pattern: bool = false,
     active_gen_params: [4]parser_mod_TextSpan = .{parser_mod_TextSpan{}} ** 4,
     active_gen_count: u8 = 0,
     pending_fn_flags: u8 = 0,
@@ -1533,7 +1534,7 @@ pub const Parser = struct {
             } else if (self.match(.colon)) {
                 _ = self.advance();
                 ptype = self.parseTypeSpec(false);
-                if (!self.match(.comma) and !self.match(.rparen) and !self.match(.newline) and !self.match(.eof)) {
+                if (!self.match(.assign) and !self.match(.comma) and !self.match(.rparen) and !self.match(.newline) and !self.match(.eof)) {
                     const bad = self.peek();
                     self.reportErr(bad, "unsupported compound parameter type syntax", .{});
                     while (!self.match(.comma) and !self.match(.rparen) and !self.match(.eof)) _ = self.advance();
@@ -1547,6 +1548,10 @@ pub const Parser = struct {
             self.ast.nodes[pnode].elem_type = ptype.elem_type;
             self.ast.nodes[pnode].child0 = ptype.extra;
             self.ast.nodes[pnode].flags = pflags;
+            if (self.match(.assign)) {
+                _ = self.advance();
+                self.ast.nodes[pnode].child2 = self.parseExpr();
+            }
             if (first_param == 0) {
                 first_param = pnode;
             } else {
@@ -1709,6 +1714,17 @@ pub const Parser = struct {
             self.ast.nodes[stmt].child0 = body;
         } else if (self.match(.kw_for)) {
             stmt = self.parseFor();
+        } else if (self.match(.kw_loop)) {
+            const tok = self.advance();
+            self.skipOnlyNewlines();
+            const cond = self.newNode(.int_literal, tok.line);
+            self.ast.nodes[cond].int_val = 1;
+            self.ast.nodes[cond].flags = 1; // bool literal
+            const body = self.parseBlock();
+            stmt = self.newNode(.while_stmt, tok.line);
+            self.ast.nodes[stmt].col = tok.col;
+            self.ast.nodes[stmt].child0 = cond;
+            self.ast.nodes[stmt].child1 = body;
         } else if (self.match(.kw_while)) {
             stmt = self.parseWhile();
         } else if (self.match(.kw_break)) {
@@ -2023,7 +2039,7 @@ pub const Parser = struct {
             self.ast.nodes[n].child0 = operand;
             return n;
         }
-        if (self.match(.minus) or self.match(.bang) or self.match(.tilde)) {
+        if (self.match(.plus) or self.match(.minus) or self.match(.bang) or self.match(.tilde)) {
             const op = self.advance();
             const operand = self.parseUnary();
             const n = self.newNode(.unary_expr, op.line);
@@ -2032,7 +2048,18 @@ pub const Parser = struct {
             self.ast.nodes[n].op = @intFromEnum(op.kind);
             return n;
         }
-        return self.parsePrimary();
+        return self.parsePower();
+    }
+
+    // Power binds tighter than unary signs and associates right-to-left:
+    // -2 ** 2 == -(2 ** 2), 2 ** 3 ** 2 == 2 ** (3 ** 2).
+    fn parsePower(self: *Parser) u32 {
+        const left = self.parsePrimary();
+        if (self.match(.star_star)) {
+            const op = self.advance();
+            return self.addBinary(left, self.parseUnary(), op);
+        }
+        return left;
     }
 
     fn parseIntLiteralToken(self: *Parser, tok: Token) i64 {
@@ -2131,9 +2158,22 @@ pub const Parser = struct {
                 self.skipOnlyNewlines();
                 if (self.match(.rparen)) break;
             }
-            const arg = self.parseExpr();
+            var label: ?Token = null;
+            if (!self.in_match_pattern and self.match(.identifier) and self.lex.get(self.pos + 1).kind == .colon) {
+                label = self.advance();
+                _ = self.advance();
+                self.skipOnlyNewlines();
+            }
+            const arg = if (self.in_match_pattern) self.parsePatternElement() else self.parseExpr();
             const wrap = self.newNode(.expr_stmt, line);
             self.ast.nodes[wrap].child0 = arg;
+            if (label) |token| {
+                self.ast.nodes[wrap].flags |= 128;
+                self.ast.nodes[wrap].text_start = token.start;
+                self.ast.nodes[wrap].text_len = token.len;
+                self.ast.nodes[wrap].line = token.line;
+                self.ast.nodes[wrap].col = token.col;
+            }
             if (first_arg == 0) {
                 first_arg = wrap;
             } else {
@@ -2158,6 +2198,18 @@ pub const Parser = struct {
         return false;
     }
 
+    fn parsePatternElement(self: *Parser) u32 {
+        const saved = self.in_match_pattern;
+        self.in_match_pattern = true;
+        defer self.in_match_pattern = saved;
+        const left = self.parseBitXor();
+        if (self.match(.dot_dot) or self.match(.dot_dot_eq)) {
+            const op = self.advance();
+            return self.addBinary(left, self.parseBitXor(), op);
+        }
+        return left;
+    }
+
     fn parseMatch(self: *Parser) u32 {
         const mtok = self.expect(.kw_match);
         const saved = self.in_cond_header;
@@ -2178,6 +2230,7 @@ pub const Parser = struct {
             if (self.match(.rbrace) or self.match(.eof)) break;
 
             const arm_tok = self.peek();
+            if (default_body != 0) self.reportErr(arm_tok, "wildcard match arm must be last", .{});
             var is_wildcard = false;
             var pat_head: u32 = 0;
             var pat_tail: u32 = 0;
@@ -2186,19 +2239,21 @@ pub const Parser = struct {
             if (self.match(.kw_else) or (self.match(.identifier) and std.mem.eql(u8, self.lex.text(arm_tok), "_"))) {
                 _ = self.advance();
                 is_wildcard = true;
+                if (self.match(.kw_if)) {
+                    if (arm_tok.kind == .kw_else) self.reportErr(arm_tok, "use '_ if condition' for a guarded wildcard", .{});
+                    _ = self.advance();
+                    const saved_header = self.in_cond_header;
+                    self.in_cond_header = true;
+                    guard_expr = self.parseExpr();
+                    self.in_cond_header = saved_header;
+                    is_wildcard = false;
+                    pat_head = self.newNode(.identifier, arm_tok.line);
+                    self.ast.nodes[pat_head].text_start = arm_tok.start;
+                    self.ast.nodes[pat_head].text_len = arm_tok.len;
+                }
             } else {
                 while (!self.match(.fat_arrow) and !self.match(.kw_if) and !self.match(.eof)) {
-                    var p = self.parseBitXor();
-                    if (self.match(.dot_dot) or self.match(.dot_dot_eq)) {
-                        const rtok = self.advance();
-                        const hi = self.parseBitXor();
-                        const rn = self.newNode(.binary_expr, rtok.line);
-                        self.ast.nodes[rn].col = rtok.col;
-                        self.ast.nodes[rn].child0 = p;
-                        self.ast.nodes[rn].child1 = hi;
-                        self.ast.nodes[rn].op = @intFromEnum(rtok.kind);
-                        p = rn;
-                    }
+                    const p = self.parsePatternElement();
                     if (pat_head == 0) {
                         pat_head = p;
                         pat_tail = p;
@@ -2214,7 +2269,10 @@ pub const Parser = struct {
                 }
                 if (self.match(.kw_if)) {
                     _ = self.advance();
+                    const saved_header = self.in_cond_header;
+                    self.in_cond_header = true;
                     guard_expr = self.parseExpr();
+                    self.in_cond_header = saved_header;
                 }
             }
             _ = self.expect(.fat_arrow);
@@ -2223,7 +2281,7 @@ pub const Parser = struct {
                 self.parseBlock()
             else if (self.match(.kw_return) or self.match(.kw_break) or self.match(.kw_continue) or
                 self.match(.kw_unreachable) or self.match(.kw_defer) or self.match(.kw_if) or
-                self.match(.kw_while) or self.match(.kw_for) or self.match(.kw_let) or self.match(.kw_var))
+                self.match(.kw_while) or self.match(.kw_loop) or self.match(.kw_for) or self.match(.kw_let) or self.match(.kw_var))
                 self.parseSingleStatement()
             else
                 self.parseExpr();
@@ -2708,7 +2766,7 @@ pub const Parser = struct {
             }
             const saved_cond = self.in_cond_header;
             self.in_cond_header = false;
-            const e0 = self.parseExpr();
+            const e0 = if (self.in_match_pattern) self.parsePatternElement() else self.parseExpr();
             if (self.match(.comma)) {
                 const first_elem = self.newNode(.expr_stmt, lp.line);
                 self.ast.nodes[first_elem].child0 = e0;
@@ -2718,7 +2776,7 @@ pub const Parser = struct {
                     _ = self.advance();
                     self.skipOnlyNewlines();
                     if (self.match(.rparen)) break;
-                    const en = self.parseExpr();
+                    const en = if (self.in_match_pattern) self.parsePatternElement() else self.parseExpr();
                     const wrap = self.newNode(.expr_stmt, lp.line);
                     self.ast.nodes[wrap].child0 = en;
                     self.ast.nodes[last_elem].child1 = wrap;

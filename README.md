@@ -27,7 +27,7 @@ LIR is a systems-language project aiming to combine a small, approachable syntax
 | Built-in concurrency | OS threads (`spawn`, `@thread_join`), channels (`@chan_*`), mutexes, atomics (`@atomic_add`, `@atomic_cas`) |
 | Embedded standard library | Zero-wrapper `std::{core,io,os,sys,net,crypto,json,math,str,algo,testing}` with string helpers (`str_trim`, `str_to_upper`/`lower`, `str_index_of`, `str_repeat`), Shell sort / binary search / `gcd`/`lcm`/`pow`, `eprint`, `append_file`, RFC 8529 JSON escaping, unbiased `random_range`, constant-time primitives, saturating/checked math |
 | Security & safety architecture | Compile-time UAF/double-free/defer-conflict/close/loop-leak analysis, compile-time heap/string/const-ptr bounds checks, `fn` pointer cast & thread entry validation, 32 KiB per-function stack frame budget, non-terminating spin-loop detection, strict W^X ELF64 (RX `.text`, R-only NX `.rodata`, RW NX `.bss`/stack), CSPRNG `getrandom` stack & heap header/overflow canaries, full zero-wipe on `free`, `<4096`/kernel-space pointer traps, coarse indirect-call CFI, `PROT_NONE` thread stack guard pages, HashDoS-keyed maps, shift traps, exhaustive `match`, strict `?` |
-| Optimizer pipeline | `-O2` default on all CLI `build`/`run`/`test`/`check` invocations (`-O0` auto-promoted on codegen commands): 2-pass function inlining (`<= 8` blocks, `<= 48` locals, `<= 56` insts), Cytron SSA `mem2reg`, unconditional power-of-2 strength reduction (`mul` -> `shl`, `udiv` -> `ushr`, `umod` -> `bit_and`, `* -1` -> `neg`), GVN, trap-safe LICM, DCE |
+| Optimizer pipeline | `-O2` default on all CLI `build`/`run`/`test`/`check` invocations (`-O0` disables optional AST/IR optimizations; `-O1` is also honored): 2-pass function inlining (`<= 8` blocks, `<= 48` locals, `<= 56` insts), Cytron SSA `mem2reg`, unconditional power-of-2 strength reduction (`mul` -> `shl`, `udiv` -> `ushr`, `umod` -> `bit_and`, `* -1` -> `neg`), GVN, trap-safe LICM, DCE |
 | Full borrow checker / embedded `no_std` | Planned (full lifetime borrow checking and bare-metal `no_std` remain future work) |
 | Performance versus C | Must be established workload-by-workload with reproducible benchmarks |
 
@@ -73,10 +73,42 @@ zig build test
 # Optional: generate a starter project
 ./zig-out/bin/lir init myproject
 cd myproject
-../zig-out/bin/lir build src/main.lir -o myproject
-./myproject
+../zig-out/bin/lir check
+../zig-out/bin/lir run
+../zig-out/bin/lir test
+../zig-out/bin/lir build
+./myproject.out
 ```
 
+
+See [Project workflows](docs/PROJECTS.md) for manifest settings, directory selection,
+output paths, and the remaining application/ecosystem roadmap.
+
+## Browser execution (initial bridge)
+
+The existing Wasm output can run in a browser using the small WASI host in
+`runtime/browser/wasi.mjs`. A button-driven LIR counter demonstrates argument
+input and safe text output. DOM/events remain JavaScript; this is not yet a
+full frontend framework or an HTTP server. See [Browser bridge](docs/BROWSER.md)
+for build/run instructions, supported imports and execution limits.
+
+## Development checks
+
+```bash
+zig build test
+python3 tests/cli_test.py ./zig-out/bin/lir
+# Requires a host C compiler and Node 22+ or Wasmtime
+python3 tests/backend_test.py ./zig-out/bin/lir
+python3 tests/core_test.py ./zig-out/bin/lir
+python3 tests/call_test.py ./zig-out/bin/lir
+python3 tests/project_test.py ./zig-out/bin/lir
+python3 tests/browser_test.py ./zig-out/bin/lir
+zig build run -- version
+```
+
+`lir init <name>` creates a **new directory** and refuses existing destinations;
+it never overwrites an existing project. See [Bootstrap review](docs/REVIEW.md)
+for the review scope, regression coverage, and remaining correctness priorities.
 
 ## Hello World
 
@@ -88,6 +120,69 @@ fn main() -> i64 {
     0
 }
 ```
+
+## New language extensions
+
+The bootstrap now supports **`loop`**, **unary `+`**, right-associative integer
+`**` exponentiation, and eight typed integer intrinsics:
+`@rotl`, `@rotr`, `@bit_reverse`, `@is_power_of_two`, `@signum`,
+`@wrapping_add`, `@wrapping_sub`, and `@wrapping_mul`.
+
+```lir
+fn main() -> i64 {
+    let mut n = 0
+    loop {
+        n += 1
+        if n == 3 { break }
+    }
+    printInt(2 ** 3 ** 2)       // 512
+    printInt(@rotl(1, 3))      // 8
+    printInt(@signum(-42))     // -1
+    return 0
+}
+```
+
+See [Language extensions](docs/LANGUAGE_EXTENSIONS.md) for exact type, overflow,
+precedence, rotation, and trap semantics, restrictions, and executable examples.
+
+## Typed tuple patterns
+
+```lir
+fn sum(pair: (i64, i64)) -> i64 {
+    return match pair {
+        (0, value) if value > 10 => value,
+        (left, right) => left + right,
+    }
+}
+```
+
+Nested tuple patterns and guarded wildcards (`_ if condition => ...`) are
+supported. Guards must be boolean, match result types must be compatible, and
+inferred tuples retain integer widths and signedness. See
+[Core language phases 1–2](docs/CORE_LANGUAGE.md) for the exact scope and restrictions.
+
+Enum payload patterns also support recursive matching, including
+`Some(7)`, `Event::Data((1..10, true))`, and
+`Event::Nested(Inner::Number(number))`. Payload reads are gated by constructor
+tags; refutable payloads do not falsely establish exhaustive variant coverage.
+See `examples/enum-patterns.lir` for a runnable example.
+
+## Named arguments and optional parameters
+
+```lir
+fn calculate(a: i64, b: i64 = 8, c: i64 = 3) -> i64 {
+    return a * 100 + b * 10 + c
+}
+// Inside a function:
+// calculate(1)             -> 183
+// calculate(c: 9, a: 2)    -> 289
+// calculate(2, c: 5)       -> 285
+```
+
+Direct free-function calls support named arguments and trailing scalar-constant
+or string-literal defaults. Supplied arguments are evaluated once in source
+order. This is **not C#/.NET compatibility**; see
+[C# capability scope](docs/CSHARP_SCOPE.md) for restrictions and future work.
 
 ## Implemented Language Features
 

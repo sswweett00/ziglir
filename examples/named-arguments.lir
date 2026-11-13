@@ -1,0 +1,21 @@
+// Named arguments preserve source evaluation order, not declaration order.
+const DEFAULT = 4
+fn calc(a: i64, b: i64 = DEFAULT * 2, c: i64 = 3) -> i64 { return a * 100 + b * 10 + c }
+fn next(p: *i64) -> i64 { *p = *p + 1 return *p }
+fn greet(text: string = "hello", enabled: bool = true) -> i64 { if enabled { println(text) } return 0 }
+fn label<T>(value: T, code: i64 = 7) -> T { return value }
+fn scale(value: f64 = 1.5) -> f64 { return value }
+fn main() -> i64 {
+    printInt(calc(1))
+    printInt(calc(c: 9, a: 2))
+    printInt(calc(2, c: 5))
+    let mut n = 0
+    printInt(calc(c: next(&n), a: next(&n), b: next(&n)))
+    printInt(n)
+    greet()
+    greet(enabled: false)
+    println(label(code: 9, value: "generic"))
+    printFloat(scale())
+    println("")
+    return 0
+}

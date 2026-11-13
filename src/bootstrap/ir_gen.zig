@@ -829,7 +829,7 @@ pub const IRGen = struct {
             .minus_eq => .sub,
             .star_eq => .mul,
             .slash_eq => if (is_uns) .udiv else .div,
-            .percent_eq => if (is_uns) .umod else .@"mod",
+            .percent_eq => if (is_uns) .umod else .mod,
             .amp_eq => .bit_and,
             .pipe_eq => .bit_or,
             .caret_eq => .bit_xor,
@@ -1461,14 +1461,38 @@ pub const IRGen = struct {
 
     fn emitMatchPatternCheck(self: *IRGen, pat: u32, scrut_v: u16, scrut_tag: u16, is_tagged_enum: bool, scrut_ty: sema_mod.SemaType) u16 {
         const pn = self.ast.nodes[pat];
+        if (pn.kind == .tuple_lit) {
+            var elem = pn.child0;
+            var offset: u16 = 0;
+            var result = self.intConst(1);
+            while (elem != 0) : (elem = self.ast.nodes[elem].child1) {
+                const child = self.ast.nodes[elem].child0;
+                const value = self.allocVreg();
+                self.emit(.{ .op = .field_access, .dest = value, .src1 = scrut_v, .field_offset = offset });
+                const ty = if (self.sema_info) |si| si.node_types[child] else sema_mod.SemaType.unknown;
+                const tagged = ty == .enum_t and self.ast.enum_defs[ty.enum_t].has_payloads;
+                var tag = value;
+                if (tagged) {
+                    tag = self.allocVreg();
+                    self.emit(.{ .op = .field_access, .dest = tag, .src1 = value, .field_offset = 0 });
+                }
+                const matched = self.emitMatchPatternCheck(child, value, tag, tagged, ty);
+                result = self.intBinary(.bit_and, result, matched);
+                offset += 8;
+            }
+            return result;
+        }
         if (pn.kind == .binary_expr) {
             const op: TokenKind = @enumFromInt(pn.op);
             if (op == .dot_dot or op == .dot_dot_eq) {
                 const lo_v = self.genExpr(pn.child0);
                 const hi_v = self.genExpr(pn.child1);
                 const ge_v = self.allocVreg();
-                self.emit(.{ .op = .cmp_ge, .dest = ge_v, .src1 = scrut_v, .src2 = lo_v });
-                const hi_cmp: IROp = if (op == .dot_dot_eq) .cmp_le else .cmp_lt;
+                self.emit(.{ .op = if (scrut_ty.isUnsigned()) .ucmp_ge else .cmp_ge, .dest = ge_v, .src1 = scrut_v, .src2 = lo_v });
+                const hi_cmp: IROp = if (scrut_ty.isUnsigned())
+                    (if (op == .dot_dot_eq) .ucmp_le else .ucmp_lt)
+                else
+                    (if (op == .dot_dot_eq) .cmp_le else .cmp_lt);
                 const lt_v = self.allocVreg();
                 self.emit(.{ .op = hi_cmp, .dest = lt_v, .src1 = scrut_v, .src2 = hi_v });
                 const both = self.allocVreg();
@@ -1483,7 +1507,40 @@ pub const IRGen = struct {
                 const eq_v = self.allocVreg();
                 const lhs = if (is_tagged_enum) scrut_tag else scrut_v;
                 self.emit(.{ .op = .cmp_eq, .dest = eq_v, .src1 = lhs, .src2 = tv });
-                return eq_v;
+                // Keep every payload load dominated by the matching tag.
+                // An unmatched variant may have fewer fields or other types.
+                if (pn.child2 == 0 or (pn.kind != .call_expr and pn.kind != .scoped_access)) return eq_v;
+                const result_slot = self.allocHiddenSlot();
+                const zero = self.intConst(0);
+                self.emit(.{ .op = .store_local, .src1 = zero, .slot = result_slot });
+                const payload_block = self.newBlock();
+                const done_block = self.newBlock();
+                self.emit(.{ .op = .cond_jump, .src1 = eq_v, .target_block = payload_block, .alt_block = done_block });
+                self.cur_block_idx = payload_block;
+                var result = self.intConst(1);
+                var ai = pn.child2;
+                var offset: u16 = 8;
+                while (ai != 0) : (ai = self.ast.nodes[ai].child1) {
+                    const child = self.ast.nodes[ai].child0;
+                    const value = self.allocVreg();
+                    self.emit(.{ .op = .field_access, .dest = value, .src1 = scrut_v, .field_offset = offset });
+                    const ty = si.node_types[child];
+                    const tagged = ty == .enum_t and self.ast.enum_defs[ty.enum_t].has_payloads;
+                    var tag = value;
+                    if (tagged) {
+                        tag = self.allocVreg();
+                        self.emit(.{ .op = .field_access, .dest = tag, .src1 = value, .field_offset = 0 });
+                    }
+                    const matched = self.emitMatchPatternCheck(child, value, tag, tagged, ty);
+                    result = self.intBinary(.bit_and, result, matched);
+                    offset += 8;
+                }
+                self.emit(.{ .op = .store_local, .src1 = result, .slot = result_slot });
+                self.emit(.{ .op = .jump, .target_block = done_block });
+                self.cur_block_idx = done_block;
+                const matched = self.allocVreg();
+                self.emit(.{ .op = .load_local, .dest = matched, .slot = result_slot });
+                return matched;
             }
         }
         if (pn.kind == .identifier) {
@@ -1493,7 +1550,7 @@ pub const IRGen = struct {
                 self.emit(.{ .op = .const_int, .dest = one, .imm = 1 });
                 return one;
             }
-            if (self.findSlot(pname) == null and !(if (self.sema_info) |si| si.is_const_val[pat] else false)) {
+            if (if (self.sema_info) |si| si.is_pattern_binding[pat] else false) {
                 const one = self.allocVreg();
                 self.emit(.{ .op = .const_int, .dest = one, .imm = 1 });
                 return one;
@@ -1520,6 +1577,17 @@ pub const IRGen = struct {
 
     fn bindMatchPatVars(self: *IRGen, pat: u32, scrut_v: u16) void {
         const pn = self.ast.nodes[pat];
+        if (pn.kind == .tuple_lit) {
+            var elem = pn.child0;
+            var offset: u16 = 0;
+            while (elem != 0) : (elem = self.ast.nodes[elem].child1) {
+                const value = self.allocVreg();
+                self.emit(.{ .op = .field_access, .dest = value, .src1 = scrut_v, .field_offset = offset });
+                self.bindMatchPatVars(self.ast.nodes[elem].child0, value);
+                offset += 8;
+            }
+            return;
+        }
         if (self.sema_info) |si| {
             if (si.enum_def_idx[pat] > 0) {
                 var args_head: u32 = 0;
@@ -1533,14 +1601,10 @@ pub const IRGen = struct {
                     pk += 1;
                 }) {
                     const arg = self.ast.nodes[ai].child0;
-                    if (arg != 0 and arg < self.ast.count and self.ast.nodes[arg].kind == .identifier) {
-                        const pname = self.nodeText(arg);
-                        if (!eql(pname, "_")) {
-                            const pv = self.allocVreg();
-                            self.emit(.{ .op = .field_access, .dest = pv, .src1 = scrut_v, .field_offset = (1 + pk) * 8 });
-                            const pslot = self.defineLocal(pname);
-                            self.emit(.{ .op = .store_local, .src1 = pv, .slot = pslot });
-                        }
+                    if (arg != 0 and arg < self.ast.count) {
+                        const pv = self.allocVreg();
+                        self.emit(.{ .op = .field_access, .dest = pv, .src1 = scrut_v, .field_offset = (1 + pk) * 8 });
+                        self.bindMatchPatVars(arg, pv);
                     }
                 }
                 return;
@@ -1548,7 +1612,7 @@ pub const IRGen = struct {
         }
         if (pn.kind == .identifier) {
             const pname = self.nodeText(pat);
-            if (!eql(pname, "_") and self.findSlot(pname) == null and !(if (self.sema_info) |si| si.is_const_val[pat] else false)) {
+            if (!eql(pname, "_") and (if (self.sema_info) |si| si.is_pattern_binding[pat] else false)) {
                 const pslot = self.defineLocal(pname);
                 self.emit(.{ .op = .store_local, .src1 = scrut_v, .slot = pslot });
             }
@@ -1621,6 +1685,7 @@ pub const IRGen = struct {
                 const is_flt = if (self.sema_info) |si| si.is_float_op[idx] else false;
                 const v = self.allocVreg();
                 const ir_op: IROp = switch (op) {
+                    .plus => .copy,
                     .minus => if (is_flt) .fneg else .neg,
                     .bang => .logic_not,
                     .tilde => .bit_not,
@@ -1677,6 +1742,7 @@ pub const IRGen = struct {
 
                 const lhs_v = self.genExpr(node.child0);
                 const rhs_v = self.genExpr(node.child1);
+                if (op == .star_star) return self.genPower(lhs_v, rhs_v);
 
                 if (self.isStringBinOp(idx, node)) {
                     var sargs: [8]u16 = .{0} ** 8;
@@ -1726,7 +1792,7 @@ pub const IRGen = struct {
                     .minus => .sub,
                     .star => .mul,
                     .slash => if (is_uns) .udiv else .div,
-                    .percent => if (is_uns) .umod else .@"mod",
+                    .percent => if (is_uns) .umod else .mod,
                     .lshift => .shl,
                     .rshift => if (is_uns) .ushr else .shr,
                     .amp => .bit_and,
@@ -2699,6 +2765,119 @@ pub const IRGen = struct {
         return dest;
     }
 
+    fn genPower(self: *IRGen, base: u16, exponent: u16) u16 {
+        const zero = self.intConst(0);
+        const one = self.intConst(1);
+        const nonnegative = self.intBinary(.cmp_ge, exponent, zero);
+        const init_block = self.newBlock();
+        const trap_block = self.newBlock();
+        self.emit(.{ .op = .cond_jump, .src1 = nonnegative, .target_block = init_block, .alt_block = trap_block });
+        self.cur_block_idx = trap_block;
+        self.emit(.{ .op = .unreachable_trap });
+        self.cur_block_idx = init_block;
+        const result_slot = self.allocHiddenSlot();
+        const base_slot = self.allocHiddenSlot();
+        const exponent_slot = self.allocHiddenSlot();
+        self.emit(.{ .op = .store_local, .src1 = one, .slot = result_slot });
+        self.emit(.{ .op = .store_local, .src1 = base, .slot = base_slot });
+        self.emit(.{ .op = .store_local, .src1 = exponent, .slot = exponent_slot });
+        const cond_block = self.newBlock();
+        const body_block = self.newBlock();
+        const multiply_block = self.newBlock();
+        const step_block = self.newBlock();
+        const done_block = self.newBlock();
+        self.emit(.{ .op = .jump, .target_block = cond_block });
+        self.cur_block_idx = cond_block;
+        const e = self.allocVreg();
+        self.emit(.{ .op = .load_local, .dest = e, .slot = exponent_slot });
+        const active = self.intBinary(.cmp_ne, e, zero);
+        self.emit(.{ .op = .cond_jump, .src1 = active, .target_block = body_block, .alt_block = done_block });
+        self.cur_block_idx = body_block;
+        const b = self.allocVreg();
+        self.emit(.{ .op = .load_local, .dest = b, .slot = base_slot });
+        const odd = self.intBinary(.bit_and, e, one);
+        self.emit(.{ .op = .cond_jump, .src1 = odd, .target_block = multiply_block, .alt_block = step_block });
+        self.cur_block_idx = multiply_block;
+        const r = self.allocVreg();
+        self.emit(.{ .op = .load_local, .dest = r, .slot = result_slot });
+        const product = self.intBinary(.mul, r, b);
+        self.emit(.{ .op = .store_local, .src1 = product, .slot = result_slot });
+        self.emit(.{ .op = .jump, .target_block = step_block });
+        self.cur_block_idx = step_block;
+        const squared = self.intBinary(.mul, b, b);
+        const half = self.intBinary(.ushr, e, one);
+        self.emit(.{ .op = .store_local, .src1 = squared, .slot = base_slot });
+        self.emit(.{ .op = .store_local, .src1 = half, .slot = exponent_slot });
+        self.emit(.{ .op = .jump, .target_block = cond_block });
+        self.cur_block_idx = done_block;
+        const result = self.allocVreg();
+        self.emit(.{ .op = .load_local, .dest = result, .slot = result_slot });
+        return result;
+    }
+
+    fn intConst(self: *IRGen, value: i64) u16 {
+        const dest = self.allocVreg();
+        self.emit(.{ .op = .const_int, .dest = dest, .imm = value });
+        return dest;
+    }
+
+    fn intBinary(self: *IRGen, op: IROp, a: u16, b: u16) u16 {
+        const dest = self.allocVreg();
+        self.emit(.{ .op = op, .dest = dest, .src1 = a, .src2 = b });
+        return dest;
+    }
+
+    // Lower integer intrinsics to existing portable IR, keeping semantics shared
+    // by all backends. Arguments have already been evaluated exactly once.
+    fn genIntegerIntrinsic(self: *IRGen, name: []const u8, args: [8]u16) u16 {
+        const a = args[0];
+        const b = args[1];
+        if (eql(name, "@wrapping_add")) return self.intBinary(.add, a, b);
+        if (eql(name, "@wrapping_sub")) return self.intBinary(.sub, a, b);
+        if (eql(name, "@wrapping_mul")) return self.intBinary(.mul, a, b);
+        const zero = self.intConst(0);
+        const one = self.intConst(1);
+        if (eql(name, "@signum")) {
+            const positive = self.intBinary(.cmp_gt, a, zero);
+            const negative = self.intBinary(.cmp_lt, a, zero);
+            return self.intBinary(.sub, positive, negative);
+        }
+        if (eql(name, "@is_power_of_two")) {
+            const positive = self.intBinary(.cmp_gt, a, zero);
+            const prev = self.intBinary(.sub, a, one);
+            const bits = self.intBinary(.bit_and, a, prev);
+            const single = self.intBinary(.cmp_eq, bits, zero);
+            return self.intBinary(.bit_and, positive, single);
+        }
+        if (eql(name, "@rotl") or eql(name, "@rotr")) {
+            const mask = self.intConst(63);
+            const count = self.intBinary(.bit_and, b, mask);
+            const neg_count = self.intBinary(.sub, zero, count);
+            // Mask the complementary count too: never emit a shift by 64.
+            const complement = self.intBinary(.bit_and, neg_count, mask);
+            const left = self.intBinary(.shl, a, if (eql(name, "@rotl")) count else complement);
+            const right = self.intBinary(.ushr, a, if (eql(name, "@rotl")) complement else count);
+            return self.intBinary(.bit_or, left, right);
+        }
+        // Reverse bits in six stages, swapping adjacent 1/2/4/8/16/32-bit groups.
+        var value = a;
+        inline for (.{
+            .{ @as(i64, 1), @as(i64, 0x5555555555555555) },
+            .{ @as(i64, 2), @as(i64, 0x3333333333333333) },
+            .{ @as(i64, 4), @as(i64, 0x0f0f0f0f0f0f0f0f) },
+            .{ @as(i64, 8), @as(i64, 0x00ff00ff00ff00ff) },
+            .{ @as(i64, 16), @as(i64, 0x0000ffff0000ffff) },
+            .{ @as(i64, 32), @as(i64, 0x00000000ffffffff) },
+        }) |stage| {
+            const shift = self.intConst(stage[0]);
+            const mask = self.intConst(stage[1]);
+            const right = self.intBinary(.bit_and, self.intBinary(.ushr, value, shift), mask);
+            const left = self.intBinary(.shl, self.intBinary(.bit_and, value, mask), shift);
+            value = self.intBinary(.bit_or, left, right);
+        }
+        return value;
+    }
+
     fn genCall(self: *IRGen, idx: u32) u16 {
         const node = self.ast.nodes[idx];
         const name_node = self.ast.nodes[node.child0];
@@ -2719,6 +2898,7 @@ pub const IRGen = struct {
         }
 
         if (name_node.kind == .identifier and self.findSlot(name) == null) {
+            if (sema_mod.isIntegerIntrinsic(name)) return self.genIntegerIntrinsic(name, args);
             if (eql(name, "@target_os")) {
                 const dv = self.allocVreg();
                 self.emit(.{ .op = .const_int, .dest = dv, .imm = @intFromEnum(self.target.os) });
@@ -3283,6 +3463,27 @@ pub const IRGen = struct {
             }
 
             if (self.findFn(name, 0)) |callee_fi| {
+                if (self.sema_info) |si| {
+                    const fn_ast = si.direct_call_fns[idx];
+                    if (fn_ast != 0) {
+                        var ordered: [8]u16 = .{0} ** 8;
+                        var wrapper = node.child2;
+                        var source_index: usize = 0;
+                        while (wrapper != 0) : (source_index += 1) {
+                            const target = si.call_arg_targets[wrapper];
+                            if (target != 0) ordered[target - 1] = args[source_index];
+                            wrapper = self.ast.nodes[wrapper].child1;
+                        }
+                        var param = self.ast.nodes[fn_ast].child0;
+                        var pi: u8 = 0;
+                        while (param != 0) : (pi += 1) {
+                            if (ordered[pi] == 0) ordered[pi] = self.genExpr(self.ast.nodes[param].child2);
+                            param = self.ast.nodes[param].child1;
+                        }
+                        args = ordered;
+                        ac = pi;
+                    }
+                }
                 const dest = self.allocVreg();
                 self.emit(.{
                     .op = .call,

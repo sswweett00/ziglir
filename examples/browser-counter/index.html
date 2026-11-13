@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="tr">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIR · Tarayıcı sayacı</title>
+<style>
+body {font: 18px system-ui; max-width: 680px; margin: 12vh auto; padding: 24px; background: #101724; color: #e2e9f4}
+button {font: inherit; padding: 12px 24px; border: 0; border-radius: 8px; cursor: pointer}
+pre {padding: 24px; background: #1c283a; border-radius: 12px}
+small {color: #b6c6df}
+</style>
+<h1>LIR tarayıcıda çalışıyor</h1>
+<p>Butona basıldığında derlenmiş LIR kodu tıklama sayısını ve karesini hesaplar.</p>
+<button id="increment" disabled>Bir artır</button>
+<pre id="output" aria-live="polite">Yükleniyor…</pre>
+<small>DOM ve olay bağlantısı JavaScript; hesaplama LIR/WebAssembly. Her çağrı yeni bir Wasm örneğidir.</small>
+<script type="module">
+import {runWasm} from '../../runtime/browser/wasi.mjs';
+const button = document.querySelector('#increment');
+const output = document.querySelector('#output');
+let clicks = 0;
+try {
+  const response = await fetch('./app.wasm');
+  if (!response.ok) throw new Error(`Wasm yüklenemedi: ${response.status}`);
+  const module = await WebAssembly.compile(await response.arrayBuffer());
+  async function render() {
+    button.disabled = true;
+    try {
+      let text = '';
+      const code = await runWasm(module, {
+        args: ['counter', ...Array(clicks).fill('click')],
+        onOutput(chunk, fd) { if (fd === 1) text += chunk; },
+      });
+      if (code !== 0) throw new Error(`LIR çıkış kodu: ${code}`);
+      const [count, square] = text.trim().split('\n');
+      output.textContent = `Tıklama: ${count}\nKaresi: ${square}`;
+    } catch (error) { output.textContent = String(error); }
+    finally { button.disabled = clicks >= 1000; }
+  }
+  button.addEventListener('click', () => { clicks++; void render(); });
+  await render();
+} catch (error) { output.textContent = String(error); }
+</script>
+</html>

@@ -1,0 +1,50 @@
+fn identity<T>(value: T) -> T { return value }
+
+fn make_option(value: i64) -> Option<i64> {
+    if value == 0 { return None }
+    return Some(value)
+}
+
+fn option_value(value: Option<i64>) -> i64 {
+    return match value {
+        Some(number) if number > 0 => number,
+        Some(_) => 0,
+        None => -1,
+    }
+}
+
+fn typed_tuple() -> i64 {
+    let narrow: u8 = 250 as u8
+    let pair = (narrow, true)
+    return match pair {
+        (number, true) => (number as i64) + 1,
+        (_, _) => 0,
+    }
+}
+
+fn unsigned_range(value: u64) -> i64 {
+    return match value {
+        (9223372036854775807 as u64)..=(-1 as u64) => 1,
+        _ => 0,
+    }
+}
+
+fn early(value: bool) -> i64 {
+    let number = match value {
+        true => return 42,
+        false => 7,
+    }
+    return number
+}
+
+fn main() -> i64 {
+    printInt(option_value(make_option(identity<i64>(11))))
+    printInt(option_value(make_option(-9)))
+    printInt(option_value(make_option(0)))
+    printInt(typed_tuple())
+    printInt(unsigned_range(-1 as u64))
+    printInt(unsigned_range(3 as u64))
+    printInt(early(true))
+    printInt(early(false))
+    return 0
+}

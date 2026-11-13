@@ -3303,3 +3303,11 @@ test "Runtime security parity: exact CFI, ftoi NaN/OOB, bulk OOB, negative lengt
 
 
 
+
+test "starter project regression tests" {
+    _ = @import("project.zig");
+}
+
+test "manifest regression tests" {
+    _ = @import("manifest.zig");
+}
