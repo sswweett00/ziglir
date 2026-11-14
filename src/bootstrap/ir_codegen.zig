@@ -2067,6 +2067,49 @@ pub const IRCodegen = struct {
                             const disp: i32 = if (inst.op == .add) @intCast(imm) else -@as(i32, @intCast(imm));
                             self.emitLeaRegDisp(ARG_REGS[0], self.vregPhys(inst.src1).?, disp);
                             self.emitCallReloc(.fn_call, callee_fi);
+
+                            // Check if call result is immediately used in binop + ret
+                            if (ii + 3 < blk.inst_count) {
+                                const next2 = blk.insts[ii + 2];
+                                const next3 = blk.insts[ii + 3];
+                                if ((next2.op == .add or next2.op == .sub or next2.op == .bit_or or next2.op == .bit_xor) and
+                                    next3.op == .ret and
+                                    (next2.src1 == next_inst.dest or (next2.op != .sub and next2.src2 == next_inst.dest)) and
+                                    next3.src1 == next2.dest and
+                                    next_inst.dest != 0 and next_inst.dest < MAX_VREGS and
+                                    next2.dest != 0 and next2.dest < MAX_VREGS and
+                                    self.vreg_last_use[next_inst.dest] <= cur_pos + 3 and
+                                    self.vreg_last_use[next2.dest] <= cur_pos + 3)
+                                {
+                                    const other_v = if (next2.src1 == next_inst.dest) next2.src2 else next2.src1;
+                                    const other_phys = self.vregPhys(other_v);
+                                    const other_is_c = other_v > 0 and other_v < MAX_VREGS and self.vreg_const_known[other_v];
+                                    if (other_phys != null or other_is_c) {
+                                        if (other_phys) |r| {
+                                            self.emitBinRegReg(next2.op, 0, r);
+                                        } else if (other_is_c) {
+                                            const imm_c = self.vreg_const_imm[other_v];
+                                            if (fitsI32NonMin(imm_c)) {
+                                                const subop: u8 = switch (next2.op) {
+                                                    .add => 0,
+                                                    .bit_or => 1,
+                                                    .sub => 5,
+                                                    .bit_xor => 6,
+                                                    else => 0,
+                                                };
+                                                self.emitAluRegImm32(subop, 0, @intCast(imm_c));
+                                            } else {
+                                                self.mov64imm(1, @bitCast(imm_c));
+                                                self.emitBinRegReg(next2.op, 0, 1);
+                                            }
+                                        }
+                                        self.emitEpilogueReturn();
+                                        ii += 4;
+                                        continue;
+                                    }
+                                }
+                            }
+
                             if (next_inst.dest != 0) self.storeRegToVreg(0, next_inst.dest);
                             ii += 2;
                             continue;
@@ -2083,6 +2126,66 @@ pub const IRCodegen = struct {
                         self.compileSelfTailCall(inst, fi);
                         ii += 2;
                         continue;
+                    }
+
+                    // Fused call + binop + ret: call foo(...) -> add/sub/or/xor %rX, %rax -> ret
+                    if (ii + 2 < blk.inst_count) {
+                        const next2_inst = blk.insts[ii + 2];
+                        if (inst.op == .call and
+                            (next_inst.op == .add or next_inst.op == .sub or next_inst.op == .bit_or or next_inst.op == .bit_xor) and
+                            next2_inst.op == .ret and
+                            (next_inst.src1 == inst.dest or (next_inst.op != .sub and next_inst.src2 == inst.dest)) and
+                            next2_inst.src1 == next_inst.dest and
+                            inst.dest != 0 and inst.dest < MAX_VREGS and
+                            next_inst.dest != 0 and next_inst.dest < MAX_VREGS and
+                            self.vreg_last_use[inst.dest] <= cur_pos + 2 and
+                            self.vreg_last_use[next_inst.dest] <= cur_pos + 2)
+                        {
+                            const other_v = if (next_inst.src1 == inst.dest) next_inst.src2 else next_inst.src1;
+                            const other_phys = self.vregPhys(other_v);
+                            const other_is_c = other_v > 0 and other_v < MAX_VREGS and self.vreg_const_known[other_v];
+                            if (other_phys != null or other_is_c) {
+                                const callee_fi = self.resolveCallTarget(inst) orelse {
+                                    self.invalid_reference = true;
+                                    return;
+                                };
+                                const stack_args: usize = if (inst.arg_count > 6) inst.arg_count - 6 else 0;
+                                const stack_pad: u32 = if (stack_args % 2 == 1) 8 else 0;
+                                self.subRspImm(stack_pad);
+                                if (stack_args > 0) {
+                                    var si: usize = inst.arg_count;
+                                    while (si > 6) {
+                                        si -= 1;
+                                        self.loadVregToReg(inst.args[si], 0);
+                                        self.pushReg(0);
+                                    }
+                                }
+                                self.emitRegArgsLoad(&inst.args, @min(inst.arg_count, 6));
+                                self.emitCallReloc(.fn_call, callee_fi);
+                                self.addRspImm(@as(u32, @intCast(stack_args)) * 8 + stack_pad);
+                                if (other_phys) |r| {
+                                    self.emitBinRegReg(next_inst.op, 0, r);
+                                } else if (other_is_c) {
+                                    const imm = self.vreg_const_imm[other_v];
+                                    if (fitsI32NonMin(imm)) {
+                                        const subop: u8 = switch (next_inst.op) {
+                                            .add => 0,
+                                            .bit_or => 1,
+                                            .sub => 5,
+                                            .bit_xor => 6,
+                                            else => 0,
+                                        };
+                                        self.emitAluRegImm32(subop, 0, @intCast(imm));
+                                    } else {
+                                        self.mov64imm(1, @bitCast(imm));
+                                        self.emitBinRegReg(next_inst.op, 0, 1);
+                                    }
+                                }
+                                self.emitEpilogueReturn();
+                                ii += 3;
+                                continue;
+                            }
+                        }
                     }
                 }
 

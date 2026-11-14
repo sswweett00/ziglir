@@ -1606,8 +1606,8 @@ fn localConstantFoldAndLVN(f: *IRFn) bool {
                 .ucmp_gt,
                 .ucmp_ge,
                 => {
-                    const s1_k = inst.src1 > 0 and inst.src1 < MAX_TRACKED_VREGS and const_known[inst.src1];
-                    const s2_k = inst.src2 > 0 and inst.src2 < MAX_TRACKED_VREGS and const_known[inst.src2];
+                    var s1_k = inst.src1 > 0 and inst.src1 < MAX_TRACKED_VREGS and const_known[inst.src1];
+                    var s2_k = inst.src2 > 0 and inst.src2 < MAX_TRACKED_VREGS and const_known[inst.src2];
 
                     if (s1_k and s2_k) {
                         if (foldBinaryConsts(inst.op, const_val[inst.src1], const_val[inst.src2])) |res| {
@@ -1618,6 +1618,39 @@ fn localConstantFoldAndLVN(f: *IRFn) bool {
                             }
                             changed = true;
                             continue;
+                        }
+                    }
+
+                    // Canonicalize constant to src2 for commutative and relational ops
+                    if (s1_k and !s2_k) {
+                        if (isCommutative(inst.op)) {
+                            const tmp = inst.src1;
+                            inst.src1 = inst.src2;
+                            inst.src2 = tmp;
+                            s1_k = false;
+                            s2_k = true;
+                            changed = true;
+                        } else {
+                            const swapped_cmp: ?IROp = switch (inst.op) {
+                                .cmp_lt => .cmp_gt,
+                                .cmp_le => .cmp_ge,
+                                .cmp_gt => .cmp_lt,
+                                .cmp_ge => .cmp_le,
+                                .ucmp_lt => .ucmp_gt,
+                                .ucmp_le => .ucmp_ge,
+                                .ucmp_gt => .ucmp_lt,
+                                .ucmp_ge => .ucmp_le,
+                                else => null,
+                            };
+                            if (swapped_cmp) |new_op| {
+                                inst.op = new_op;
+                                const tmp = inst.src1;
+                                inst.src1 = inst.src2;
+                                inst.src2 = tmp;
+                                s1_k = false;
+                                s2_k = true;
+                                changed = true;
+                            }
                         }
                     }
 
@@ -1699,6 +1732,11 @@ fn localConstantFoldAndLVN(f: *IRFn) bool {
 
                     if (s1_k) {
                         const av = const_val[inst.src1];
+                        if (inst.op == .sub and av == 0) {
+                            inst.* = .{ .op = .neg, .dest = inst.dest, .src1 = inst.src2 };
+                            changed = true;
+                            continue;
+                        }
                         if ((inst.op == .add or inst.op == .bit_or or inst.op == .bit_xor) and av == 0) {
                             inst.* = .{ .op = .copy, .dest = inst.dest, .src1 = inst.src2 };
                             changed = true;
@@ -1753,6 +1791,11 @@ fn localConstantFoldAndLVN(f: *IRFn) bool {
                     }
 
                     if (inst.src1 == inst.src2 and inst.src1 != 0) {
+                        if (inst.op == .bit_and or inst.op == .bit_or) {
+                            inst.* = .{ .op = .copy, .dest = inst.dest, .src1 = inst.src1 };
+                            changed = true;
+                            continue;
+                        }
                         const self_res: ?i64 = switch (inst.op) {
                             .sub, .bit_xor, .cmp_ne, .cmp_lt, .cmp_gt, .ucmp_lt, .ucmp_gt => 0,
                             .cmp_eq, .cmp_le, .cmp_ge, .ucmp_le, .ucmp_ge => 1,
