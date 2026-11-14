@@ -1,0 +1,16 @@
+fn hash_mix(n: i64) -> i64 {
+    var h: i64 = -3750763034362895579
+    let prime: i64 = 1099511628211
+    var i: i64 = 0
+    while i < n {
+        h = (h ^ i) * prime
+        h = h ^ (h >> 32)
+        i += 1
+    }
+    return h
+}
+
+fn main() -> i64 {
+    printInt(hash_mix(20000000))
+    return 0
+}

@@ -1706,6 +1706,28 @@ pub const IRCodegen = struct {
             }
         }
         if (can_shrink) {
+            const self_fn_name = self.irFnName(fi);
+            for (0..ir_fn.block_count) |bi| {
+                const blk = &ir_fn.blocks[bi];
+                if (blk.inst_count >= 2) {
+                    for (0..blk.inst_count - 1) |ii| {
+                        const inst = blk.insts[ii];
+                        const next_inst = blk.insts[ii + 1];
+                        const is_self_call = (inst.callee_fn_idx == @as(i32, @intCast(f.ir_fn_idx))) or
+                            eql(self.irFnNameByStr(inst.fn_name_start, inst.fn_name_len, inst.fn_source_id), self_fn_name);
+                        if (inst.op == .call and next_inst.op == .ret and
+                            (next_inst.src1 == inst.dest or next_inst.src1 == 0) and
+                            is_self_call and inst.arg_count <= ARG_REGS.len)
+                        {
+                            can_shrink = false;
+                            break;
+                        }
+                    }
+                }
+                if (!can_shrink) break;
+            }
+        }
+        if (can_shrink) {
             var in_deg: [ir_mod.MAX_BLOCKS_PER_FN]u16 = .{0} ** ir_mod.MAX_BLOCKS_PER_FN;
             for (0..ir_fn.block_count) |bi| {
                 const blk = &ir_fn.blocks[bi];
@@ -2267,7 +2289,7 @@ pub const IRCodegen = struct {
         if (v_rhs > 0 and v_rhs < MAX_VREGS and self.vreg_const_known[v_rhs] and fitsI32NonMin(self.vreg_const_imm[v_rhs])) {
             const imm: i32 = @intCast(self.vreg_const_imm[v_rhs]);
             if (self.vregPhys(v_lhs)) |rl| {
-                if (imm == 0 and (op == .cmp_eq or op == .cmp_ne)) {
+                if (imm == 0 and (op == .cmp_eq or op == .cmp_ne or op == .cmp_lt or op == .cmp_le or op == .cmp_gt or op == .cmp_ge)) {
                     self.emitRex(rl, rl);
                     self.emit8(0x85);
                     self.emitModRM(3, rl, rl);
@@ -2277,7 +2299,13 @@ pub const IRCodegen = struct {
                 return op;
             }
             self.loadVregToReg(v_lhs, 0);
-            self.emitCmpRegImm32(0, imm);
+            if (imm == 0 and (op == .cmp_eq or op == .cmp_ne or op == .cmp_lt or op == .cmp_le or op == .cmp_gt or op == .cmp_ge)) {
+                self.emitRex(0, 0);
+                self.emit8(0x85);
+                self.emitModRM(3, 0, 0);
+            } else {
+                self.emitCmpRegImm32(0, imm);
+            }
             return op;
         }
 

@@ -1,0 +1,32 @@
+fn mandelbrot_sum() -> i64 {
+    let scale: i64 = 10000
+    var total: i64 = 0
+    var cy: i64 = -15000
+    while cy < 15000 {
+        var cx: i64 = -20000
+        while cx < 10000 {
+            var zx: i64 = 0
+            var zy: i64 = 0
+            var iter_cnt: i64 = 0
+            while iter_cnt < 100 {
+                let zx2: i64 = (zx * zx) / scale
+                let zy2: i64 = (zy * zy) / scale
+                if zx2 + zy2 > 4 * scale {
+                    break
+                }
+                zy = (2 * zx * zy) / scale + cy
+                zx = zx2 - zy2 + cx
+                iter_cnt += 1
+            }
+            total += iter_cnt
+            cx += 50
+        }
+        cy += 50
+    }
+    return total
+}
+
+fn main() -> i64 {
+    printInt(mandelbrot_sum())
+    return 0
+}

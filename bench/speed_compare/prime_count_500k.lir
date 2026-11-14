@@ -1,0 +1,23 @@
+fn count_primes(limit: i64) -> i64 {
+    var count: i64 = 0
+    var n: i64 = 2
+    while n <= limit {
+        var is_p: i64 = 1
+        var d: i64 = 2
+        while d * d <= n {
+            if n % d == 0 {
+                is_p = 0
+                break
+            }
+            d += 1
+        }
+        count += is_p
+        n += 1
+    }
+    return count
+}
+
+fn main() -> i64 {
+    printInt(count_primes(500000))
+    return 0
+}
