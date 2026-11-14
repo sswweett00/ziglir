@@ -38,7 +38,7 @@ fn fib_iterative(n: u64) -> u64 {
 
 const MATRIX_SIZE: u64 = 64
 
-fn matrixMultiply(a: *[MATRIX_SIZE][MATRIX_SIZE]f64, b: *[MATRIX_SIZE][MATRIX_SIZE]f64, c: *[MATRIX_SIZE][MATRIX_SIZE]f64) {
+fn matrixMultiply(a: *f64, b: *f64, c: *f64) {
     var i: u64 = 0
     while i < MATRIX_SIZE {
         var j: u64 = 0
@@ -46,10 +46,10 @@ fn matrixMultiply(a: *[MATRIX_SIZE][MATRIX_SIZE]f64, b: *[MATRIX_SIZE][MATRIX_SI
             var sum: f64 = 0.0
             var k: u64 = 0
             while k < MATRIX_SIZE {
-                sum += a[i][k] * b[k][j]
+                sum += a[i * MATRIX_SIZE + k] * b[k * MATRIX_SIZE + j]
                 k += 1
             }
-            c[i][j] = sum
+            c[i * MATRIX_SIZE + j] = sum
             j += 1
         }
         i += 1

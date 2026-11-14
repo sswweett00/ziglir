@@ -255,13 +255,16 @@ pub const VMState = struct {
         return null;
     }
 
-    fn allocHeap(self: *VMState, req_size: i64) VMError!u64 {
+    pub const CANARY_COOKIE: u64 = 0xA55A5AA5C33C3CC3;
+
+    pub fn allocHeap(self: *VMState, req_size: i64) VMError!u64 {
         if (req_size <= 0 or req_size > 256 * 1024 * 1024) return error.Trap;
         const sz: usize = @intCast(req_size);
-        const total = std.math.add(usize, sz, 8) catch return error.Trap;
+        const total = std.math.add(usize, sz, 16) catch return error.Trap;
         const buf = self.alloc.alloc(u8, total) catch return error.OutOfMemory;
         @memset(buf, 0);
         std.mem.writeInt(u64, buf[0..8], sz, .little);
+        std.mem.writeInt(u64, buf[8 + sz .. 16 + sz][0..8], CANARY_COOKIE ^ @as(u64, sz), .little);
         self.mem_lock.lock();
         defer self.mem_lock.unlock();
         const vaddr = self.next_heap_addr;
@@ -274,14 +277,19 @@ pub const VMState = struct {
         return vaddr + 8;
     }
 
-    fn freeHeap(self: *VMState, ptr: u64) VMError!void {
+    pub fn freeHeap(self: *VMState, ptr: u64) VMError!void {
         if (ptr == 0) return;
-        if (ptr < HEAP_BASE) return error.MemoryFault;
+        if (ptr < HEAP_BASE or ptr >= 0x8000_0000_0000) return error.MemoryFault;
         self.mem_lock.lock();
         defer self.mem_lock.unlock();
         for (self.heap_allocs.items) |*ha| {
             if (ptr == ha.addr + 8) {
                 if (ha.freed) return error.MemoryFault; // double free
+                const sz: usize = @intCast(std.mem.readInt(u64, ha.data[0..8], .little));
+                if (ha.data.len >= 16 + sz) {
+                    const got_canary = std.mem.readInt(u64, ha.data[8 + sz .. 16 + sz][0..8], .little);
+                    if (got_canary != (CANARY_COOKIE ^ @as(u64, sz))) return error.MemoryFault; // heap overflow canary smashed!
+                }
                 @memset(ha.data, 0); // zero-wipe on free
                 ha.freed = true;
                 return;
@@ -290,8 +298,9 @@ pub const VMState = struct {
         return error.MemoryFault;
     }
 
-    fn resolveSlice(self: *VMState, ptr: u64, size: usize, write_access: bool) VMError![]u8 {
-        if (ptr < 4096) return error.MemoryFault;
+    pub fn resolveSlice(self: *VMState, ptr: u64, size: usize, write_access: bool) VMError![]u8 {
+        if (ptr < 4096 or ptr >= 0x8000_0000_0000) return error.MemoryFault;
+        _ = std.math.add(u64, ptr, @as(u64, size)) catch return error.MemoryFault;
         if (ptr >= RODATA_BASE and ptr < STACK_BASE) {
             if (write_access) return error.MemoryFault; // W^X: rodata is read-only
             // Allow reading header at ptr-8 (within rodata)
@@ -308,12 +317,13 @@ pub const VMState = struct {
             self.mem_lock.lock();
             defer self.mem_lock.unlock();
             for (self.heap_allocs.items) |ha| {
-                const start = ha.addr;
-                const end = start + ha.data.len;
-                if (ptr >= start and ptr < end) {
+                const sz: usize = @intCast(std.mem.readInt(u64, ha.data[0..8], .little));
+                const payload_end = ha.addr + 8 + sz;
+                if (ptr >= ha.addr and ptr < payload_end) {
                     if (ha.freed) return error.MemoryFault; // UAF trap
-                    const off: usize = @intCast(ptr - start);
-                    if (size > ha.data.len - off) return error.MemoryFault;
+                    if (write_access and ptr < ha.addr + 8) return error.MemoryFault; // Prevent heap metadata tampering
+                    const off: usize = @intCast(ptr - ha.addr);
+                    if (size > (8 + sz) - off) return error.MemoryFault; // Strictly reject canary / out-of-bounds access
                     return ha.data[off..][0..size];
                 }
             }
@@ -662,6 +672,8 @@ pub const VMState = struct {
                         if (target < FN_TAG or target >= FN_TAG + self.module.fn_count) return error.MemoryFault;
                         const target_fi: u32 = @intCast(target - FN_TAG);
                         if (!self.fn_addr_taken[target_fi]) return error.MemoryFault;
+                        const target_fn = &self.module.fns[target_fi];
+                        if (target_fn.param_count != inst.arg_count) return error.MemoryFault;
                         var cargs: [8]u64 = undefined;
                         for (0..inst.arg_count) |ai| cargs[ai] = vregs[inst.args[ai]];
                         const rv = try self.callFn(target_fi, cargs[0..inst.arg_count], depth + 1);
@@ -1201,6 +1213,34 @@ pub const VMState = struct {
                 @intCast(std.c.getuid())
             else
                 1000,
+            .call_term_size => {
+                var w: std.os.linux.winsize = .{ .ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0 };
+                if (comptime builtin.os.tag == .linux) {
+                    _ = std.os.linux.ioctl(0, 0x5413, @intFromPtr(&w));
+                }
+                vregs[inst.dest] = (@as(u64, w.ws_row) << 16) | @as(u64, w.ws_col);
+            },
+            .call_set_raw_mode => {
+                const v = vregs[inst.args[0]];
+                if (comptime builtin.os.tag == .linux) {
+                    var termios: std.os.linux.termios = undefined;
+                    if (std.os.linux.ioctl(0, 0x5401, @intFromPtr(&termios)) == 0) {
+                        if (v != 0) {
+                            termios.lflag.ECHO = false;
+                            termios.lflag.ICANON = false;
+                        } else {
+                            termios.lflag.ECHO = true;
+                            termios.lflag.ICANON = true;
+                        }
+                        _ = std.os.linux.ioctl(0, 0x5402, @intFromPtr(&termios));
+                    }
+                }
+            },
+            .call_read_key => {
+                var buf: [1]u8 = undefined;
+                const n = std.posix.read(0, &buf) catch 0;
+                vregs[inst.dest] = @bitCast(if (n > 0) @as(i64, buf[0]) else @as(i64, -1));
+            },
             .call_unlink => {
                 const p = try self.readCString(vregs[inst.args[0]]);
                 std.fs.cwd().deleteFile(p) catch {

@@ -1543,6 +1543,15 @@ fn emitUserFn(sec: *Buf, alloc: std.mem.Allocator, module: *const IRModule, sour
                     try b.i64c(1);
                     try b.lset(vreg_base + inst.dest);
                 },
+                .call_term_size => {
+                    try b.i64c(1572944);
+                    try b.lset(vreg_base + inst.dest);
+                },
+                .call_set_raw_mode => {},
+                .call_read_key => {
+                    try b.i64c(-1);
+                    try b.lset(vreg_base + inst.dest);
+                },
                 .call_open, .call_read, .call_close, .call_unlink, .call_mkdir, .call_stat, .call_tcp_socket, .call_tcp_listen, .call_tcp_accept, .call_tcp_connect, .call_sock_send, .call_sock_recv, .call_syscall => {
                     try b.i64c(-38); // -ENOSYS on bare WASI
                     if (inst.dest != 0) try b.lset(vreg_base + inst.dest) else try b.b(OP_DROP);

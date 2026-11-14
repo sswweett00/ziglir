@@ -58,7 +58,7 @@ struct HttpResponse {
 fn appendStr(buf: *u8, pos: u64, s: string, buf_size: u64) -> u64 {
     var i: u64 = 0
     var p = pos
-    while i < s.len and p < buf_size - 1 {
+    while i < (s.len as u64) and p < buf_size - 1 {
         buf[p] = s.ptr[i]
         p += 1
         i += 1
@@ -76,11 +76,11 @@ fn appendByte(buf: *u8, pos: u64, ch: u8, buf_size: u64) -> u64 {
 }
 
 fn appendInt(buf: *u8, pos: u64, value: i64, buf_size: u64) -> u64 {
-    var buf2: [32]u8
-    let len = itoa(value, &buf2, 32)
+    var buf2: [32]u8 = [0; 32]
+    let len = itoa(value, &buf2[0], 32)
     var i: u64 = 0
     var p = pos
-    while i < len and p < buf_size - 1 {
+    while i < (len as u64) and p < buf_size - 1 {
         buf[p] = buf2[i]
         p += 1
         i += 1
@@ -103,8 +103,8 @@ fn main() -> i64 {
         body: string { ptr: "Hello from Lir Web Server!", len: 26 }
     }
 
-    var buf: [4096]u8
-    let len = resp.buildResponse(&buf, 4096)
+    var buf: [4096]u8 = [0; 4096]
+    let len = resp.buildResponse(&buf[0], 4096)
 
     print("Response (")
     printInt(len as i64)
@@ -117,8 +117,9 @@ fn main() -> i64 {
         while i < len and buf[i] != '\n' { i += 1 }
         // Print line content (without trailing \r)
         let line_len = if i > line_start and buf[i - 1] == '\r' { i - line_start - 1 } else { i - line_start }
-        syscall_write(1, &buf[line_start], line_len)
-        syscall_write(1, "\n", 1)
+        syscall_write(1, &buf[line_start], line_len as i64)
+        let nl = "\n"
+        syscall_write(1, nl.ptr, 1)
         if i < len { i += 1 }
     }
 

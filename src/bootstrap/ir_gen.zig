@@ -847,7 +847,19 @@ pub const IRGen = struct {
         if (self.sema_info) |si| {
             const base_idx = self.ast.nodes[index_node_idx].child0;
             const bt = si.node_types[base_idx];
-            return bt == .fixed_array or bt == .ptr or bt == .ptr_struct;
+            return bt == .fixed_array or bt == .ptr or bt == .ptr_struct or bt == .ptr_float or bt == .ptr_byte;
+        }
+        return false;
+    }
+
+    fn isByteIndexed(self: *const IRGen, index_node_idx: u32) bool {
+        if (self.sema_info) |si| {
+            const base_idx = self.ast.nodes[index_node_idx].child0;
+            const bt = si.node_types[base_idx];
+            if (bt == .ptr_byte) return true;
+            if (bt == .fixed_array and (bt.fixed_array.elem == .u8 or bt.fixed_array.elem == .i8)) return true;
+            const elem_ty = si.node_types[index_node_idx];
+            if (elem_ty.isInt() and elem_ty.int.bits == 8) return true;
         }
         return false;
     }
@@ -965,18 +977,39 @@ pub const IRGen = struct {
                     self.emit(.{ .op = .call_map_set, .dest = 0, .args = sargs, .arg_count = 3 });
                 } else if (self.isContiguousIndexed(lhs_idx)) {
                     self.emitFixedArrayBoundsCheck(lhs_idx, idx_v);
-                    const three = self.allocVreg();
-                    self.emit(.{ .op = .const_int, .dest = three, .imm = 3 });
-                    const off = self.allocVreg();
-                    self.emit(.{ .op = .shl, .dest = off, .src1 = idx_v, .src2 = three });
-                    const elem_ptr = self.allocVreg();
-                    self.emit(.{ .op = .add, .dest = elem_ptr, .src1 = arr_v, .src2 = off });
+                    const is_byte = self.isByteIndexed(lhs_idx);
+                    const elem_ptr = if (is_byte) blk: {
+                        const ep = self.allocVreg();
+                        self.emit(.{ .op = .add, .dest = ep, .src1 = arr_v, .src2 = idx_v });
+                        break :blk ep;
+                    } else blk: {
+                        const three = self.allocVreg();
+                        self.emit(.{ .op = .const_int, .dest = three, .imm = 3 });
+                        const off = self.allocVreg();
+                        self.emit(.{ .op = .shl, .dest = off, .src1 = idx_v, .src2 = three });
+                        const ep = self.allocVreg();
+                        self.emit(.{ .op = .add, .dest = ep, .src1 = arr_v, .src2 = off });
+                        break :blk ep;
+                    };
                     const val_v = if (op == .assign) rhs_v else blk: {
                         const old_v = self.allocVreg();
-                        self.emit(.{ .op = .deref_load, .dest = old_v, .src1 = elem_ptr });
+                        if (is_byte) {
+                            var rargs: [8]u16 = .{0} ** 8;
+                            rargs[0] = elem_ptr;
+                            self.emit(.{ .op = .call_read_byte, .dest = old_v, .args = rargs, .arg_count = 1 });
+                        } else {
+                            self.emit(.{ .op = .deref_load, .dest = old_v, .src1 = elem_ptr });
+                        }
                         break :blk self.applyCompoundOp(op, old_v, rhs_v, is_uns_stmt, is_flt);
                     };
-                    self.emit(.{ .op = .deref_store, .src1 = elem_ptr, .src2 = val_v });
+                    if (is_byte) {
+                        var wargs: [8]u16 = .{0} ** 8;
+                        wargs[0] = elem_ptr;
+                        wargs[1] = val_v;
+                        self.emit(.{ .op = .call_write_byte, .dest = 0, .args = wargs, .arg_count = 2 });
+                    } else {
+                        self.emit(.{ .op = .deref_store, .src1 = elem_ptr, .src2 = val_v });
+                    }
                 } else {
                     const val_v = if (op == .assign) rhs_v else blk: {
                         const old_v = self.allocVreg();
@@ -2362,6 +2395,26 @@ pub const IRGen = struct {
             },
             .struct_init => {
                 const sname = self.nodeText(idx);
+                if (eql(sname, "string")) {
+                    var ptr_v: u16 = 0;
+                    var len_v: u16 = 0;
+                    var fi = node.child2;
+                    while (fi != 0) : (fi = self.ast.nodes[fi].child1) {
+                        const fname = self.nodeText(fi);
+                        const fval = self.genExpr(self.ast.nodes[fi].child0);
+                        if (eql(fname, "ptr")) ptr_v = fval
+                        else if (eql(fname, "len")) len_v = fval;
+                    }
+                    if (len_v != 0) {
+                        var sargs: [8]u16 = .{0} ** 8;
+                        sargs[0] = ptr_v;
+                        sargs[1] = len_v;
+                        const dest = self.allocVreg();
+                        self.emit(.{ .op = .call_string_new, .dest = dest, .args = sargs, .arg_count = 2 });
+                        return dest;
+                    }
+                    return ptr_v;
+                }
                 const sc = @min(@as(u32, self.ast.struct_count), @as(u32, @intCast(self.ast.struct_defs.len)));
                 var found_si: ?u32 = null;
                 if (self.sema_info) |si| {
@@ -2419,6 +2472,9 @@ pub const IRGen = struct {
                     return v;
                 }
                 if (self.sema_info) |si| {
+                    if (si.is_ptr_prop[idx]) {
+                        return self.genExpr(node.child0);
+                    }
                     if (si.is_len_prop[idx]) {
                         const base_v = self.genExpr(node.child0);
                         const bty = si.node_types[node.child0];
@@ -2465,6 +2521,16 @@ pub const IRGen = struct {
                 }
                 if (self.isContiguousIndexed(idx)) {
                     self.emitFixedArrayBoundsCheck(idx, idx_v);
+                    const is_byte = self.isByteIndexed(idx);
+                    if (is_byte) {
+                        const ep = self.allocVreg();
+                        self.emit(.{ .op = .add, .dest = ep, .src1 = arr_v, .src2 = idx_v });
+                        const v = self.allocVreg();
+                        var rargs: [8]u16 = .{0} ** 8;
+                        rargs[0] = ep;
+                        self.emit(.{ .op = .call_read_byte, .dest = v, .args = rargs, .arg_count = 1 });
+                        return v;
+                    }
                     const three = self.allocVreg();
                     self.emit(.{ .op = .const_int, .dest = three, .imm = 3 });
                     const off = self.allocVreg();
@@ -2509,6 +2575,12 @@ pub const IRGen = struct {
                     const arr_v = self.genExpr(sub.child0);
                     const idx_v = self.genExpr(sub.child1);
                     self.emitFixedArrayBoundsCheck(node.child0, idx_v);
+                    const is_byte = self.isByteIndexed(node.child0);
+                    if (is_byte) {
+                        const v = self.allocVreg();
+                        self.emit(.{ .op = .add, .dest = v, .src1 = arr_v, .src2 = idx_v });
+                        return v;
+                    }
                     const three = self.allocVreg();
                     self.emit(.{ .op = .const_int, .dest = three, .imm = 3 });
                     const byte_off = self.allocVreg();
@@ -2918,6 +2990,20 @@ pub const IRGen = struct {
         }
 
         if (name_node.kind == .identifier and self.findSlot(name) == null) {
+            if (eql(name, "term_size") or eql(name, "@term_size")) {
+                const dest = self.allocVreg();
+                self.emit(.{ .op = .call_term_size, .dest = dest });
+                return dest;
+            }
+            if (eql(name, "set_raw_mode") or eql(name, "@set_raw_mode")) {
+                self.emit(.{ .op = .call_set_raw_mode, .dest = 0, .args = args, .arg_count = ac });
+                return 0;
+            }
+            if (eql(name, "read_key") or eql(name, "@read_key")) {
+                const dest = self.allocVreg();
+                self.emit(.{ .op = .call_read_key, .dest = dest });
+                return dest;
+            }
             if (sema_mod.isIntegerIntrinsic(name)) return self.genIntegerIntrinsic(name, args);
             if (eql(name, "@target_os")) {
                 const dv = self.allocVreg();

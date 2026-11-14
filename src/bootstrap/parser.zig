@@ -976,6 +976,10 @@ pub const Parser = struct {
         }
         if (tok.kind == .identifier) {
             const name = self.lex.text(tok);
+            if (std.mem.eql(u8, name, "anyopaque")) {
+                _ = self.advance();
+                return .{ .tag = .void };
+            }
             if (std.mem.eql(u8, name, "Map")) {
                 _ = self.advance();
                 var desc = TypeDesc{ .kind = .map, .param_count = 2 };
@@ -1739,8 +1743,8 @@ pub const Parser = struct {
             stmt = self.parseIf();
         } else if (self.match(.lbrace)) {
             stmt = self.parseBlock();
-        } else if (self.match(.kw_unsafe) or self.match(.kw_volatile) or
-            self.match(.kw_asm) or self.match(.kw_try))
+        } else if (self.match(.kw_volatile) or
+            self.match(.kw_asm) or self.match(.kw_try) or self.match(.kw_unsafe))
         {
             const t = self.peek();
             self.reportErr(t, "unsupported statement '{s}'", .{@tagName(t.kind)});
@@ -2405,49 +2409,67 @@ pub const Parser = struct {
                     if (raw[j] == '{') bdepth += 1 else if (raw[j] == '}') bdepth -= 1;
                 }
                 if (bdepth == 0) {
-                    if (i > cur_start) {
-                        const lit_sp = self.ast.addSynthText(raw[cur_start..i]);
-                        const sn = self.newNode(.string_literal, tok.line);
-                        self.ast.nodes[sn].col = tok.col;
-                        self.ast.nodes[sn].source_id = lit_sp.source_id;
-                        self.ast.nodes[sn].text_start = lit_sp.start;
-                        self.ast.nodes[sn].text_len = lit_sp.len;
-                        if (seg_head == 0) seg_head = sn else self.ast.stmt_chains[seg_tail] = sn;
-                        seg_tail = sn;
-                    }
                     const expr_raw = std.mem.trim(u8, raw[i + 1 .. j - 1], " \t\r\n");
-                    if (expr_raw.len > 0) {
+                    var is_valid_interp = false;
+                    var en: u32 = 0;
+                    if (expr_raw.len > 0 and expr_raw[0] != '\\' and expr_raw[0] != ':' and expr_raw[0] != '"') {
                         const expr_sp = self.ast.addSynthText(expr_raw);
                         const expr_slice = self.ast.sources[SYNTH_SOURCE_ID][expr_sp.start..][0..expr_sp.len];
                         if (std.heap.page_allocator.create(Lexer)) |sub_lex| {
                             defer std.heap.page_allocator.destroy(sub_lex);
                             sub_lex.* = Lexer.init(expr_slice);
                             sub_lex.tokenize();
-                            var sub_p = Parser{
-                                .lex = sub_lex,
-                                .pos = 0,
-                                .ast = self.ast,
-                                .src = self.ast.sources[SYNTH_SOURCE_ID],
-                                .source_id = SYNTH_SOURCE_ID,
-                                .diag = self.diag,
-                            };
-                            // Adjust sub-lexer token offsets into synth_buf base
-                            for (0..sub_lex.token_count) |ti| {
-                                sub_lex.tokens[ti].start += expr_sp.start;
+                            if (!sub_lex.invalid and sub_lex.token_count > 0) {
+                                var temp_diag = diag_mod.DiagList.init();
+                                var sub_p = Parser{
+                                    .lex = sub_lex,
+                                    .pos = 0,
+                                    .ast = self.ast,
+                                    .src = self.ast.sources[SYNTH_SOURCE_ID],
+                                    .source_id = SYNTH_SOURCE_ID,
+                                    .diag = &temp_diag,
+                                };
+                                for (0..sub_lex.token_count) |ti| {
+                                    sub_lex.tokens[ti].start += expr_sp.start;
+                                }
+                                sub_lex.src = self.ast.sources[SYNTH_SOURCE_ID];
+                                const saved_ast_count = self.ast.count;
+                                en = sub_p.parseExpr();
+                                if (!sub_p.invalid_syntax and temp_diag.error_count == 0 and (sub_p.match(.eof) or sub_p.pos >= sub_lex.token_count - 1)) {
+                                    is_valid_interp = true;
+                                } else {
+                                    self.ast.count = saved_ast_count;
+                                }
                             }
-                            sub_lex.src = self.ast.sources[SYNTH_SOURCE_ID];
-                            const en = sub_p.parseExpr();
-                            if (sub_p.invalid_syntax) self.invalid_syntax = true;
-                            if (seg_head == 0) seg_head = en else self.ast.stmt_chains[seg_tail] = en;
-                            seg_tail = en;
                         } else |_| {}
                     }
-                    i = j;
-                    cur_start = j;
-                    continue;
+                    if (is_valid_interp) {
+                        if (i > cur_start) {
+                            const lit_sp = self.ast.addSynthText(raw[cur_start..i]);
+                            const sn = self.newNode(.string_literal, tok.line);
+                            self.ast.nodes[sn].col = tok.col;
+                            self.ast.nodes[sn].source_id = lit_sp.source_id;
+                            self.ast.nodes[sn].text_start = lit_sp.start;
+                            self.ast.nodes[sn].text_len = lit_sp.len;
+                            if (seg_head == 0) seg_head = sn else self.ast.stmt_chains[seg_tail] = sn;
+                            seg_tail = sn;
+                        }
+                        if (seg_head == 0) seg_head = en else self.ast.stmt_chains[seg_tail] = en;
+                        seg_tail = en;
+                        i = j;
+                        cur_start = j;
+                        continue;
+                    }
                 }
             }
             i += 1;
+        }
+        if (seg_head == 0) {
+            const n = self.newNode(.string_literal, tok.line);
+            self.ast.nodes[n].col = tok.col;
+            self.ast.nodes[n].text_start = inner_start;
+            self.ast.nodes[n].text_len = inner_len;
+            return n;
         }
         if (cur_start < raw.len) {
             const lit_sp = self.ast.addSynthText(raw[cur_start..]);
@@ -2834,7 +2856,7 @@ pub const Parser = struct {
             return n;
         }
 
-        if (self.match(.identifier) or self.match(.kw_self)) {
+        if (self.match(.identifier) or self.match(.kw_self) or (self.match(.kw_string) and self.lex.get(self.pos + 1).kind == .lbrace)) {
             _ = self.advance();
             var result = self.newNode(.identifier, tok.line);
             self.ast.nodes[result].col = tok.col;
@@ -2954,8 +2976,8 @@ pub const Parser = struct {
             return cn;
         }
 
-        if (self.match(.kw_try) or self.match(.kw_unsafe) or
-            self.match(.kw_volatile) or self.match(.kw_asm))
+        if (self.match(.kw_try) or
+            self.match(.kw_volatile) or self.match(.kw_asm) or self.match(.kw_unsafe))
         {
             self.reportErr(tok, "unsupported expression '{s}'", .{@tagName(tok.kind)});
         } else {

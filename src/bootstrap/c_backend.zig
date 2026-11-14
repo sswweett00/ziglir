@@ -106,6 +106,8 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
         \\#endif
         \\#ifdef __linux__
         \\#include <sys/random.h>
+        \\#include <sys/ioctl.h>
+        \\#include <termios.h>
         \\#endif
         \\#ifdef __wasi__
         \\#include <wasi/api.h>
@@ -322,8 +324,9 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
         \\#ifdef __wasi__
         \\    if (p < 64ULL) lir_trap();
         \\#else
-        \\    if (p < 4096ULL) lir_trap();
+        \\    if (p < 4096ULL || p >= 0x800000000000ULL) lir_trap();
         \\#endif
+        \\    if (p > UINT64_MAX - (uint64_t)acc_sz) lir_trap();
         \\#if !LIR_HAS_THREADS
         \\    if (LIR_LIKELY(lir_last_valid && p >= lir_last_user && p <= lir_last_end && acc_sz <= (size_t)(lir_last_end - p))) return;
         \\    if (LIR_LIKELY(p < lir_heap_min || p >= lir_heap_max)) return;
@@ -376,7 +379,7 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
         \\#ifdef __wasi__
         \\    if (ptr < 64ULL) lir_trap();
         \\#else
-        \\    if (ptr < 4096ULL) lir_trap();
+        \\    if (ptr < 4096ULL || ptr >= 0x800000000000ULL) lir_trap();
         \\#endif
         \\    lir_heap_lock();
         \\    size_t idx = lir_recs_lower_bound(ptr);
@@ -738,19 +741,32 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
         \\        if (r < 0) { if (errno == EINTR) continue; break; }
         \\        done += (size_t)r;
         \\    }
-        \\    while (done < (size_t)n) p[done++] = (uint8_t)(rand() & 0xFF);
+        \\    if (done < (size_t)n) {
+        \\        int fd = open("/dev/urandom", O_RDONLY);
+        \\        if (fd >= 0) {
+        \\            while (done < (size_t)n) {
+        \\                ssize_t r = read(fd, p + done, (size_t)n - done);
+        \\                if (r < 0 && errno == EINTR) continue;
+        \\                if (r <= 0) break;
+        \\                done += (size_t)r;
+        \\            }
+        \\            close(fd);
+        \\        }
+        \\    }
+        \\    if (done < (size_t)n) lir_trap();
         \\#else
         \\    int fd = open("/dev/urandom", O_RDONLY);
         \\    size_t done = 0;
         \\    if (fd >= 0) {
         \\        while (done < (size_t)n) {
         \\            ssize_t r = read(fd, p + done, (size_t)n - done);
+        \\            if (r < 0 && errno == EINTR) continue;
         \\            if (r <= 0) break;
         \\            done += (size_t)r;
         \\        }
         \\        close(fd);
         \\    }
-        \\    while (done < (size_t)n) p[done++] = (uint8_t)(rand() & 0xFF);
+        \\    if (done < (size_t)n) lir_trap();
         \\#endif
         \\    return n;
         \\}
@@ -774,6 +790,32 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
         \\    uint8_t diff = 0;
         \\    for (int64_t i = 0; i < n; i++) diff |= pa[i] ^ pb[i];
         \\    return diff == 0 ? 1ULL : 0ULL;
+        \\}
+        \\static int64_t lir_term_size(void) {
+        \\#if defined(__linux__) && defined(TIOCGWINSZ)
+        \\    struct winsize ws = {24, 80, 0, 0};
+        \\    if (ioctl(0, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0) {
+        \\        return ((int64_t)ws.ws_row << 16) | (int64_t)ws.ws_col;
+        \\    }
+        \\#endif
+        \\    return (24LL << 16) | 80LL;
+        \\}
+        \\static void lir_set_raw_mode(int64_t raw) {
+        \\#if defined(__linux__) && defined(TCGETS) && defined(TCSETS)
+        \\    struct termios t;
+        \\    if (ioctl(0, TCGETS, &t) == 0) {
+        \\        if (raw) { t.c_lflag &= ~(tcflag_t)(ECHO | ICANON); }
+        \\        else { t.c_lflag |= (tcflag_t)(ECHO | ICANON); }
+        \\        ioctl(0, TCSETS, &t);
+        \\    }
+        \\#else
+        \\    (void)raw;
+        \\#endif
+        \\}
+        \\static int64_t lir_read_key(void) {
+        \\    unsigned char ch = 0;
+        \\    ssize_t n = read(0, &ch, 1);
+        \\    return n > 0 ? (int64_t)ch : -1LL;
         \\}
         \\static void lir_sleep_ms(int64_t ms) {
         \\    if (ms <= 0) return;
@@ -1373,6 +1415,9 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
                     .call_getpid => try w.print("#if defined(_WIN32)\n    v{d} = (uint64_t)_getpid();\n#elif defined(__wasi__)\n    v{d} = 1ULL;\n#else\n    v{d} = (uint64_t)getpid();\n#endif\n", .{ inst.dest, inst.dest, inst.dest }),
                     .call_getppid => try w.print("#if defined(_WIN32) || defined(__wasi__)\n    v{d} = 1ULL;\n#else\n    v{d} = (uint64_t)getppid();\n#endif\n", .{ inst.dest, inst.dest }),
                     .call_getuid => try w.print("#if defined(_WIN32) || defined(__wasi__)\n    v{d} = 0ULL;\n#else\n    v{d} = (uint64_t)getuid();\n#endif\n", .{ inst.dest, inst.dest }),
+                    .call_term_size => try w.print("    v{d} = (uint64_t)lir_term_size();\n", .{inst.dest}),
+                    .call_set_raw_mode => try w.print("    lir_set_raw_mode((int64_t)v{d});\n", .{inst.args[0]}),
+                    .call_read_key => try w.print("    v{d} = (uint64_t)lir_read_key();\n", .{inst.dest}),
                     .call_tcp_socket => try w.print("    v{d} = (uint64_t)lir_tcp_socket();\n", .{inst.dest}),
                     .call_tcp_listen => try w.print("    v{d} = (uint64_t)lir_tcp_listen((int64_t)v{d}, (int64_t)v{d}, (int64_t)v{d});\n", .{ inst.dest, inst.args[0], inst.args[1], inst.args[2] }),
                     .call_tcp_accept => try w.print("    v{d} = (uint64_t)lir_tcp_accept((int64_t)v{d});\n", .{ inst.dest, inst.args[0] }),
@@ -1500,6 +1545,13 @@ pub fn compileCWithToolchain(
     try argv.append(alloc, "-O2");
     if (target.os != .wasi and target.os != .windows) {
         try argv.append(alloc, "-fstack-protector-strong");
+        try argv.append(alloc, "-D_FORTIFY_SOURCE=2");
+    }
+    if (target.os == .linux) {
+        try argv.append(alloc, "-fPIE");
+        try argv.append(alloc, "-pie");
+        try argv.append(alloc, "-Wl,-z,relro,-z,now");
+        try argv.append(alloc, "-Wl,-z,noexecstack");
     }
     try argv.append(alloc, "-w");
     try argv.append(alloc, c_path);

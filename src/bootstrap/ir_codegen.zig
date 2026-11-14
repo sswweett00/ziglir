@@ -757,6 +757,9 @@ pub const IRCodegen = struct {
             .call_getpid,
             .call_getppid,
             .call_getuid,
+            .call_term_size,
+            .call_set_raw_mode,
+            .call_read_key,
             .call_tcp_socket,
             .call_tcp_listen,
             .call_tcp_accept,
@@ -3802,6 +3805,90 @@ pub const IRCodegen = struct {
             .call_getuid => {
                 self.mov64imm(0, 102);
                 self.syscallInst();
+                if (inst.dest != 0) self.storeRegToVreg(0, inst.dest);
+            },
+            .call_term_size => {
+                self.subRspImm(16);
+                self.emit8(0xC7);
+                self.emit8(0x04);
+                self.emit8(0x24);
+                self.emit32(0x00500018);
+                self.xorReg(7, 7);
+                self.mov64imm(6, 0x5413);
+                self.movRegReg(2, 4);
+                self.mov64imm(0, 16);
+                self.syscallInst();
+                self.emit8(0x0F);
+                self.emit8(0xB7);
+                self.emit8(0x04);
+                self.emit8(0x24);
+                self.emit8(0x48);
+                self.emit8(0xC1);
+                self.emit8(0xE0);
+                self.emit8(0x10);
+                self.emit8(0x0F);
+                self.emit8(0xB7);
+                self.emit8(0x54);
+                self.emit8(0x24);
+                self.emit8(0x02);
+                self.emit8(0x48);
+                self.emit8(0x09);
+                self.emit8(0xD0);
+                self.addRspImm(16);
+                if (inst.dest != 0) self.storeRegToVreg(0, inst.dest);
+            },
+            .call_set_raw_mode => {
+                self.subRspImm(64);
+                self.xorReg(7, 7);
+                self.mov64imm(6, 0x5401);
+                self.movRegReg(2, 4);
+                self.mov64imm(0, 16);
+                self.syscallInst();
+                self.loadVregToReg(inst.args[0], 1);
+                self.emit8(0x48);
+                self.emit8(0x85);
+                self.emit8(0xC9);
+                self.emit8(0x74);
+                self.emit8(0x0D);
+                self.emit8(0x81);
+                self.emit8(0x64);
+                self.emit8(0x24);
+                self.emit8(0x0C);
+                self.emit32(0xFFFFFFF5);
+                self.emit8(0xEB);
+                self.emit8(0x0B);
+                self.emit8(0x81);
+                self.emit8(0x4C);
+                self.emit8(0x24);
+                self.emit8(0x0C);
+                self.emit32(0x0000000A);
+                self.xorReg(7, 7);
+                self.mov64imm(6, 0x5402);
+                self.movRegReg(2, 4);
+                self.mov64imm(0, 16);
+                self.syscallInst();
+                self.addRspImm(64);
+            },
+            .call_read_key => {
+                self.subRspImm(16);
+                self.xorReg(7, 7);
+                self.movRegReg(6, 4);
+                self.mov64imm(2, 1);
+                self.xorReg(0, 0);
+                self.syscallInst();
+                self.emit8(0x48);
+                self.emit8(0x85);
+                self.emit8(0xC0);
+                self.emit8(0x7F);
+                self.emit8(0x09);
+                self.mov64imm(0, @as(u64, @bitCast(@as(i64, -1))));
+                self.emit8(0xEB);
+                self.emit8(0x04);
+                self.emit8(0x0F);
+                self.emit8(0xB6);
+                self.emit8(0x04);
+                self.emit8(0x24);
+                self.addRspImm(16);
                 if (inst.dest != 0) self.storeRegToVreg(0, inst.dest);
             },
             .call_tcp_socket => {

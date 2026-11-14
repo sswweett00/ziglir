@@ -23,6 +23,8 @@ pub const SemaType = union(enum) {
     string,
     ptr,
     ptr_struct: u32,
+    ptr_float: u8,
+    ptr_byte: bool,
     null_t,
     array: TypeTag,
     fixed_array: struct { elem: TypeTag, len: u32 },
@@ -38,6 +40,8 @@ pub const SemaType = union(enum) {
     unknown,
 
     pub const i64_t: SemaType = .{ .int = .{ .bits = 64, .unsigned = false } };
+    pub const i32_t: SemaType = .{ .int = .{ .bits = 32, .unsigned = false } };
+    pub const u8_t: SemaType = .{ .int = .{ .bits = 8, .unsigned = true } };
     pub const f64_t: SemaType = .{ .float = 64 };
     pub const array_t: SemaType = .{ .array = .none };
 
@@ -57,7 +61,14 @@ pub const SemaType = union(enum) {
             .string => .string,
             .void => .void,
             .never => .never,
-            .ptr => if (elem_type == .struct_type and extra > 0) .{ .ptr_struct = extra - 1 } else .ptr,
+            .ptr => blk: {
+                if (elem_type == .struct_type and extra > 0) break :blk .{ .ptr_struct = extra - 1 };
+                if (elem_type == .f32) break :blk .{ .ptr_float = 32 };
+                if (elem_type == .f64) break :blk .{ .ptr_float = 64 };
+                if (elem_type == .u8) break :blk .{ .ptr_byte = true };
+                if (elem_type == .i8) break :blk .{ .ptr_byte = false };
+                break :blk .ptr;
+            },
             .struct_type => if (extra > 0) .{ .struct_t = extra - 1 } else .ptr,
             .enum_type => if (extra > 0) .{ .enum_t = extra - 1 } else i64_t,
             .fixed_array => .{ .fixed_array = .{ .elem = elem_type, .len = extra & 0x7FFFFFFF } },
@@ -92,7 +103,7 @@ pub const SemaType = union(enum) {
             .float => |fb| if (fb == 32) .f32 else .f64,
             .bool => .bool,
             .string => .string,
-            .ptr, .ptr_struct, .null_t => .ptr,
+            .ptr, .ptr_struct, .ptr_float, .ptr_byte, .null_t => .ptr,
             .struct_t => .struct_type,
             .enum_t => .enum_type,
             .void => .void,
@@ -100,9 +111,16 @@ pub const SemaType = union(enum) {
         };
     }
 
+    pub fn isPointer(self: SemaType) bool {
+        return switch (self) {
+            .ptr, .ptr_struct, .ptr_float, .ptr_byte, .null_t => true,
+            else => false,
+        };
+    }
+
     pub fn isScalar(self: SemaType) bool {
         return switch (self) {
-            .int, .float, .bool, .ptr, .ptr_struct, .array, .fixed_array, .enum_t, .fn_t, .tuple_t, .dyn_trait, .map_t, .chan_t, .unknown => true,
+            .int, .float, .bool, .ptr, .ptr_struct, .ptr_float, .ptr_byte, .array, .fixed_array, .enum_t, .fn_t, .tuple_t, .dyn_trait, .map_t, .chan_t, .unknown => true,
             else => false,
         };
     }
@@ -120,6 +138,16 @@ pub const SemaType = union(enum) {
             .bool => b == .bool,
             .string => b == .string,
             .ptr => b == .ptr,
+            .ptr_byte => |ua| switch (b) {
+                .ptr_byte => |ub| ua == ub,
+                .ptr => true,
+                else => false,
+            },
+            .ptr_float => |fa| switch (b) {
+                .ptr_float => |fb| fa == fb,
+                .ptr => true,
+                else => false,
+            },
             .ptr_struct => |sa| switch (b) {
                 .ptr_struct => |sb| sa == sb,
                 .ptr => true,
@@ -172,18 +200,27 @@ pub const SemaType = union(enum) {
         if (expected == .chan_t) return actual == .chan_t;
         if (expected == .int) return actual == .int;
         if (expected == .enum_t) return actual == .enum_t and expected.enum_t == actual.enum_t;
-        if (expected == .null_t) return actual == .null_t or actual == .ptr or actual == .ptr_struct;
+        if (expected == .null_t) return actual == .null_t or actual == .ptr or actual == .ptr_struct or actual == .ptr_float or actual == .ptr_byte;
         if (expected == .ptr) {
-            return actual == .ptr or actual == .ptr_struct or actual == .null_t or actual == .string or actual == .array;
+            return actual == .ptr or actual == .ptr_struct or actual == .ptr_float or actual == .ptr_byte or actual == .null_t or actual == .string or actual == .array;
         }
         if (expected == .ptr_struct) {
             return (actual == .ptr_struct and expected.ptr_struct == actual.ptr_struct) or actual == .ptr or actual == .null_t;
         }
+        if (expected == .ptr_float) {
+            return (actual == .ptr_float and expected.ptr_float == actual.ptr_float) or actual == .ptr or actual == .null_t;
+        }
+        if (expected == .ptr_byte) {
+            return (actual == .ptr_byte and expected.ptr_byte == actual.ptr_byte) or actual == .ptr or actual == .null_t or actual == .string or actual == .array;
+        }
+        if (expected == .array) return actual == .array or actual == .ptr or actual == .null_t;
         if (expected == .bool) return actual == .bool;
         if (expected == .struct_t) return actual == .struct_t and expected.struct_t == actual.struct_t;
         if (expected == .fixed_array and actual == .fixed_array) {
+            const e_elem = SemaType.fromTypeTag(expected.fixed_array.elem, 0, .none);
+            const a_elem = SemaType.fromTypeTag(actual.fixed_array.elem, 0, .none);
             return expected.fixed_array.len == actual.fixed_array.len and
-                (expected.fixed_array.elem == actual.fixed_array.elem or expected.fixed_array.elem == .none or actual.fixed_array.elem == .none);
+                (expected.fixed_array.elem == actual.fixed_array.elem or expected.fixed_array.elem == .none or actual.fixed_array.elem == .none or (e_elem.isInt() and a_elem.isInt()));
         }
         return false;
     }
@@ -238,6 +275,7 @@ const VarEntry = struct {
     ty: SemaType,
     is_mut: bool,
     is_const: bool = false,
+    has_const_val: bool = false,
     is_float: bool = false,
     is_ref_imm: bool = false,
     const_val: i64 = 0,
@@ -287,6 +325,12 @@ const builtins = [_]BuiltinSpec{
     .{ .name = "print", .min_args = 1, .max_args = 1, .ret = .void },
     .{ .name = "println", .min_args = 1, .max_args = 1, .ret = .void },
     .{ .name = "exit", .min_args = 1, .max_args = 1, .ret = .never },
+    .{ .name = "term_size", .min_args = 0, .max_args = 0, .ret = .{ .int = .{ .bits = 32, .unsigned = false } } },
+    .{ .name = "set_raw_mode", .min_args = 1, .max_args = 1, .ret = .void },
+    .{ .name = "read_key", .min_args = 0, .max_args = 0, .ret = .{ .int = .{ .bits = 32, .unsigned = false } } },
+    .{ .name = "@term_size", .min_args = 0, .max_args = 0, .ret = .{ .int = .{ .bits = 32, .unsigned = false } } },
+    .{ .name = "@set_raw_mode", .min_args = 1, .max_args = 1, .ret = .void },
+    .{ .name = "@read_key", .min_args = 0, .max_args = 0, .ret = .{ .int = .{ .bits = 32, .unsigned = false } } },
     .{ .name = "@syscall", .min_args = 1, .max_args = 7, .ret = SemaType.i64_t },
     .{ .name = "@array_new", .min_args = 1, .max_args = 2, .ret = SemaType.array_t },
     .{ .name = "@array_push", .min_args = 2, .max_args = 2, .ret = .void },
@@ -436,6 +480,7 @@ pub const SemaInfo = struct {
     is_float_op: [MAX_AST_NODES]bool,
     is_tail_expr: [MAX_AST_NODES]bool,
     is_len_prop: [MAX_AST_NODES]bool,
+    is_ptr_prop: [MAX_AST_NODES]bool,
     is_const_val: [MAX_AST_NODES]bool,
     is_pattern_binding: [MAX_AST_NODES]bool,
     const_vals: [MAX_AST_NODES]i64,
@@ -461,6 +506,7 @@ pub const SemaInfo = struct {
         @memset(&self.is_float_op, false);
         @memset(&self.is_tail_expr, false);
         @memset(&self.is_len_prop, false);
+        @memset(&self.is_ptr_prop, false);
         @memset(&self.is_const_val, false);
         @memset(&self.is_pattern_binding, false);
         @memset(&self.const_vals, 0);
@@ -778,6 +824,8 @@ pub const Sema = struct {
             .never => .{ .tag = .never, .extra = 0, .elem = .none },
             .ptr, .null_t => .{ .tag = .ptr, .extra = 0, .elem = .none },
             .ptr_struct => |si| .{ .tag = .ptr, .extra = si + 1, .elem = .struct_type },
+            .ptr_float => |fb| .{ .tag = .ptr, .extra = 0, .elem = if (fb == 32) .f32 else .f64 },
+            .ptr_byte => |u| .{ .tag = .ptr, .extra = 0, .elem = if (u) .u8 else .i8 },
             .struct_t => |si| .{ .tag = .struct_type, .extra = si + 1, .elem = .none },
             .enum_t => |ei| .{ .tag = .enum_type, .extra = ei + 1, .elem = .none },
             .fn_t => |fi| .{ .tag = .fn_ptr, .extra = fi, .elem = .none },
@@ -885,7 +933,7 @@ pub const Sema = struct {
         return switch (n.kind) {
             .addr_of => blk: {
                 if (self.extractLValueRootVar(n.child0)) |vi| {
-                    if (self.vars[vi].ty != .ptr and self.vars[vi].ty != .ptr_struct and
+                    if (!self.vars[vi].ty.isPointer() and
                         self.vars[vi].ty != .array and self.vars[vi].ty != .map_t)
                     {
                         break :blk vi + 1;
@@ -1457,7 +1505,7 @@ pub const Sema = struct {
         const val = self.evalConstExpr(arg_idx) orelse return;
         if (allow_null and val == 0) return;
         const uval: u64 = @bitCast(val);
-        if (val < 0 or uval < 4096) {
+        if (val < 0 or uval < 4096 or uval >= 0x8000_0000_0000) {
             const n = self.ast.nodes[arg_idx];
             self.failAt(
                 error.TypeMismatch,
@@ -1973,6 +2021,12 @@ pub const Sema = struct {
                 self.addVar(var_name, ty, (n.flags & 1) != 0, n.source_id, n.line, n.col);
                 if (self.var_count > 0 and n.child0 != 0) {
                     const new_vi = self.var_count - 1;
+                    if ((n.flags & 1) != 0) {
+                        if (self.evalConstExpr(n.child0)) |cval| {
+                            self.vars[new_vi].const_val = cval;
+                            self.vars[new_vi].has_const_val = true;
+                        }
+                    }
                     var init_idx = n.child0;
                     while (init_idx != 0 and self.ast.nodes[init_idx].kind == .cast_expr) {
                         init_idx = self.ast.nodes[init_idx].child0;
@@ -2087,22 +2141,26 @@ pub const Sema = struct {
                 if (n.text_len > 0) {
                     const vname = self.text(stmt_idx);
                     const rhs_ty = self.analyzeExpr(n.child0);
-                    if ((n.op == @intFromEnum(TokenKind.slash_eq) or n.op == @intFromEnum(TokenKind.percent_eq))) {
-                        if (self.evalConstExpr(n.child0)) |rhs_val| {
-                            if (rhs_val == 0) {
-                                self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "compound division or modulo by constant zero", .{});
-                            }
-                        }
-                    }
-                    if (n.op == @intFromEnum(TokenKind.lshift_eq) or n.op == @intFromEnum(TokenKind.rshift_eq)) {
-                        if (self.evalConstExpr(n.child0)) |sv| {
-                            if (sv < 0 or sv >= 64) {
-                                self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "compile-time invalid shift amount {d} in compound shift (must be 0..63)", .{sv});
-                            }
-                        }
-                    }
                     if (self.lookupVarIdx(vname)) |vi| {
                         const ve = self.vars[vi];
+                        if (n.op == @intFromEnum(TokenKind.slash_eq) or n.op == @intFromEnum(TokenKind.percent_eq)) {
+                            if (self.evalConstExpr(n.child0)) |rhs_val| {
+                                if (rhs_val == 0) {
+                                    self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "compound division or modulo by constant zero", .{});
+                                } else if (!ve.ty.isUnsigned() and rhs_val == -1) {
+                                    if (ve.has_const_val and ve.const_val == std.math.minInt(i64)) {
+                                        self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "compile-time signed division overflow (MIN_I64 / -1)", .{});
+                                    }
+                                }
+                            }
+                        }
+                        if (n.op == @intFromEnum(TokenKind.lshift_eq) or n.op == @intFromEnum(TokenKind.rshift_eq)) {
+                            if (self.evalConstExpr(n.child0)) |sv| {
+                                if (sv < 0 or sv >= 64) {
+                                    self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "compile-time invalid shift amount {d} in compound shift (must be 0..63)", .{sv});
+                                }
+                            }
+                        }
                         if (ve.ty == .float or rhs_ty == .float) self.info.is_float_op[stmt_idx] = true;
                         if (ve.ty.isUnsigned()) self.info.is_unsigned_op[stmt_idx] = true;
                         if (ve.is_const) {
@@ -2156,6 +2214,16 @@ pub const Sema = struct {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "dangling reference: cannot assign pointer/reference to inner local '{s}' into outer variable '{s}'", .{ self.vars[orig - 1].name, vname });
                             }
                             self.vars[vi].local_ref_origin = orig;
+                            if (n.op == @intFromEnum(TokenKind.assign)) {
+                                if (self.evalConstExpr(n.child0)) |cval| {
+                                    self.vars[vi].const_val = cval;
+                                    self.vars[vi].has_const_val = true;
+                                } else {
+                                    self.vars[vi].has_const_val = false;
+                                }
+                            } else {
+                                self.vars[vi].has_const_val = false;
+                            }
                             if (!self.exprUsesVar(n.child0, vname)) {
                                 self.markExprEscaped(n.child0);
                                 self.vars[vi].res_state = .normal;
@@ -2274,6 +2342,12 @@ pub const Sema = struct {
                         if (self.evalConstExpr(n.child1)) |rhs_val| {
                             if (rhs_val == 0) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "compound division or modulo by constant zero", .{});
+                            } else if (!lhs_ty.isUnsigned() and rhs_val == -1) {
+                                if (self.evalConstExpr(n.child0)) |lhs_val| {
+                                    if (lhs_val == std.math.minInt(i64)) {
+                                        self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "compile-time signed division overflow (MIN_I64 / -1)", .{});
+                                    }
+                                }
                             }
                         }
                     }
@@ -2854,17 +2928,17 @@ pub const Sema = struct {
                     src_ty == .map_t or dst_ty == .map_t)
                 {
                     self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "invalid cast involving composite or void type", .{});
-                } else if (src_ty == .null_t and dst_ty != .ptr and dst_ty != .ptr_struct and dst_ty != .unknown) {
+                } else if (src_ty == .null_t and !dst_ty.isPointer() and dst_ty != .unknown) {
                     self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "cannot cast null to non-pointer type", .{});
-                } else if ((src_ty == .float and (dst_ty == .ptr or dst_ty == .ptr_struct or dst_ty == .string)) or
-                    (dst_ty == .float and (src_ty == .ptr or src_ty == .ptr_struct or src_ty == .string)))
+                } else if ((src_ty == .float and (dst_ty.isPointer() or dst_ty == .string)) or
+                    (dst_ty == .float and (src_ty.isPointer() or src_ty == .string)))
                 {
                     self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "cannot cast between float and pointer or string", .{});
-                } else if (src_ty == .bool and (dst_ty == .ptr or dst_ty == .ptr_struct or dst_ty == .string or dst_ty == .float)) {
+                } else if (src_ty == .bool and (dst_ty.isPointer() or dst_ty == .string or dst_ty == .float)) {
                     self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "cannot cast bool to pointer, string, or float", .{});
                 } else if (dst_ty == .bool and src_ty != .bool and src_ty != .unknown) {
                     self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "cannot cast non-bool to bool; use explicit comparison", .{});
-                } else if (src_ty == .string and dst_ty != .string and dst_ty != .ptr and dst_ty != .ptr_struct and
+                } else if (src_ty == .string and dst_ty != .string and !dst_ty.isPointer() and
                     !(dst_ty == .int and dst_ty.int.bits == 64) and dst_ty != .unknown)
                 {
                     self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 2, "invalid cast from string", .{});
@@ -2904,8 +2978,8 @@ pub const Sema = struct {
                     break :blk if (op == .plus) SemaType.string else SemaType.bool;
                 }
                 if (op == .eq or op == .ne) {
-                    const ptr_zero_cmp = ((lhs == .ptr or lhs == .ptr_struct) and self.isUntypedIntExpr(n.child1) and (self.evalConstExpr(n.child1) orelse 1) == 0) or
-                        ((rhs == .ptr or rhs == .ptr_struct) and self.isUntypedIntExpr(n.child0) and (self.evalConstExpr(n.child0) orelse 1) == 0);
+                    const ptr_zero_cmp = (lhs.isPointer() and self.isUntypedIntExpr(n.child1) and (self.evalConstExpr(n.child1) orelse 1) == 0) or
+                        (rhs.isPointer() and self.isUntypedIntExpr(n.child0) and (self.evalConstExpr(n.child0) orelse 1) == 0);
                     if (!ptr_zero_cmp and lhs != .unknown and rhs != .unknown and lhs != .never and rhs != .never) {
                         if (lhs == .int and rhs == .int) {
                             if (self.binIntCompat(lhs, rhs, n.child0, n.child1) == null) {
@@ -2945,7 +3019,7 @@ pub const Sema = struct {
                     };
                 }
                 if (op == .lt or op == .gt or op == .le or op == .ge) {
-                    const is_ptr_cmp = (lhs == .ptr or lhs == .ptr_struct) and (rhs == .ptr or rhs == .ptr_struct);
+                    const is_ptr_cmp = lhs.isPointer() and rhs.isPointer();
                     if (!is_ptr_cmp and lhs != .unknown and rhs != .unknown and lhs != .never and rhs != .never) {
                         if (lhs != .int or rhs != .int or self.binIntCompat(lhs, rhs, n.child0, n.child1) == null) {
                             self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 1, "ordering comparison requires compatible numeric or pointer operands", .{});
@@ -2954,8 +3028,8 @@ pub const Sema = struct {
                     if (lhs.isUnsigned() or rhs.isUnsigned()) self.info.is_unsigned_op[idx] = true;
                     break :blk SemaType.bool;
                 }
-                if (lhs == .void or lhs == .struct_t or lhs == .bool or lhs == .ptr or lhs == .ptr_struct or lhs == .null_t or
-                    rhs == .void or rhs == .struct_t or rhs == .bool or rhs == .ptr or rhs == .ptr_struct or rhs == .null_t or
+                if (lhs == .void or lhs == .struct_t or lhs == .bool or lhs.isPointer() or
+                    rhs == .void or rhs == .struct_t or rhs == .bool or rhs.isPointer() or
                     lhs == .string or rhs == .string or lhs == .enum_t or rhs == .enum_t or lhs == .fn_t or rhs == .fn_t or
                     lhs == .fixed_array or rhs == .fixed_array)
                 {
@@ -3487,20 +3561,22 @@ pub const Sema = struct {
             },
             .deref => blk: {
                 const pty = self.analyzeExpr(n.child0);
-                if (pty != .ptr and pty != .ptr_struct and pty != .unknown and pty != .never) {
+                if (!pty.isPointer() and pty != .unknown and pty != .never) {
                     self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 1, "cannot dereference non-pointer value", .{});
                 }
                 self.checkConstPtrValid(n.child0, false, "dereference");
                 self.checkHeapBounds(n.child0, 8, idx);
                 break :blk switch (pty) {
                     .ptr_struct => |si| .{ .struct_t = si },
+                    .ptr_float => SemaType.f64_t,
+                    .ptr_byte => SemaType.u8_t,
                     else => SemaType.i64_t,
                 };
             },
             .index_expr => blk: {
                 const base_ty = self.analyzeExpr(n.child0);
                 const idx_ty = self.analyzeExpr(n.child1);
-                if (base_ty == .ptr or base_ty == .ptr_struct) {
+                if (base_ty.isPointer()) {
                     self.checkConstPtrValid(n.child0, false, "indexed pointer");
                     if (self.evalConstExpr(n.child1)) |k| {
                         if (self.extractAllocVarAndOffset(n.child0)) |ref| {
@@ -3536,7 +3612,7 @@ pub const Sema = struct {
                     }
                     break :blk SemaType.i64_t;
                 }
-                if (base_ty != .ptr and base_ty != .ptr_struct and base_ty != .array and base_ty != .fixed_array and base_ty != .string and base_ty != .map_t and base_ty != .unknown and base_ty != .never) {
+                if (base_ty != .ptr and base_ty != .ptr_struct and base_ty != .ptr_float and base_ty != .ptr_byte and base_ty != .array and base_ty != .fixed_array and base_ty != .string and base_ty != .map_t and base_ty != .unknown and base_ty != .never) {
                     self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, 1, "cannot index non-array/non-pointer value", .{});
                 }
                 if (idx_ty != .int and idx_ty != .unknown and idx_ty != .never) {
@@ -3552,13 +3628,30 @@ pub const Sema = struct {
                 }
                 break :blk switch (base_ty) {
                     .array => |ea| if (ea != .none) SemaType.fromTypeTag(ea, 0, .none) else SemaType.i64_t,
-                    .fixed_array => |fa| SemaType.fromTypeTag(fa.elem, 0, .none),
+                    .fixed_array => |fa| blk2: {
+                        if (fa.elem == .f32 or fa.elem == .f64) self.info.is_float_op[idx] = true;
+                        break :blk2 SemaType.fromTypeTag(fa.elem, 0, .none);
+                    },
+                    .ptr_float => |fb| blk2: {
+                        self.info.is_float_op[idx] = true;
+                        break :blk2 if (fb == 32) .{ .float = 32 } else SemaType.f64_t;
+                    },
+                    .ptr_byte => |u| .{ .int = .{ .bits = 8, .unsigned = u } },
                     .string => .{ .int = .{ .bits = 8, .unsigned = true } },
                     else => SemaType.i64_t,
                 };
             },
             .struct_init => blk: {
                 const sname = self.text(idx);
+                if (std.mem.eql(u8, sname, "string")) {
+                    var fi = n.child2;
+                    while (fi != 0) : (fi = self.ast.nodes[fi].child1) {
+                        const fn_node = self.ast.nodes[fi];
+                        _ = self.analyzeExpr(fn_node.child0);
+                        self.markExprEscaped(fn_node.child0);
+                    }
+                    break :blk .string;
+                }
                 const si = self.ast.findStructBySlice(self.ast.sources[0], sname) orelse {
                     self.failAt(error.UndefinedStruct, n.source_id, n.line, n.col, n.text_len, "undefined struct '{s}'", .{sname});
                     var fi = n.child2;
@@ -3846,8 +3939,14 @@ pub const Sema = struct {
                     }
                 }
                 const base_ty = self.analyzeExpr(n.child0);
-                if (base_ty == .ptr or base_ty == .ptr_struct) {
+                if (base_ty.isPointer()) {
                     self.checkConstPtrValid(n.child0, false, "struct field pointer");
+                }
+                if (std.mem.eql(u8, fname, "ptr")) {
+                    if (base_ty == .string) {
+                        self.info.is_ptr_prop[idx] = true;
+                        break :blk SemaType{ .ptr_byte = true };
+                    }
                 }
                 if (std.mem.eql(u8, fname, "len")) {
                     if (base_ty == .string or base_ty == .array or base_ty == .map_t) {
@@ -3945,7 +4044,7 @@ pub const Sema = struct {
                             }
                         }
                         if (is_free_fn and argc >= 1) {
-                            if (arg_types[0] != .ptr and arg_types[0] != .ptr_struct and arg_types[0] != .array and arg_types[0] != .map_t and arg_types[0] != .null_t and arg_types[0] != .unknown and arg_types[0] != .never) {
+                            if (!arg_types[0].isPointer() and arg_types[0] != .array and arg_types[0] != .map_t and arg_types[0] != .unknown and arg_types[0] != .never) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, fn_node.text_len, "{s} expects a heap pointer or container", .{cname});
                             }
                             self.checkConstPtrValid(arg_nodes[0], true, cname);
@@ -4151,7 +4250,7 @@ pub const Sema = struct {
                         } else if ((std.mem.eql(u8, cname, "@read_byte") or std.mem.eql(u8, cname, "@read_u8") or
                             std.mem.eql(u8, cname, "@write_byte") or std.mem.eql(u8, cname, "@write_u8")) and argc >= 1)
                         {
-                            if (arg_types[0] != .ptr and arg_types[0] != .ptr_struct and arg_types[0] != .null_t and arg_types[0] != .unknown and arg_types[0] != .never) {
+                            if (!arg_types[0].isPointer() and arg_types[0] != .unknown and arg_types[0] != .never) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, fn_node.text_len, "'{s}' expects a pointer argument", .{cname});
                             }
                             self.checkConstPtrValid(arg_nodes[0], false, cname);
@@ -4164,7 +4263,7 @@ pub const Sema = struct {
                                 }
                             }
                         } else if ((std.mem.eql(u8, cname, "@read_u32") or std.mem.eql(u8, cname, "@write_u32")) and argc >= 1) {
-                            if (arg_types[0] != .ptr and arg_types[0] != .ptr_struct and arg_types[0] != .null_t and arg_types[0] != .unknown and arg_types[0] != .never) {
+                            if (!arg_types[0].isPointer() and arg_types[0] != .unknown and arg_types[0] != .never) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, fn_node.text_len, "'{s}' expects a pointer argument", .{cname});
                             }
                             self.checkConstPtrValid(arg_nodes[0], false, cname);
@@ -4177,7 +4276,7 @@ pub const Sema = struct {
                                 }
                             }
                         } else if ((std.mem.eql(u8, cname, "@read_u64") or std.mem.eql(u8, cname, "@write_u64")) and argc >= 1) {
-                            if (arg_types[0] != .ptr and arg_types[0] != .ptr_struct and arg_types[0] != .null_t and arg_types[0] != .unknown and arg_types[0] != .never) {
+                            if (!arg_types[0].isPointer() and arg_types[0] != .unknown and arg_types[0] != .never) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, fn_node.text_len, "'{s}' expects a pointer argument", .{cname});
                             }
                             self.checkConstPtrValid(arg_nodes[0], false, cname);
@@ -4266,7 +4365,7 @@ pub const Sema = struct {
                                 }
                             }
                         } else if (std.mem.eql(u8, cname, "@ptr_add") and argc >= 2) {
-                            if (arg_types[0] != .ptr and arg_types[0] != .ptr_struct and arg_types[0] != .string and arg_types[0] != .array and arg_types[0] != .unknown and arg_types[0] != .never) {
+                            if (!arg_types[0].isPointer() and arg_types[0] != .string and arg_types[0] != .array and arg_types[0] != .unknown and arg_types[0] != .never) {
                                 self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, fn_node.text_len, "@ptr_add expects a pointer or string base", .{});
                             }
                             if (arg_types[1] != .int and arg_types[1] != .unknown and arg_types[1] != .never) {

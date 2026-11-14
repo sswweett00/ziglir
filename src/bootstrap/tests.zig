@@ -3333,6 +3333,78 @@ test "Runtime security parity: exact CFI, ftoi NaN/OOB, bulk OOB, negative lengt
 
 
 
+test "Security hardening: compile-time overflow, non-canonical pointers, and VM heap canary checks" {
+    // 1. Sema compile-time compound division overflow (MIN_I64 / -1)
+    const div_ovf_src =
+        \\fn main() -> i64 {
+        \\    var x: i64 = -9223372036854775807 - 1
+        \\    x /= -1
+        \\    return x
+        \\}
+    ;
+    try std.testing.expectError(error.TypeMismatch, compileSource(div_ovf_src));
+
+    // 2. Sema compile-time compound modulo overflow (MIN_I64 % -1)
+    const mod_ovf_src =
+        \\fn main() -> i64 {
+        \\    var x: i64 = -9223372036854775807 - 1
+        \\    x %= -1
+        \\    return x
+        \\}
+    ;
+    try std.testing.expectError(error.TypeMismatch, compileSource(mod_ovf_src));
+
+    // 3. Sema compile-time constant pointer upper bound (kernel / non-canonical address)
+    const upper_ptr_src =
+        \\fn main() -> i64 {
+        \\    return @read_u8(0x800000000000 as *u8) as i64
+        \\}
+    ;
+    try std.testing.expectError(error.TypeMismatch, compileSource(upper_ptr_src));
+
+    // 4. VM Heap canary smash detection
+    const ir_vm_mod = @import("ir_vm.zig");
+    const empty_mod = try std.testing.allocator.create(ir_mod.IRModule);
+    defer std.testing.allocator.destroy(empty_mod);
+    empty_mod.init();
+    const vm = try ir_vm_mod.VMState.init(std.testing.allocator, empty_mod, "");
+    defer vm.deinit();
+    const ptr = try vm.allocHeap(64);
+    var found = false;
+    for (vm.heap_allocs.items) |ha| {
+        if (ptr == ha.addr + 8) {
+            found = true;
+            // Smashing the canary byte
+            ha.data[8 + 64] ^= 0xFF;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+    // Attempting to free should fail with MemoryFault because canary is corrupted
+    try std.testing.expectError(error.MemoryFault, vm.freeHeap(ptr));
+
+    // 5. VM Heap non-canonical address rejection
+    try std.testing.expectError(error.MemoryFault, vm.freeHeap(0x8000_0000_0000));
+
+    // 6. C11 Backend security hardening validation
+    const c_src =
+        \\fn main() -> i64 {
+        \\    let p = @malloc(32)
+        \\    @random_bytes(p, 16)
+        \\    @free(p)
+        \\    return 0
+        \\}
+    ;
+    var c_cc = main.Compiler.initForTarget(c_src, "<c_sec>", .O2, main.Target.host(), .c);
+    c_cc.quiet = true;
+    const c_code = try c_cc.compileToC();
+    defer std.heap.page_allocator.free(c_code);
+    // Upper bound / non-canonical address check present in C runtime
+    try std.testing.expect(std.mem.indexOf(u8, c_code, "0x800000000000ULL") != null);
+    // Cryptographically secure random reading from /dev/urandom present
+    try std.testing.expect(std.mem.indexOf(u8, c_code, "/dev/urandom") != null);
+}
+
 test "starter project regression tests" {
     _ = @import("project.zig");
 }

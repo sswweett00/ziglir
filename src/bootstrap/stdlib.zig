@@ -62,6 +62,90 @@ pub const core_src =
     \\    if x < 0 { return -1 }
     \\    return 0
     \\}
+    \\
+    \\fn itoa(value: i64, buf: *u8, buf_size: i64) -> i64 {
+    \\    if buf_size <= 1 { return 0 }
+    \\    if value == 0 {
+    \\        buf[0] = 48
+    \\        buf[1] = 0
+    \\        return 1
+    \\    }
+    \\    var v: i64 = value
+    \\    var i: i64 = 0
+    \\    let neg: bool = (v < 0)
+    \\    if neg { v = -v }
+    \\    while v > 0 and i < buf_size - 1 {
+    \\        buf[i] = ((v % 10) + 48) as u8
+    \\        v /= 10
+    \\        i += 1
+    \\    }
+    \\    if neg and i < buf_size - 1 {
+    \\        buf[i] = 45
+    \\        i += 1
+    \\    }
+    \\    buf[i] = 0
+    \\    var a: i64 = 0
+    \\    var b: i64 = i - 1
+    \\    while a < b {
+    \\        let tmp = buf[a]
+    \\        buf[a] = buf[b]
+    \\        buf[b] = tmp as u8
+    \\        a += 1
+    \\        b -= 1
+    \\    }
+    \\    return i
+    \\}
+    \\
+    \\fn utoa(value: u64, buf: *u8, buf_size: i64) -> i64 {
+    \\    if buf_size <= 1 { return 0 }
+    \\    if value == 0 {
+    \\        buf[0] = 48
+    \\        buf[1] = 0
+    \\        return 1
+    \\    }
+    \\    var v: u64 = value
+    \\    var i: i64 = 0
+    \\    while v > 0 and i < buf_size - 1 {
+    \\        buf[i] = ((v % 10) + 48) as u8
+    \\        v /= 10
+    \\        i += 1
+    \\    }
+    \\    buf[i] = 0
+    \\    var a: i64 = 0
+    \\    var b: i64 = i - 1
+    \\    while a < b {
+    \\        let tmp = buf[a]
+    \\        buf[a] = buf[b]
+    \\        buf[b] = tmp as u8
+    \\        a += 1
+    \\        b -= 1
+    \\    }
+    \\    return i
+    \\}
+    \\
+    \\fn syscall_write(fd: i64, buf: *u8, len: i64) -> i64 {
+    \\    return @write(fd, buf, len)
+    \\}
+    \\
+    \\fn syscall_read(fd: i64, buf: *u8, len: i64) -> i64 {
+    \\    return @read(fd, buf, len)
+    \\}
+    \\
+    \\fn syscall_exit(status: i64) {
+    \\    @exit(status)
+    \\}
+    \\
+    \\fn term_size() -> i32 {
+    \\    return @term_size()
+    \\}
+    \\
+    \\fn set_raw_mode(raw: i64) {
+    \\    @set_raw_mode(raw)
+    \\}
+    \\
+    \\fn read_key() -> i32 {
+    \\    return @read_key()
+    \\}
 ;
 
 pub const io_src =
@@ -459,6 +543,102 @@ pub const math_src =
 ;
 
 pub const testing_src =
+    \\struct Benchmark {
+    \\    name: string
+    \\    iterations: i64
+    \\    total_ns: i64
+    \\    best_ns: i64
+    \\    worst_ns: i64
+    \\
+    \\    fn init(name: string) -> Benchmark {
+    \\        return Benchmark {
+    \\            name: name,
+    \\            iterations: 0,
+    \\            total_ns: 0,
+    \\            best_ns: 9223372036854775807,
+    \\            worst_ns: 0,
+    \\        }
+    \\    }
+    \\
+    \\    fn record(self: *Benchmark, time_ns: i64) {
+    \\        self.iterations += 1
+    \\        self.total_ns += time_ns
+    \\        if time_ns < self.best_ns { self.best_ns = time_ns }
+    \\        if time_ns > self.worst_ns { self.worst_ns = time_ns }
+    \\    }
+    \\
+    \\    fn avgNs(self: *Benchmark) -> i64 {
+    \\        if self.iterations == 0 { return 0 }
+    \\        return self.total_ns / self.iterations
+    \\    }
+    \\
+    \\    fn printResults(self: *Benchmark) {
+    \\        print("Benchmark: ")
+    \\        println(self.name)
+    \\        print("  Iterations: ")
+    \\        printInt(self.iterations)
+    \\        print("  Average: ")
+    \\        printInt(self.avgNs())
+    \\        print(" ns\n")
+    \\        print("  Best: ")
+    \\        printInt(self.best_ns)
+    \\        print(" ns\n")
+    \\        print("  Worst: ")
+    \\        printInt(self.worst_ns)
+    \\        print(" ns\n")
+    \\    }
+    \\}
+    \\
+    \\fn now() -> i64 {
+    \\    return @time_ns() as i64
+    \\}
+    \\
+    \\fn timestampDiff(start: i64, end_time: i64) -> i64 {
+    \\    if end_time >= start { return end_time - start }
+    \\    return 0
+    \\}
+    \\
+    \\fn assert(condition: bool, msg: string) {
+    \\    if !condition {
+    \\        print("Assertion failed: ")
+    \\        println(msg)
+    \\        panic "assertion failed"
+    \\    }
+    \\}
+    \\
+    \\fn assertEq(a: i64, b: i64) {
+    \\    if a != b {
+    \\        print("Assertion failed: ")
+    \\        printInt(a)
+    \\        print(" != ")
+    \\        printInt(b)
+    \\        println("")
+    \\        panic "assertion failed"
+    \\    }
+    \\}
+    \\
+    \\fn assertEqStr(a: string, b: string) {
+    \\    if !@string_eq(a, b) {
+    \\        println("Assertion failed: strings not equal")
+    \\        panic "assertion failed"
+    \\    }
+    \\}
+    \\
+    \\fn assertEqFloat(a: f64, b: f64, epsilon: f64) {
+    \\    let diff: f64 = @fabs(a - b)
+    \\    if diff > epsilon {
+    \\        println("Assertion failed: floats not approximately equal")
+    \\        panic "assertion failed"
+    \\    }
+    \\}
+    \\
+    \\fn assertRange(value: i64, lo: i64, hi: i64) {
+    \\    if value < lo or value > hi {
+    \\        println("Assertion failed: value out of range")
+    \\        panic "assertion failed"
+    \\    }
+    \\}
+    \\
     \\fn assert_true(cond: bool) {
     \\    @assert(cond)
     \\}
@@ -669,6 +849,10 @@ pub const algo_src =
     \\    }
     \\}
     \\
+    \\fn sort_i64(arr: *u8) {
+    \\    sort_array_i64(arr)
+    \\}
+    \\
     \\fn bsearch_array_i64(arr: *u8, target: i64) -> i64 {
     \\    let n = @array_len(arr)
     \\    var lo: i64 = 0
@@ -680,6 +864,10 @@ pub const algo_src =
     \\        if v < target { lo = mid + 1 } else { hi = mid - 1 }
     \\    }
     \\    return -1
+    \\}
+    \\
+    \\fn binary_search_i64(arr: *u8, target: i64) -> bool {
+    \\    return bsearch_array_i64(arr, target) >= 0
     \\}
     \\
     \\fn reverse_array_i64(arr: *u8) {
