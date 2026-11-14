@@ -1449,7 +1449,7 @@ fn foldBinaryConsts(op: IROp, a: i64, bv: i64) ?i64 {
         .udiv => if (ub != 0) @bitCast(ua / ub) else null,
         .@"mod" => if (bv != 0 and !(a == std.math.minInt(i64) and bv == -1)) @rem(a, bv) else null,
         .umod => if (ub != 0) @bitCast(ua % ub) else null,
-        .shl => if (bv >= 0 and bv < 64) a << @as(u6, @intCast(bv)) else null,
+        .shl => if (bv >= 0 and bv < 64) @as(i64, @bitCast(ua << @as(u6, @intCast(bv)))) else null,
         .shr => if (bv >= 0 and bv < 64) a >> @as(u6, @intCast(bv)) else null,
         .ushr => if (bv >= 0 and bv < 64) @bitCast(ua >> @as(u6, @intCast(bv))) else null,
         .bit_and => a & bv,

@@ -3405,6 +3405,58 @@ test "Security hardening: compile-time overflow, non-canonical pointers, and VM 
     try std.testing.expect(std.mem.indexOf(u8, c_code, "/dev/urandom") != null);
 }
 
+test "Security hardening: recursion depth limits, shift folding safety, and VM exit/string robustness" {
+    // 1. Deeply nested expression exceeds recursion limit (64) and fails closed with error
+    var deep_buf: [512]u8 = undefined;
+    var pos: usize = 0;
+    const prefix = "fn main() -> i64 { return ";
+    @memcpy(deep_buf[pos..][0..prefix.len], prefix);
+    pos += prefix.len;
+    var d: usize = 0;
+    while (d < 80) : (d += 1) {
+        deep_buf[pos] = '(';
+        pos += 1;
+    }
+    deep_buf[pos] = '1';
+    pos += 1;
+    d = 0;
+    while (d < 80) : (d += 1) {
+        deep_buf[pos] = ')';
+        pos += 1;
+    }
+    const suffix = " }\n";
+    @memcpy(deep_buf[pos..][0..suffix.len], suffix);
+    pos += suffix.len;
+    try std.testing.expectError(error.InvalidSyntax, compileSource(deep_buf[0..pos]));
+
+    // 2. Negative integer shifted left in constant evaluation does not panic
+    const neg_shift_src =
+        \\fn main() -> i64 {
+        \\    let x = -1 << 2
+        \\    return x
+        \\}
+    ;
+    const neg_shift_elf = try compileSource(neg_shift_src);
+    defer std.testing.allocator.free(neg_shift_elf);
+    const elf_res = try runElfCapture(std.testing.allocator, neg_shift_elf, "neg_shift");
+    defer std.testing.allocator.free(elf_res.stdout);
+    try std.testing.expectEqual(@as(u8, @truncate(@as(u64, @bitCast(@as(i64, -4))))), elf_res.exit_code);
+
+    // 3. VM exit(42) terminates VM with exit code 42 without killing host process
+    const vm_exit_src =
+        \\fn main() -> i64 {
+        \\    @exit(42)
+        \\    return 0
+        \\}
+    ;
+    var comp = main.Compiler.initForTarget(vm_exit_src, "<vm_exit>", .O2, main.Target.host(), .vm);
+    comp.quiet = true;
+    var vm_res = try comp.runInVM(&[_][]const u8{}, true);
+    defer vm_res.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 42), vm_res.exit_code);
+    try std.testing.expect(!vm_res.trapped);
+}
+
 test "starter project regression tests" {
     _ = @import("project.zig");
 }

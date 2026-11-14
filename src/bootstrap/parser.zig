@@ -565,7 +565,9 @@ pub const Parser = struct {
     active_gen_params: [4]parser_mod_TextSpan = .{parser_mod_TextSpan{}} ** 4,
     active_gen_count: u8 = 0,
     pending_fn_flags: u8 = 0,
+    recursion_depth: u32 = 0,
 
+    const MAX_RECURSION_DEPTH: u32 = 64;
     const parser_mod_TextSpan = TextSpan;
 
     fn newNode(self: *Parser, kind: NodeKind, line: u32) u32 {
@@ -1618,6 +1620,13 @@ pub const Parser = struct {
     }
 
     fn parseSingleStatement(self: *Parser) u32 {
+        if (self.recursion_depth >= MAX_RECURSION_DEPTH) {
+            self.reportErr(self.peek(), "nesting exceeds maximum recursion depth ({d})", .{MAX_RECURSION_DEPTH});
+            return 0;
+        }
+        self.recursion_depth += 1;
+        defer self.recursion_depth -= 1;
+
         var stmt: u32 = 0;
         if (self.match(.kw_unreachable)) {
             const tok = self.advance();
@@ -1785,6 +1794,13 @@ pub const Parser = struct {
     }
 
     fn parseBlock(self: *Parser) u32 {
+        if (self.recursion_depth >= MAX_RECURSION_DEPTH) {
+            self.reportErr(self.peek(), "nesting exceeds maximum recursion depth ({d})", .{MAX_RECURSION_DEPTH});
+            return 0;
+        }
+        self.recursion_depth += 1;
+        defer self.recursion_depth -= 1;
+
         const lb = self.expect(.lbrace);
         self.skipNewlines();
         const block = self.newNode(.block, lb.line);
@@ -1821,6 +1837,13 @@ pub const Parser = struct {
     // ── Expression parsing with proper precedence ──────────────────
 
     fn parseExpr(self: *Parser) u32 {
+        if (self.recursion_depth >= MAX_RECURSION_DEPTH) {
+            self.reportErr(self.peek(), "nesting exceeds maximum recursion depth ({d})", .{MAX_RECURSION_DEPTH});
+            return 0;
+        }
+        self.recursion_depth += 1;
+        defer self.recursion_depth -= 1;
+
         var left = self.parseTernary();
         while (self.match(.pipe_gt)) {
             const ptok = self.advance();
@@ -2815,6 +2838,7 @@ pub const Parser = struct {
             }
             self.in_cond_header = saved_cond;
             _ = self.expect(.rparen);
+            if (e0 == 0) return 0;
             return self.parsePostfix(e0);
         }
 
@@ -3156,6 +3180,7 @@ pub const Parser = struct {
     }
 
     fn parsePostfix(self: *Parser, base: u32) u32 {
+        if (base == 0) return 0;
         var result = base;
         while (self.match(.dot) or self.match(.lbracket) or self.match(.colon_colon) or
             self.match(.lparen) or (self.match(.question) and !self.isTernaryAtQuestion()))

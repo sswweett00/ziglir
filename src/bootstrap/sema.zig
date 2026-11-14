@@ -546,10 +546,13 @@ pub const Sema = struct {
     spawn_mutex_depth: u32 = 0,
     cur_fn_stack_bytes: u64 = 0,
     skip_res_check_node: u32 = 0,
+    expr_depth: u32 = 0,
 
     cur_ret_type: SemaType = .unknown,
     cur_has_explicit_ret: bool = false,
     first_error: ?SemaError = null,
+
+    const MAX_EXPR_DEPTH: u32 = 256;
 
     pub fn init(ast: *const AST, diag: *DiagList, info: *SemaInfo) Sema {
         info.initInPlace();
@@ -1043,8 +1046,8 @@ pub const Sema = struct {
                     .star_star => util.powWrapping(lhs, rhs),
                     .slash => if (rhs != 0 and !(lhs == std.math.minInt(i64) and rhs == -1)) @divTrunc(lhs, rhs) else null,
                     .percent => if (rhs != 0 and !(lhs == std.math.minInt(i64) and rhs == -1)) @rem(lhs, rhs) else null,
-                    .lshift => if (rhs >= 0 and rhs < 64) lhs << @intCast(rhs) else null,
-                    .rshift => if (rhs >= 0 and rhs < 64) lhs >> @intCast(rhs) else null,
+                    .lshift => if (rhs >= 0 and rhs < 64) @as(i64, @bitCast(@as(u64, @bitCast(lhs)) << @as(u6, @intCast(rhs)))) else null,
+                    .rshift => if (rhs >= 0 and rhs < 64) lhs >> @as(u6, @intCast(rhs)) else null,
                     .amp => lhs & rhs,
                     .pipe => lhs | rhs,
                     .caret => lhs ^ rhs,
@@ -2810,6 +2813,13 @@ pub const Sema = struct {
     fn analyzeExpr(self: *Sema, idx: u32) SemaType {
         if (idx == 0 or idx >= self.ast.count) return .unknown;
         const n = self.ast.nodes[idx];
+        if (self.expr_depth >= MAX_EXPR_DEPTH) {
+            self.failAt(error.TypeMismatch, n.source_id, n.line, n.col, n.text_len, "expression exceeds maximum recursion depth ({d})", .{MAX_EXPR_DEPTH});
+            return .unknown;
+        }
+        self.expr_depth += 1;
+        defer self.expr_depth -= 1;
+
         if (n.kind == .call_expr or n.kind == .method_call or n.kind == .scoped_access) {
             var arg = n.child2;
             while (arg != 0) : (arg = self.ast.nodes[arg].child1) {

@@ -33,6 +33,7 @@ pub const VMError = error{
     StackOverflow,
     MemoryFault,
     OutOfMemory,
+    Exit,
 };
 
 pub const VMResult = struct {
@@ -127,6 +128,8 @@ pub const VMState = struct {
 
     // Optional stdio capture (for differential tests)
     capture_io: bool = false,
+    has_exited: bool = false,
+    exit_code: i64 = 0,
     io_lock: std.Thread.Mutex = .{},
     out_buf: std.ArrayListUnmanaged(u8) = .{},
     err_buf: std.ArrayListUnmanaged(u8) = .{},
@@ -267,6 +270,10 @@ pub const VMState = struct {
         std.mem.writeInt(u64, buf[8 + sz .. 16 + sz][0..8], CANARY_COOKIE ^ @as(u64, sz), .little);
         self.mem_lock.lock();
         defer self.mem_lock.unlock();
+        if (self.next_heap_addr + @as(u64, total) >= ARRAY_TAG) {
+            self.alloc.free(buf);
+            return error.OutOfMemory;
+        }
         const vaddr = self.next_heap_addr;
         // Align next address generously with unmapped guard gap
         self.next_heap_addr += ((@as(u64, total) + 64 + 15) & ~@as(u64, 15));
@@ -358,7 +365,7 @@ pub const VMState = struct {
 
     fn readLirString(self: *VMState, ptr: u64) VMError![]const u8 {
         if (ptr == 0) return "";
-        if (ptr < 4096) return error.MemoryFault;
+        if (ptr < 4096 or ptr >= 0x8000_0000_0000) return error.MemoryFault;
         const len_u64 = try self.readU64(ptr - 8);
         if (len_u64 > 64 * 1024 * 1024) return error.MemoryFault;
         const len: usize = @intCast(len_u64);
@@ -367,21 +374,27 @@ pub const VMState = struct {
     }
 
     fn readCString(self: *VMState, ptr: u64) VMError![]const u8 {
-        if (ptr < 4096) return error.MemoryFault;
+        if (ptr < 4096 or ptr >= 0x8000_0000_0000) return error.MemoryFault;
         // Fast path if LIR string (rodata or string_new)
         if (ptr >= RODATA_BASE and ptr < STACK_BASE) {
             const off: usize = @intCast(ptr - RODATA_BASE);
             if (off < self.rodata.items.len) {
                 const rest = self.rodata.items[off..];
-                const nul = std.mem.indexOfScalar(u8, rest, 0) orelse rest.len;
-                return rest[0..nul];
+                if (std.mem.indexOfScalar(u8, rest, 0)) |nul| {
+                    return rest[0..nul];
+                }
             }
         }
         var len: usize = 0;
+        var found_nul = false;
         while (len < 65536) : (len += 1) {
             const b = try self.readU8(ptr + len);
-            if (b == 0) break;
+            if (b == 0) {
+                found_nul = true;
+                break;
+            }
         }
+        if (!found_nul) return error.MemoryFault;
         return try self.resolveSlice(ptr, len, false);
     }
 
@@ -405,7 +418,12 @@ pub const VMState = struct {
 
     pub fn run(self: *VMState) VMError!i64 {
         const main_fi = self.findFn("main") orelse return error.MissingMain;
-        return try self.callFn(main_fi, &[_]u64{}, 0);
+        const res = self.callFn(main_fi, &[_]u64{}, 0) catch |err| {
+            if (err == error.Exit) return self.exit_code;
+            return err;
+        };
+        if (self.has_exited) return self.exit_code;
+        return res;
     }
 
     fn execThreadEntry(self: *VMState, fi: u32, arg: u64, th: *VMThread) void {
@@ -840,7 +858,11 @@ pub const VMState = struct {
                 self.writeErr("\n");
                 return error.Trap;
             },
-            .call_exit => std.process.exit(@truncate(vregs[inst.args[0]])),
+            .call_exit => {
+                self.has_exited = true;
+                self.exit_code = @truncate(@as(i64, @bitCast(vregs[inst.args[0]])));
+                return error.Exit;
+            },
             .call_string_len => {
                 const s = try self.readLirString(vregs[inst.args[0]]);
                 vregs[inst.dest] = @intCast(s.len);
@@ -884,7 +906,8 @@ pub const VMState = struct {
             .call_string_concat => {
                 const sa = try self.readLirString(vregs[inst.args[0]]);
                 const sb = try self.readLirString(vregs[inst.args[1]]);
-                const combined = self.alloc.alloc(u8, sa.len + sb.len) catch return error.OutOfMemory;
+                const total_len = std.math.add(usize, sa.len, sb.len) catch return error.OutOfMemory;
+                const combined = self.alloc.alloc(u8, total_len) catch return error.OutOfMemory;
                 defer self.alloc.free(combined);
                 @memcpy(combined[0..sa.len], sa);
                 @memcpy(combined[sa.len..], sb);
@@ -1159,14 +1182,18 @@ pub const VMState = struct {
                 const fi = self.findFn(fname) orelse return error.InvalidFunction;
                 const th = try self.alloc.create(VMThread);
                 th.* = .{ .thread = undefined };
-                th.thread = std.Thread.spawn(.{}, VMState.execThreadEntry, .{ self, fi, vregs[inst.args[1]], th }) catch return error.Trap;
                 self.mem_lock.lock();
                 const id = self.threads.items.len;
                 self.threads.append(self.alloc, th) catch {
                     self.mem_lock.unlock();
+                    self.alloc.destroy(th);
                     return error.OutOfMemory;
                 };
                 self.mem_lock.unlock();
+                th.thread = std.Thread.spawn(.{}, VMState.execThreadEntry, .{ self, fi, vregs[inst.args[1]], th }) catch {
+                    th.joined = true;
+                    return error.Trap;
+                };
                 vregs[inst.dest] = @intCast(id + 1);
             },
             .call_thread_join => {
@@ -1214,11 +1241,15 @@ pub const VMState = struct {
             else
                 1000,
             .call_term_size => {
-                var w: std.os.linux.winsize = .{ .ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0 };
+                var row: u16 = 24;
+                var col: u16 = 80;
                 if (comptime builtin.os.tag == .linux) {
+                    var w: std.os.linux.winsize = .{ .ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0 };
                     _ = std.os.linux.ioctl(0, 0x5413, @intFromPtr(&w));
+                    row = w.ws_row;
+                    col = w.ws_col;
                 }
-                vregs[inst.dest] = (@as(u64, w.ws_row) << 16) | @as(u64, w.ws_col);
+                vregs[inst.dest] = (@as(u64, row) << 16) | @as(u64, col);
             },
             .call_set_raw_mode => {
                 const v = vregs[inst.args[0]];
