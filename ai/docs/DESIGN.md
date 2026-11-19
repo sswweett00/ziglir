@@ -316,6 +316,18 @@ Kalan farkın nerede olduğu da ölçüldü, tahmin edilmedi:
 | struct alanı + çağrı sarmalayıcı | 5.18x | aynı döngü, `SelBlock` geçirgen |
 | **toplam `b_train`** | **9.6x** | |
 
+**Denenip geri alınan (LICM + alias).** `b.out`/`b.bias`'ı döngü dışına almak
+için LICM'e "struct alan yüklemesi, döngüdeki hiçbir store o tabana
+zincirlenmiyorsa taşınabilir" kuralı eklendi. Kazanç gerçekti (`b_forward`
+1.38x, `03_xor` 1.35x, `b_matmul` 1.24x) **ama yanlıştı**: `08_agent` testi C
+backend'inde 40 saniyede bitmedi (sonsuz döngü), native'de ise geçiyordu.
+Yani alias kanıtım eksikti — muhtemelen döngü içinde yeniden atanan ya da
+döngü dışında tanımlı bir store hedefini kaçırıyordu. Geri alındı.
+
+Ders: bu geçiş kod üretimini değiştirdiği için yalnızca süre ölçmek yetmez;
+üç backend'de çalıştırılan test ağı şart. Bu değişiklik o ağ olmadan
+commit edilseydi sessiz bir yanlış-derleme olarak kalırdı.
+
 Sarmalayıcı maliyetinin kaynağı disassembly'de görülebiliyor: hoisting
 `forward`'un iç döngüsünü temizliyor (3 erişim, 1 guard) ama
 `while o < nout` döngüsünde kalan `@read_u64(out, o*8)` ve
