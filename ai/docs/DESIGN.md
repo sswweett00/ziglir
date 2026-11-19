@@ -316,17 +316,27 @@ Kalan farkın nerede olduğu da ölçüldü, tahmin edilmedi:
 | struct alanı + çağrı sarmalayıcı | 5.18x | aynı döngü, `SelBlock` geçirgen |
 | **toplam `b_train`** | **9.6x** | |
 
-**Denenip geri alınan (LICM + alias).** `b.out`/`b.bias`'ı döngü dışına almak
-için LICM'e "struct alan yüklemesi, döngüdeki hiçbir store o tabana
-zincirlenmiyorsa taşınabilir" kuralı eklendi. Kazanç gerçekti (`b_forward`
-1.38x, `03_xor` 1.35x, `b_matmul` 1.24x) **ama yanlıştı**: `08_agent` testi C
-backend'inde 40 saniyede bitmedi (sonsuz döngü), native'de ise geçiyordu.
-Yani alias kanıtım eksikti — muhtemelen döngü içinde yeniden atanan ya da
-döngü dışında tanımlı bir store hedefini kaçırıyordu. Geri alındı.
+**Denenip geri alınan (LICM + alan yüklemesi).** `b.out`/`b.bias`'ı döngü
+dışına almak için LICM'e "struct alan yüklemesi taşınabilir" kuralı eklendi.
+Üç ayrı sürüm denendi, üçü de reddedildi:
 
-Ders: bu geçiş kod üretimini değiştirdiği için yalnızca süre ölçmek yetmez;
-üç backend'de çalıştırılan test ağı şart. Bu değişiklik o ağ olmadan
-commit edilseydi sessiz bir yanlış-derleme olarak kalırdı.
+| sürüm | kural | sonuç |
+|---|---|---|
+| 1 | alan yüklemesi + alias taraması | `b_forward` 1.38x, `03_xor` 1.35x **ama `08_agent` C backend'inde 40 sn'de bitmedi** (sonsuz döngü) |
+| 2 | + trap güvenliği (blok başlığı domine etmeli) | tüm testler geçti, ama `b_learn` **0.34x** |
+| 3 | + alias taraması tekrar | `b_learn` **0.29x**, `b_net3` 0.85x, `03_xor` 0.88x |
+
+Sürüm 1'in hatası öğretici: `field_access` **trap edebilir** (codegen onu da
+sınır kontrolünden geçiriyor). Koşullu çalışan bir bloktan dışarı taşımak,
+hiç çalışmayacak bir trap'i spekülatif olarak çalıştırır — yani yanlış
+derleme. Sürüm 2 bunu dominance kontrolüyle kapattı ve doğru çalıştı, ama
+sıcak fonksiyonlarda kod büyümesine yol açtı: `b_learn` 19 ms'den 65 ms'ye
+çıktı, bu da taşınan yüklemelerin komut önbelleğini bozmasıyla tutarlı.
+
+Ders iki katlı: (1) kod üretimini değiştiren bir geçiş için yalnızca süre
+tablosu yetmez, üç backend'de çalışan test ağı şart — sürüm 1 o ağ olmadan
+commit edilseydi sessiz bir yanlış-derleme olarak kalırdı; (2) doğru ama
+yavaş bir geçiş de reddedilmelidir, bu yüzden sürüm 2 ve 3 de geri alındı.
 
 Sarmalayıcı maliyetinin kaynağı disassembly'de görülebiliyor: hoisting
 `forward`'un iç döngüsünü temizliyor (3 erişim, 1 guard) ama
