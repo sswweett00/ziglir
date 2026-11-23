@@ -1,0 +1,100 @@
+// NOEMA-Φ Faz 4.1 testi: zarf teoremi denge gradyanları (§7.1).
+// Kapsam: w = g⁻¹∇ψ, z = Uᵀw, D_σ, Re/Im çift ürünleri, P_seyrek.
+import "../src/noema_const.lir"
+import "../src/noema_arena.lir"
+import "../src/noema_atlas.lir"
+import "../src/noema_metric.lir"
+import "../src/noema_learn.lir"
+
+fn main() -> i64 {
+    var checks: i64 = 0
+    var passed: i64 = 0
+
+    var cfg = Arena.config_default()
+    cfg.ring_bytes = NOEMA_RING_MIN_MB * 1048576
+    var a = Arena.init(cfg)
+    var c: i64 = 0
+    while c < cfg.c_total {
+        a.cavity_sig_set(c, c % 4, 1.0)
+        c = c + 1
+    }
+    a.atlas_build()
+    var j: i64 = 0
+    while j < 4 { a.atlas_j_set(j, if j == 0 { 1.0 } else { 0.0 }) j = j + 1 }
+    let nsel = a.atlas_select(4)
+    let card = a.atlas_card_of(0)
+
+    // metrik: σ=0, U=0 → g = I → w = ∇ψ
+    a.metric_compose_all(nsel)
+    // ψ desen: ψ[i] = i (re), im = 0 → ∇ψ[i] = ψ[i+1]-ψ[i-1] = 2 (içte)
+    var i: i64 = 0
+    while i < 64 {
+        a.psi_set(card, 0, i, (i as f64), 0.0)
+        i = i + 1
+    }
+
+    var vre: [64]f64 = [0.0; 64]
+    var vim: [64]f64 = [0.0; 64]
+    var wre: [64]f64 = [0.0; 64]
+    var wim: [64]f64 = [0.0; 64]
+    let rc = a.learn_field_w(card, &vre[0], &vim[0], &wre[0], &wim[0])
+    checks = checks + 3
+    if rc == 0 { passed = passed + 1 }
+    // iç nokta: ψ[i+1]-ψ[i-1] = 2; periyodik uç: i=0 → ψ[1]-ψ[63] = 1-63 = -62
+    if @fabs(wre[10] - 2.0) < 1e-9 and @fabs(wre[0] - (-62.0)) < 1e-9 { passed = passed + 1 }
+    if wim[10] == 0.0 { passed = passed + 1 }
+    printlnFloat(wre[10])
+    printlnFloat(wre[0])
+
+    // z = Uᵀw: U=0 → z=0; sonra U[0][10]=2 koy → z0_re = 2*wre[10]=4
+    var zre: [4]f64 = [0.0; 4]
+    var zim: [4]f64 = [0.0; 4]
+    a.learn_zt(card, &wre[0], &wim[0], &zre[0], &zim[0])
+    checks = checks + 1
+    if zre[0] == 0.0 { passed = passed + 1 }
+    a.u_eff_set(card, 0, 10, 2.0)
+    a.learn_zt(card, &wre[0], &wim[0], &zre[0], &zim[0])
+    checks = checks + 1
+    if @fabs(zre[0] - 4.0) < 1e-9 { passed = passed + 1 }
+    printlnFloat(zre[0])
+
+    // D_σ: σ=0 → e^0=1; W+=1,W-=0, np2=8 → 8
+    let ds = a.learn_D_sigma(card, 1.0, 0.0, 8.0, 3.0)
+    checks = checks + 1
+    if @fabs(ds - 8.0) < 1e-9 { passed = passed + 1 }
+    printlnFloat(ds)
+
+    // çift ürünler: z*·w ve ψ*·w (ψ: re=i, im=0)
+    let rw = learn_re_zw(&zre[0], &zim[0], &wre[0], &wim[0], 0, 10)
+    var pre: [64]f64 = [0.0; 64]
+    var pim2: [64]f64 = [0.0; 64]
+    var t2: i64 = 0
+    while t2 < 64 { pre[t2] = t2 as f64 pim2[t2] = 0.0 t2 = t2 + 1 }
+    // Im(ψ*·w) @10 = ψre·wim − ψim·wre = 10·0 − 0·2 = 0
+    let iw = learn_im_pw(&pre[0], &pim2[0], &wre[0], &wim[0], 10)
+    checks = checks + 2
+    if @fabs(rw - 8.0) < 1e-9 { passed = passed + 1 }   // z0=4·w10=2 → re=8
+    if iw == 0.0 { passed = passed + 1 }
+    printlnFloat(rw)
+
+    // P_seyrek: 64 eleman, en büyük 4'ü koru
+    var pv: [64]f64 = [0.0; 64]
+    var t: i64 = 0
+    while t < 64 {
+        pv[t] = (t as f64) * 0.01
+        t = t + 1
+    }
+    pv[5] = 100.0 pv[20] = 50.0 pv[33] = 30.0 pv[60] = 10.0
+    let kept = learn_p_svyrek(&pv[0], 64, 4)
+    checks = checks + 2
+    if kept == 4 { passed = passed + 1 }
+    if pv[5] == 100.0 and pv[0] == 0.0 and pv[33] == 30.0 { passed = passed + 1 }
+    printlnFloat(pv[5])
+
+    a.free()
+    printInt(passed)
+    print("/")
+    printInt(checks)
+    println("")
+    return 0
+}

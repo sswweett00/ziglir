@@ -875,9 +875,17 @@ pub const str_src =
     \\    if nn == 0 { return 0 }
     \\    if nn > sn { return -1 }
     \\    let limit = sn - nn
+    \\    let first = @string_char_at(needle, 0)
     \\    var i: i64 = 0
     \\    while i <= limit {
-    \\        var j: i64 = 0
+    \\        // Skip positions whose first byte cannot match before paying
+    \\        // for the inner compare loop.
+    \\        while i <= limit {
+    \\            if @string_char_at(s, i) == first { break }
+    \\            i += 1
+    \\        }
+    \\        if i > limit { return -1 }
+    \\        var j: i64 = 1
     \\        while j < nn {
     \\            if @string_char_at(s, i + j) != @string_char_at(needle, j) { break }
     \\            j += 1
@@ -1119,8 +1127,8 @@ pub const str_src =
     \\    if lb == 0 { return la }
     \\    if la > 1024 or lb > 1024 { return -1 }
     \\    let row_bytes = (lb + 1) * 8
-    \\    let prev = @malloc(row_bytes)
-    \\    let curr = @malloc(row_bytes)
+    \\    var prev = @malloc(row_bytes)
+    \\    var curr = @malloc(row_bytes)
     \\    if prev == 0 as *u8 or curr == 0 as *u8 {
     \\        if prev != 0 as *u8 { @free(prev) }
     \\        if curr != 0 as *u8 { @free(curr) }
@@ -1335,7 +1343,28 @@ pub const algo_src =
     \\
     \\fn quick_sort_range(arr: *u8, lo: i64, hi: i64) {
     \\    if lo >= hi { return }
-    \\    let pivot = @array_get(arr, hi)
+    \\    // Median-of-three pivot: order lo <= mid <= hi, then partition on the
+    \\    // median moved to hi. A last-element pivot degenerates to O(n^2) on
+    \\    // sorted or reverse-sorted input.
+    \\    let mid = lo + ((hi - lo) >> 1)
+    \\    if @array_get(arr, mid) < @array_get(arr, lo) {
+    \\        let t = @array_get(arr, lo)
+    \\        @array_set(arr, lo, @array_get(arr, mid))
+    \\        @array_set(arr, mid, t)
+    \\    }
+    \\    if @array_get(arr, hi) < @array_get(arr, mid) {
+    \\        let t = @array_get(arr, mid)
+    \\        @array_set(arr, mid, @array_get(arr, hi))
+    \\        @array_set(arr, hi, t)
+    \\        if @array_get(arr, mid) < @array_get(arr, lo) {
+    \\            let t2 = @array_get(arr, lo)
+    \\            @array_set(arr, lo, @array_get(arr, mid))
+    \\            @array_set(arr, mid, t2)
+    \\        }
+    \\    }
+    \\    let pivot = @array_get(arr, mid)
+    \\    @array_set(arr, mid, @array_get(arr, hi))
+    \\    @array_set(arr, hi, pivot)
     \\    var i = lo
     \\    var j = lo
     \\    while j < hi {
@@ -1891,6 +1920,46 @@ pub const collections_src =
     \\fn queue_free(q: *u8) { rb_free(q) }
 ;
 
+/// Comptime-built 256-entry reflected-CRC table emitted as a LIR string
+/// literal (`\xHH` escapes, 4 little-endian bytes per entry). LIR has no
+/// mutable globals or array-typed consts, so the table travels inside the
+/// generated source as string bytes and is read back with @read_u32; the
+/// literal itself lives in rodata, so the per-call cost is just `as *u8`.
+const CrcTableBytes = struct { buf: [4096]u8, n: usize };
+
+fn crcTableBytes(poly: u32) CrcTableBytes {
+    @setEvalBranchQuota(100000);
+    var buf: [4096]u8 = undefined;
+    var n: usize = 0;
+    var i: u32 = 0;
+    while (i < 256) : (i += 1) {
+        var c = i;
+        var k: u5 = 0;
+        while (k < 8) : (k += 1) {
+            c = if (c & 1 != 0) (c >> 1) ^ poly else c >> 1;
+        }
+        var j: u5 = 0;
+        while (j < 4) : (j += 1) {
+            const byte: u8 = @truncate(c >> (j * 8));
+            buf[n] = '\\';
+            buf[n + 1] = 'x';
+            buf[n + 2] = "0123456789abcdef"[byte >> 4];
+            buf[n + 3] = "0123456789abcdef"[byte & 15];
+            n += 4;
+        }
+    }
+    return .{ .buf = buf, .n = n };
+}
+
+const crc_tab_crc32 = blk: {
+    const t = crcTableBytes(0xEDB88320);
+    break :blk std.fmt.comptimePrint(" \"{s}\"", .{t.buf[0..t.n]});
+};
+const crc_tab_crc32c = blk: {
+    const t = crcTableBytes(0x82F63B78);
+    break :blk std.fmt.comptimePrint(" \"{s}\"", .{t.buf[0..t.n]});
+};
+
 pub const hash_src =
     \\fn fnv1a_64(s: string) -> i64 {
     \\    let n = @string_len(s)
@@ -1912,7 +1981,26 @@ pub const hash_src =
     \\    }
     \\    return h
     \\}
+    \\
+    ++
     \\fn crc32(s: string) -> i64 {
+    \\    let n = @string_len(s)
+    \\    if n >= 512 {
+    \\        let tp =
+    ++ crc_tab_crc32 ++
+    \\ as *u8
+    \\        var crc: i64 = 4294967295
+    \\        var i: i64 = 0
+    \\        while i < n {
+    \\            let idx = (crc ^ (@string_char_at(s, i) & 255)) & 255
+    \\            crc = ((crc >> 8) & 16777215) ^ (@read_u32(@ptr_add(tp, idx * 4)) as i64)
+    \\            i += 1
+    \\        }
+    \\        return (crc ^ 4294967295) & 4294967295
+    \\    }
+    \\    return crc32_small(s)
+    \\}
+    \\fn crc32_small(s: string) -> i64 {
     \\    let n = @string_len(s)
     \\    var crc: i64 = 4294967295
     \\    var i: i64 = 0
@@ -1931,6 +2019,19 @@ pub const hash_src =
     \\}
     \\fn crc32_buf(buf: *u8, len: i64) -> i64 {
     \\    if buf == 0 as *u8 or len <= 0 { return 0 }
+    \\    if len >= 512 {
+    \\        let tp =
+    ++ crc_tab_crc32 ++
+    \\ as *u8
+    \\        var crc: i64 = 4294967295
+    \\        var i: i64 = 0
+    \\        while i < len {
+    \\            let idx = (crc ^ ((@read_u8(@ptr_add(buf, i)) as i64) & 255)) & 255
+    \\            crc = ((crc >> 8) & 16777215) ^ (@read_u32(@ptr_add(tp, idx * 4)) as i64)
+    \\            i += 1
+    \\        }
+    \\        return (crc ^ 4294967295) & 4294967295
+    \\    }
     \\    var crc: i64 = 4294967295
     \\    var i: i64 = 0
     \\    while i < len {
@@ -1947,6 +2048,23 @@ pub const hash_src =
     \\    return (crc ^ 4294967295) & 4294967295
     \\}
     \\fn crc32c(s: string) -> i64 {
+    \\    let n = @string_len(s)
+    \\    if n >= 512 {
+    \\        let tp =
+    ++ crc_tab_crc32c ++
+    \\ as *u8
+    \\        var crc: i64 = 4294967295
+    \\        var i: i64 = 0
+    \\        while i < n {
+    \\            let idx = (crc ^ (@string_char_at(s, i) & 255)) & 255
+    \\            crc = ((crc >> 8) & 16777215) ^ (@read_u32(@ptr_add(tp, idx * 4)) as i64)
+    \\            i += 1
+    \\        }
+    \\        return (crc ^ 4294967295) & 4294967295
+    \\    }
+    \\    return crc32c_small(s)
+    \\}
+    \\fn crc32c_small(s: string) -> i64 {
     \\    let n = @string_len(s)
     \\    var crc: i64 = 4294967295
     \\    var i: i64 = 0
@@ -1969,11 +2087,20 @@ pub const hash_src =
     \\    var b: i64 = 0
     \\    let mod_val: i64 = 65521
     \\    var i: i64 = 0
+    \\    // Deferred modular reduction: accumulate up to NMAX=5552 bytes
+    \\    // without any division, then reduce once per chunk. Two % per byte
+    \\    // was an idiv-class cost on every input byte.
     \\    while i < n {
-    \\        let ch = @string_char_at(s, i) & 255
-    \\        a = (a + ch) % mod_val
-    \\        b = (b + a) % mod_val
-    \\        i += 1
+    \\        var lim: i64 = i + 5552
+    \\        if lim > n { lim = n }
+    \\        while i < lim {
+    \\            let ch = @string_char_at(s, i) & 255
+    \\            a += ch
+    \\            b += a
+    \\            i += 1
+    \\        }
+    \\        a = a % mod_val
+    \\        b = b % mod_val
     \\    }
     \\    return ((b << 16) | a) & 4294967295
     \\}
@@ -1983,13 +2110,12 @@ pub const hash_src =
     \\    let c1: i64 = 3432918353
     \\    let c2: i64 = 461845907
     \\    let nblocks = n / 4
+    \\    let sp = s as *u8
     \\    var i: i64 = 0
     \\    while i < nblocks {
-    \\        let b0 = @string_char_at(s, i * 4) & 255
-    \\        let b1 = @string_char_at(s, i * 4 + 1) & 255
-    \\        let b2 = @string_char_at(s, i * 4 + 2) & 255
-    \\        let b3 = @string_char_at(s, i * 4 + 3) & 255
-    \\        var k: i64 = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    \\        // One unaligned little-endian u32 load per block instead of four
+    \\        // bounds-checked byte fetches.
+    \\        var k: i64 = @read_u32(@ptr_add(sp, i * 4)) as i64
     \\        k = (k * c1) & 4294967295
     \\        k = ((k << 15) | ((k >> 17) & 32767)) & 4294967295
     \\        k = (k * c2) & 4294967295

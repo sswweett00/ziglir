@@ -7,7 +7,7 @@ import core
 // Environment Variables
 // ════════════════════════════════════════════════════════════════════════════
 
-fn getEnv(name: string) -> ?string {
+fn getEnv(name: string, alloc: *Allocator) -> ?string {
     // Linux: read /proc/self/environ
     let file = File.open("/proc/self/environ", FileMode.Read)
     if file.isErr() { return null }
@@ -33,7 +33,7 @@ fn getEnv(name: string) -> ?string {
             j += 1
         }
 
-        if match and j == name.len and (buf as *u8)[i + name.len] == '=' {
+        if match and j == name.len and i + name.len < n as u64 and (buf as *u8)[i + name.len] == '=' {
             // Found it — extract value after '='
             let val_start = i + name.len + 1
             var val_end = val_start
@@ -41,7 +41,7 @@ fn getEnv(name: string) -> ?string {
                 val_end += 1
             }
             let result = string { ptr: &((buf as *u8)[val_start]), len: val_end - val_start }
-            alloc.allocator_free(buf, buf_size)
+            // buf stays allocated: result references its contents
             return result
         }
 

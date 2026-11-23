@@ -1,0 +1,138 @@
+// Akış hattı birim testi: parça sınırı, UTF-8, CRLF, boş/mükerrer/aşırı
+// uzun/geçersiz kayıt, satır-içi "---" ve EOF son kayıt.
+// chunk_cap=8 ile her sınır durumu zorlanır; iki geçişte dedup açık/kapalı.
+// Tüm çıktı tek @write/ satır üzerinden gider (C backend kanal karışması yok).
+import "../src/stream.lir"
+
+fn line_put(buf: *u8, pos: i64, text: string) -> i64 {
+    var i: i64 = 0
+    while i < text.len as i64 { @write_u8(@ptr_add(buf, pos + i), @read_u8(@ptr_add(text.ptr, i))) i = i + 1 }
+    return pos + text.len as i64
+}
+fn line_int(buf: *u8, pos: i64, value: i64) -> i64 {
+    var tmp = @malloc(24)
+    var n = value
+    var len: i64 = 0
+    if n == 0 { @write_u8(tmp, 48 as u8) len = 1 }
+    else {
+        if n < 0 { @write_u8(tmp, 45 as u8) len = 1 n = 0 - n }
+        let start = len
+        while n > 0 { @write_u8(@ptr_add(tmp, len), (48 + (n % 10)) as u8) len = len + 1 n = n / 10 }
+        var lo = start
+        var hi = len - 1
+        while lo < hi {
+            let a = @read_u8(@ptr_add(tmp, lo))
+            let b = @read_u8(@ptr_add(tmp, hi))
+            @write_u8(@ptr_add(tmp, lo), b)
+            @write_u8(@ptr_add(tmp, hi), a)
+            lo = lo + 1
+            hi = hi - 1
+        }
+    }
+    var i: i64 = 0
+    while i < len { @write_u8(@ptr_add(buf, pos + i), @read_u8(@ptr_add(tmp, i))) i = i + 1 }
+    @free(tmp)
+    return pos + len
+}
+fn emit_line(buf: *u8, len: i64) {
+    var pos: i64 = 0
+    while pos < len {
+        let n = @write(1, @ptr_add(buf, pos), len - pos)
+        if n <= 0 { exit(1) }
+        pos = pos + n
+    }
+}
+fn write_all(fd: i64, text: string) {
+    var pos: i64 = 0
+    while pos < text.len as i64 {
+        let n = @write(fd, @ptr_add(text.ptr, pos), text.len as i64 - pos)
+        if n <= 0 { exit(1) }
+        pos = pos + n
+    }
+}
+fn write_byte(fd: i64, b: u8) {
+    var buf = @malloc(1)
+    @write_u8(buf, b)
+    if @write(fd, buf, 1) != 1 { exit(1) }
+    @free(buf)
+}
+fn stat_line(buf: *u8, tag: string, records: i64, dups: i64, invalids: i64, oversize: i64, empties: i64, bytes_read: i64) -> i64 {
+    var pos = line_put(buf, 0, tag)
+    pos = line_put(buf, pos, " rec=")
+    pos = line_int(buf, pos, records)
+    pos = line_put(buf, pos, " dup=")
+    pos = line_int(buf, pos, dups)
+    pos = line_put(buf, pos, " inv=")
+    pos = line_int(buf, pos, invalids)
+    pos = line_put(buf, pos, " ovs=")
+    pos = line_int(buf, pos, oversize)
+    pos = line_put(buf, pos, " emp=")
+    pos = line_int(buf, pos, empties)
+    pos = line_put(buf, pos, " bytes=")
+    pos = line_int(buf, pos, bytes_read)
+    @write_u8(@ptr_add(buf, pos), 10 as u8)
+    return pos + 1
+}
+fn main() -> i64 {
+    let path = "/tmp/lir_stream_test_corpus.txt"
+    let fd = @open(path, 577, 420)
+    if fd < 0 { println("CREATE_FAIL") return 1 }
+    write_all(fd, "---\n")                    // dosya başı ayırıcı -> boş kayıt
+    write_all(fd, "alpha one\n---\n")         // kayıt 1
+    write_all(fd, "beta ğüş\n---\r\n")        // kayıt 2: UTF-8 + CRLF ayırıcı
+    write_all(fd, "---\n")                    // boş kayıt
+    write_all(fd, "dup record\n---\n")        // kayıt 3
+    write_all(fd, "dup record\n---\n")        // mükerrer -> atlanır
+    var i: i64 = 0
+    while i < 200 { write_byte(fd, 120) i = i + 1 } // 200 bayt -> aşırı uzun
+    write_all(fd, "\n---\n")
+    write_all(fd, "bad ")                     // geçersiz UTF-8
+    write_byte(fd, 255)
+    write_all(fd, " byte\n---\n")
+    write_all(fd, "mid --- line stays\n---\n") // satır içi --- ayırıcı DEĞİL
+    write_all(fd, "----\n---\n")               // 4 tire ayırıcı değil
+    write_all(fd, "final record")             // EOF: ayırıcı ve LF yok
+    @close(fd)
+
+    let out = @malloc(512)
+
+    // Geçiş 1: minik parça + dedup açık
+    var r = StreamReader.open(path, 8, 64, 32)
+    if r.fd < 0 { println("OPEN_FAIL") return 1 }
+    var n = r.next()
+    while n > 0 {
+        var pos = line_put(out, 0, "R")
+        pos = line_int(out, pos, r.records - 1)
+        pos = line_put(out, pos, " L")
+        pos = line_int(out, pos, n)
+        pos = line_put(out, pos, " H")
+        pos = line_int(out, pos, StreamReader.hash_bytes(r.rec, n))
+        @write_u8(@ptr_add(out, pos), 10 as u8)
+        emit_line(out, pos + 1)
+        n = r.next()
+    }
+    var sl = stat_line(out, "pass1", r.records, r.dups, r.invalids, r.oversize, r.empties, r.bytes_read)
+    emit_line(out, sl)
+    r.free()
+
+    // Geçiş 2: büyük parça + dedup kapalı -> mükerrer de yayınlanır
+    var r2 = StreamReader.open(path, 65536, 64, 0)
+    if r2.fd < 0 { println("OPEN2_FAIL") return 1 }
+    var n2 = r2.next()
+    while n2 > 0 {
+        var pos = line_put(out, 0, "R")
+        pos = line_int(out, pos, r2.records - 1)
+        pos = line_put(out, pos, " L")
+        pos = line_int(out, pos, n2)
+        pos = line_put(out, pos, " H")
+        pos = line_int(out, pos, StreamReader.hash_bytes(r2.rec, n2))
+        @write_u8(@ptr_add(out, pos), 10 as u8)
+        emit_line(out, pos + 1)
+        n2 = r2.next()
+    }
+    var sl2 = stat_line(out, "pass2", r2.records, r2.dups, r2.invalids, r2.oversize, r2.empties, r2.bytes_read)
+    emit_line(out, sl2)
+    r2.free()
+    @free(out)
+    return 0
+}

@@ -344,6 +344,32 @@ pub const VMState = struct {
         return error.MemoryFault;
     }
 
+    /// Fast-path for unchecked accesses: converts virtual address to raw pointer
+    /// without bounds checking. The caller guarantees safety via hoistBoundsChecks.
+    pub fn resolveRawPtr(self: *VMState, ptr: u64) VMError!u64 {
+        if (ptr < STACK_BASE or ptr >= ARRAY_TAG) return error.MemoryFault;
+        if (ptr >= STACK_BASE and ptr < HEAP_BASE) {
+            const off: usize = @intCast(ptr - STACK_BASE);
+            if (off > self.stack_mem.items.len) return error.MemoryFault;
+            return @intFromPtr(&self.stack_mem.items[off]);
+        }
+        if (ptr >= HEAP_BASE and ptr < ARRAY_TAG) {
+            self.mem_lock.lock();
+            defer self.mem_lock.unlock();
+            for (self.heap_allocs.items) |ha| {
+                const sz: usize = @intCast(std.mem.readInt(u64, ha.data[0..8], .little));
+                const payload_end = ha.addr + 8 + sz;
+                if (ptr >= ha.addr and ptr < payload_end) {
+                    if (ha.freed) return error.MemoryFault;
+                    const off: usize = @intCast(ptr - ha.addr);
+                    if (off > ha.data.len) return error.MemoryFault;
+                    return @intFromPtr(&ha.data[off]);
+                }
+            }
+        }
+        return error.MemoryFault;
+    }
+
     fn readU8(self: *VMState, ptr: u64) VMError!u8 {
         const s = try self.resolveSlice(ptr, 1, false);
         return s[0];
@@ -562,12 +588,40 @@ pub const VMState = struct {
                         _ = base_slot_addr;
                         vregs[inst.dest] = a_vaddr;
                     },
-                    .deref_load => vregs[inst.dest] = try self.readU64(vregs[inst.src1]),
-                    .deref_store => try self.writeU64(vregs[inst.src1], vregs[inst.src2]),
+                    .deref_load => {
+                        if (inst.unchecked_access) {
+                            const ptr = try self.resolveRawPtr(vregs[inst.src1]);
+                            vregs[inst.dest] = @bitCast(@as(*i64, @ptrFromInt(ptr)).*);
+                        } else {
+                            vregs[inst.dest] = try self.readU64(vregs[inst.src1]);
+                        }
+                    },
+                    .deref_store => {
+                        if (inst.unchecked_access) {
+                            const ptr = try self.resolveRawPtr(vregs[inst.src1]);
+                            @as(*i64, @ptrFromInt(ptr)).* = @bitCast(vregs[inst.src2]);
+                        } else {
+                            try self.writeU64(vregs[inst.src1], vregs[inst.src2]);
+                        }
+                    },
                     .field_access => vregs[inst.dest] = try self.readU64(vregs[inst.src1] +% inst.field_offset),
                     .field_store => try self.writeU64(vregs[inst.src1] +% inst.field_offset, vregs[inst.src2]),
-                    .load_mem => vregs[inst.dest] = try self.readU64(vregs[inst.src1]),
-                    .store_mem => try self.writeU64(vregs[inst.src1], vregs[inst.src2]),
+                    .load_mem => {
+                        if (inst.unchecked_access) {
+                            const ptr = try self.resolveRawPtr(vregs[inst.src1]);
+                            vregs[inst.dest] = @bitCast(@as(*i64, @ptrFromInt(ptr)).*);
+                        } else {
+                            vregs[inst.dest] = try self.readU64(vregs[inst.src1]);
+                        }
+                    },
+                    .store_mem => {
+                        if (inst.unchecked_access) {
+                            const ptr = try self.resolveRawPtr(vregs[inst.src1]);
+                            @as(*i64, @ptrFromInt(ptr)).* = @bitCast(vregs[inst.src2]);
+                        } else {
+                            try self.writeU64(vregs[inst.src1], vregs[inst.src2]);
+                        }
+                    },
                     .add => vregs[inst.dest] = vregs[inst.src1] +% vregs[inst.src2],
                     .sub => vregs[inst.dest] = vregs[inst.src1] -% vregs[inst.src2],
                     .mul => vregs[inst.dest] = vregs[inst.src1] *% vregs[inst.src2],

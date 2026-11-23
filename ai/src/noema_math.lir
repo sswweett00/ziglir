@@ -1,0 +1,96 @@
+// noema_math.lir — NOEMA-Φ temel f64 yardımcıları.
+//
+// LIR builtin seti @sqrt/@fabs/@sin/@cos içerir ancak @exp/@pow/@log
+// yoktur. NOEMA çekirdeğinin ihtiyacı olan tek transcendental olan
+// üstel fonksiyon burada kapalı-form seri açılımıyla sağlanır:
+//   exp(x) = 2^k * exp(r),  k = round(x/ln2),  r = x - k*ln2, |r| <= 0.347
+// exp(r) 14 terimli Taylor ile ~1e-16 bağıl hata verir.
+//
+// Çalışma anında heap ayırma yoktur; tüm tamponlar yığındadır.
+
+const NOEMA_LN2: f64 = 0.69314718055994530942
+const NOEMA_INV_LN2: f64 = 1.4426950408889634074
+
+/// exp(x) — üstel fonksiyon (yalnızca NOEMA aralıklarında: |x| <= ~80).
+fn noema_exp(x: f64) -> f64 {
+    // k = round(x * log2(e)); f64'te round-half-even yerine floor(x+0.5)
+    // kullanılır — |r|<=0.5*ln2 koşulu korunur.
+    let t = x * NOEMA_INV_LN2
+    let k = @floor(t + 0.5) as i64
+    let r = x - (k as f64) * NOEMA_LN2
+    // exp(r) Taylor: sum_{n=0}^{13} r^n / n!
+    var sum = 1.0
+    var term = 1.0
+    var n: i64 = 1
+    while n <= 13 {
+        term = term * r / (n as f64)
+        sum = sum + term
+        n = n + 1
+    }
+    // 2^k: k pozitifse sola, negatifse sağa kaydır (|k| <= ~120 güvenli).
+    var scale = 1.0
+    var kk = k
+    while kk > 0 {
+        scale = scale * 2.0
+        kk = kk - 1
+    }
+    while kk < 0 {
+        scale = scale * 0.5
+        kk = kk + 1
+    }
+    return sum * scale
+}
+
+/// min/max yardımcıları (LIR'de builtin yok).
+fn noema_fmin(a: f64, b: f64) -> f64 {
+    if a < b { return a }
+    return b
+}
+fn noema_fmax(a: f64, b: f64) -> f64 {
+    if a > b { return a }
+    return b
+}
+
+/// σ konformal skalerini [sigma_min, sigma_max] aralığına kelepçeler.
+fn noema_clamp_sigma(s: f64) -> f64 {
+    return noema_fmin(NOEMA_SIGMA_MAX, noema_fmax(NOEMA_SIGMA_MIN, s))
+}
+
+/// ln(x), x > 0. x = 2^k·m, m ∈ [√½, √2); ln(m) = 2·atanh-serisi
+/// ln(m) = 2Σ z^{2j+1}/(2j+1), z=(m-1)/(m+1), |z| <= 1/3 → ~1e-16.
+fn noema_ln(x: f64) -> f64 {
+    var k: i64 = 0
+    var m = x
+    while m >= 1.4142135623730951 {
+        m = m * 0.5
+        k = k + 1
+    }
+    while m < 0.7071067811865476 {
+        m = m * 2.0
+        k = k - 1
+    }
+    let z = (m - 1.0) / (m + 1.0)
+    let z2 = z * z
+    var sum = 0.0
+    var zp = z
+    var j: i64 = 0
+    while j < 16 {
+        sum = sum + zp / ((2 * j + 1) as f64)
+        zp = zp * z2
+        j = j + 1
+    }
+    return (k as f64) * NOEMA_LN2 + 2.0 * sum
+}
+
+/// Lojistik sigmoid: σl(x) = 1/(1+e^{-x}). g_çek kapısında kullanılır.
+fn noema_logistic(x: f64) -> f64 {
+    return 1.0 / (1.0 + noema_exp(0.0 - x))
+}
+
+/// tanh(x) = (e^{2x}-1)/(e^{2x}+1); |x|>18'de doygunluğa kelepçelenir
+/// (noema_exp güvenli aralığı |x|<=~80 içinde kalır).
+fn noema_tanh(x: f64) -> f64 {
+    let xc = noema_fmin(18.0, noema_fmax(-18.0, x))
+    let e = noema_exp(2.0 * xc)
+    return (e - 1.0) / (e + 1.0)
+}

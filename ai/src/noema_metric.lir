@@ -1,0 +1,137 @@
+// noema_metric.lir — NOEMA-Φ Randers-Finsler metrik katmanı (Mimari §3.2-3.3).
+//
+// Her aktif kart slot'u k için etkin geometri:
+//   sigma_eff = sigma_0 + Σ_{i=1..5} m_i δsigma_i   ∈ [-2.5, +2.5]
+//   U_eff    = U_0    + Σ m_i δU_i                  ||U||_F <= u_max
+//   b_eff    = b_0    + Σ m_i δb_i                  (projeksiyon ayrı)
+//
+// Depolama (arena τ_yavaş): her slot için 6 set — set 0 ortak taban,
+// set 1..5 kip sapması. Kip ağırlıkları m ∈ Δ⁴ simpleksindedir
+// (5 eksen: kodlama, plan, sohbet, ozetleme, ceviri) ve arena
+// mode_w[0..4] bölgesinde tutulur — LIR struct'ları modül sınırını
+// aşamadığından durum arena'dadır.
+//
+// Bileşim çıktısı sigma_eff/u_eff/b_eff çalışma tamponlarına yazılır;
+// Woodbury ters metriği ve Randers dışbükeylik projeksiyonu
+// noema_metric_uv.lir'dedir.
+
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_arena_rt.lir"
+
+/// 5 kip ekseni: 0=kodlama 1=plan 2=sohbet 3=ozetleme 4=ceviri.
+const MODE_KIP_SAYI: i64 = 5
+
+// LIR modül sınırı: struct tipleri dosyalar arası görünmez; Arena'ya
+// dokunan işlevler impl Arena yöntemleri olarak tanımlanır.
+
+impl Arena {
+    /// Simpleks izdüşümü: mode_w negatifleri 0'a kelepçeler, toplamı
+    /// 1'e normalize eder; toplam 0 ise tekdüze dağıtıma döner.
+    fn mode_project(self: *Arena) {
+        var sum = 0.0
+        var i: i64 = 0
+        while i < MODE_KIP_SAYI {
+            if self.mode_w_at(i) < 0.0 { self.mode_w_set(i, 0.0) }
+            sum = sum + self.mode_w_at(i)
+            i = i + 1
+        }
+        if sum <= 1e-12 {
+            var j: i64 = 0
+            while j < MODE_KIP_SAYI {
+                self.mode_w_set(j, 0.2)
+                j = j + 1
+            }
+            return
+        }
+        var k: i64 = 0
+        while k < MODE_KIP_SAYI {
+            self.mode_w_set(k, self.mode_w_at(k) / sum)
+            k = k + 1
+        }
+    }
+
+    /// Tekdüze simpleks: her kip 0.2.
+    fn mode_uniform(self: *Arena) {
+        var i: i64 = 0
+        while i < MODE_KIP_SAYI {
+            self.mode_w_set(i, 0.2)
+            i = i + 1
+        }
+    }
+
+    /// Tek kip eksenine ağırlık atar (sonra mode_project çağrılmalı).
+    fn mode_set_raw(self: *Arena, i: i64, v: f64) {
+        self.mode_w_set(i, v)
+    }
+
+    fn mode_w_get(self: *Arena, i: i64) -> f64 {
+        return self.mode_w_at(i)
+    }
+
+    /// Kip bileşimini slot k için hesaplar ve sınırları uygular.
+    /// Girdi: arena metrik düzlemleri (set 0 taban, 1..5 sapma) +
+    /// mode_w simpleksi. Çıktı: sigma_eff/u_eff/b_eff tamponları.
+    fn metric_compose(self: *Arena, k: i64) {
+        let rd = self.cfg.r * self.cfg.d
+        // σ_eff = σ_0 + Σ m_i δσ_i
+        var s = self.metric_sigma_at(k, 0)
+        var si: i64 = 1
+        while si <= MODE_KIP_SAYI {
+            s = s + self.mode_w_at(si - 1) * self.metric_sigma_at(k, si)
+            si = si + 1
+        }
+        self.sigma_eff_set(k, noema_clamp_sigma(s))
+
+        // U_eff[e] = U_0[e] + Σ m_i δU_i[e], e ∈ [0, R*D)
+        var e: i64 = 0
+        var frob = 0.0
+        while e < rd {
+            let rr = e / self.cfg.d
+            let dd = e % self.cfg.d
+            var u = self.metric_u_at(k, 0, rr, dd)
+            var i: i64 = 1
+            while i <= MODE_KIP_SAYI {
+                u = u + self.mode_w_at(i - 1) * self.metric_u_at(k, i, rr, dd)
+                i = i + 1
+            }
+            self.u_eff_set(k, rr, dd, u)
+            frob = frob + u * u
+            e = e + 1
+        }
+        // ||U_eff||_F <= u_max sınırı: norm aşımında tüm U ölçeklenir.
+        let un = @sqrt(frob)
+        if un > NOEMA_U_MAX and un > 1e-12 {
+            let sc = NOEMA_U_MAX / un
+            var q: i64 = 0
+            while q < rd {
+                let rr2 = q / self.cfg.d
+                let dd2 = q % self.cfg.d
+                self.u_eff_set(k, rr2, dd2, self.u_eff_at(k, rr2, dd2) * sc)
+                q = q + 1
+            }
+        }
+
+        // b_eff[d] = b_0[d] + Σ m_i δb_i[d]  (dışbükeylik ayrı)
+        var d2: i64 = 0
+        while d2 < self.cfg.d {
+            var bv = self.metric_b_at(k, 0, d2)
+            var j: i64 = 1
+            while j <= MODE_KIP_SAYI {
+                bv = bv + self.mode_w_at(j - 1) * self.metric_b_at(k, j, d2)
+                j = j + 1
+            }
+            self.b_eff_set(k, d2, bv)
+            d2 = d2 + 1
+        }
+    }
+
+    /// Tüm aktif slotlar için bileşimi çalıştırır.
+    fn metric_compose_all(self: *Arena, n_aktif: i64) {
+        var k: i64 = 0
+        while k < n_aktif {
+            self.metric_compose(k)
+            k = k + 1
+        }
+    }
+}

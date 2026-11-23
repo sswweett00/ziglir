@@ -1,0 +1,245 @@
+// noema_macro.lir — NOEMA-Φ makro senkronizasyon (Mimari §6.3).
+//
+// Her 4 mikro-adımda bir kez, aktif kartlar arasında:
+//   1) kilitsiz halo/köprü (Γ_ab) takası — atlas köprülerinde
+//      (κ_ab, φ_ab) ile sınır katmanı ψ alışverişi,
+//   2) kaba-ızgara eşitlemesi — 8 blokluk blok-ortalaması uzlaşması,
+//   3) küresel özetler — kart başına ‖Ψ‖², ‖Π‖² ve erken kararlılık
+//      oranı √(Σ‖Π‖²)/(√(Σ‖Ψ‖²)+ε).
+//
+// "Kilitsiz" nitelemesi: makro adım sıralı yürütülür; kartlar arasında
+// paylaşılan yazılabilir durum yoktur — her takas deterministik toplam
+// sırasıyla yapılır, kilit/atomik gerekmez.
+//
+// Halo: her (kart, akış) vektörünün iki ucundaki HALO=8 nokta.
+// Kaba ızgara: 64 noktalık vektör 8 blok × 8 nokta.
+// Scratch: makro_compositede [512]f64 yığın dizisi (K_AKTIF=4 slot,
+// B_FAZ=8 akış, 8 blok, re+im) — çalışma anında heap yok.
+
+import "noema_const.lir"
+import "noema_arena.lir"
+import "noema_atlas.lir"
+
+const MACRO_HALO: i64 = 8
+const MACRO_NBLK: i64 = 8
+const MACRO_BLK: i64 = NOEMA_D / MACRO_NBLK
+// scratch: slot(4) × akış(8) × blok(8) complex = 512 f64
+const MACRO_SCR: i64 = 512
+
+fn macro_idx(s: i64, b: i64, blk: i64, b_faz: i64) -> i64 {
+    return (s * b_faz + b) * MACRO_NBLK + blk
+}
+
+fn macro_is_halo(i: i64, n: i64) -> i64 {
+    if i < MACRO_HALO { return 1 }
+    if i >= n - MACRO_HALO { return 1 }
+    return 0
+}
+
+impl Arena {
+
+// ── 1) Halo/köprü takası: ψ_j[halo] += κ_ij·e^{iφ_ij}·ψ_i[halo] ────────
+// Sıralı toplam: her yönlendirilmiş çift (i→j) bir kez işlenir; κ simetrik,
+// φ_ba = −φ_ab atlas_bridge_set ile garanti edilir.
+fn macro_halo_exchange(self: *Arena, n_aktif: i64) {
+    var i: i64 = 0
+    while i < n_aktif {
+        let ci = self.atlas_card_of(i)
+        if ci >= 0 {
+            var j: i64 = 0
+            while j < n_aktif {
+                if j != i {
+                    let kap = self.atlas_kappa_get(i, j)
+                    if kap > 0.0 {
+                        let cj = self.atlas_card_of(j)
+                        if cj >= 0 {
+                            let ph = self.atlas_phi_get(i, j)
+                            let co = @cos(ph)
+                            let sn = @sin(ph)
+                            var b: i64 = 0
+                            while b < self.b_faz {
+                                var h: i64 = 0
+                                while h < self.field_n {
+                                    if macro_is_halo(h, self.field_n) == 1 {
+                                        let xr = self.fast.psi_re[idx3(ci, b, h, self.b_faz, self.field_n)]
+                                        let xi = self.fast.psi_im[idx3(ci, b, h, self.b_faz, self.field_n)]
+                                        let dr = kap * (co * xr - sn * xi)
+                                        let di = kap * (co * xi + sn * xr)
+                                        self.fast.psi_re[idx3(cj, b, h, self.b_faz, self.field_n)] = self.fast.psi_re[idx3(cj, b, h, self.b_faz, self.field_n)] + dr
+                                        self.fast.psi_im[idx3(cj, b, h, self.b_faz, self.field_n)] = self.fast.psi_im[idx3(cj, b, h, self.b_faz, self.field_n)] + di
+                                    }
+                                    h = h + 1
+                                }
+                                b = b + 1
+                            }
+                        }
+                    }
+                }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+}
+
+// ── Yardımcı: tüm aktif slotlar için blok-ortalaması ψ (re,im) ─────────
+// scr[0..256) re, scr[256..512) im; idx = (slot*b_faz + b)*8 + blk
+fn macro_block_means(self: *Arena, n_aktif: i64, scr: *f64) {
+    var s: i64 = 0
+    while s < n_aktif {
+        let c = self.atlas_card_of(s)
+        if c >= 0 {
+            var b: i64 = 0
+            while b < self.b_faz {
+                var blk: i64 = 0
+                while blk < MACRO_NBLK {
+                    var ar: f64 = 0.0
+                    var ai: f64 = 0.0
+                    var p: i64 = 0
+                    while p < MACRO_BLK {
+                        let i = blk * MACRO_BLK + p
+                        ar = ar + self.fast.psi_re[idx3(c, b, i, self.b_faz, self.field_n)]
+                        ai = ai + self.fast.psi_im[idx3(c, b, i, self.b_faz, self.field_n)]
+                        p = p + 1
+                    }
+                    let m = MACRO_BLK as f64
+                    let idr = macro_idx(s, b, blk, self.b_faz)
+                    scr[idr] = ar / m
+                    scr[256 + idr] = ai / m
+                    blk = blk + 1
+                }
+                b = b + 1
+            }
+        }
+        s = s + 1
+    }
+}
+
+// ── 2) Kaba-ızgara eşitlemesi ──────────────────────────────────────────
+// Her (slot, akış, blok) için komşu kartların κ-ağırlıklı blok ortalaması
+// hedeflenir; ψ noktalarına α·(hedef − kendi ortalaması) eklenir.
+// α = 0.5 (gevşeme). Köprüsüz kartlar dokunulmaz.
+fn macro_coarse_sync(self: *Arena, n_aktif: i64, scr: *f64) {
+    self.macro_block_means(n_aktif, scr)
+    var s: i64 = 0
+    while s < n_aktif {
+        let cs = self.atlas_card_of(s)
+        if cs >= 0 {
+            var b: i64 = 0
+            while b < self.b_faz {
+                var blk: i64 = 0
+                while blk < MACRO_NBLK {
+                    // komşu ağırlıklı hedef
+                    var wsum: f64 = 0.0
+                    var tar_r: f64 = 0.0
+                    var tar_i: f64 = 0.0
+                    var j: i64 = 0
+                    while j < n_aktif {
+                        if j != s {
+                            let kap = self.atlas_kappa_get(s, j)
+                            if kap > 0.0 {
+                                {
+                                    let idn = macro_idx(j, b, blk, self.b_faz)
+                                    tar_r = tar_r + kap * scr[idn]
+                                    tar_i = tar_i + kap * scr[256 + idn]
+                                    wsum = wsum + kap
+                                }
+                            }
+                        }
+                        j = j + 1
+                    }
+                    if wsum > 0.0 {
+                        let idr = macro_idx(s, b, blk, self.b_faz)
+                        let mr = scr[idr]
+                        let mi = scr[256 + idr]
+                        let tr = tar_r / wsum
+                        let ti = tar_i / wsum
+                        let dr = 0.5 * (tr - mr)
+                        let di = 0.5 * (ti - mi)
+                        var p: i64 = 0
+                        while p < MACRO_BLK {
+                            let i = blk * MACRO_BLK + p
+                            let ix = idx3(cs, b, i, self.b_faz, self.field_n)
+                            self.fast.psi_re[ix] = self.fast.psi_re[ix] + dr
+                            self.fast.psi_im[ix] = self.fast.psi_im[ix] + di
+                            p = p + 1
+                        }
+                    }
+                    blk = blk + 1
+                }
+                b = b + 1
+            }
+        }
+        s = s + 1
+    }
+}
+
+// ── 3) Küresel özetler + erken kararlılık oranı ────────────────────────
+// out[4*s+0]=‖Ψ_s‖²  out[4*s+1]=‖Π_s‖²  out[4*s+2]=oransal oran
+// out[4*s+3]=kullanımda. Tüm aktif slot × akış × nokta toplanır.
+fn macro_summaries(self: *Arena, n_aktif: i64, out: *f64) {
+    var s: i64 = 0
+    while s < n_aktif {
+        let c = self.atlas_card_of(s)
+        var sp: f64 = 0.0
+        var sq: f64 = 0.0
+        if c >= 0 {
+            var b: i64 = 0
+            while b < self.b_faz {
+                var i: i64 = 0
+                while i < self.field_n {
+                    let ix = idx3(c, b, i, self.b_faz, self.field_n)
+                    let xr = self.fast.psi_re[ix]
+                    let xi = self.fast.psi_im[ix]
+                    let vr = self.fast.pi_re[ix]
+                    let vi = self.fast.pi_im[ix]
+                    sp = sp + xr * xr + xi * xi
+                    sq = sq + vr * vr + vi * vi
+                    i = i + 1
+                }
+                b = b + 1
+            }
+        }
+        out[4 * s] = sp
+        out[4 * s + 1] = sq
+        out[4 * s + 2] = @sqrt(sq) / (@sqrt(sp) + NOEMA_EPS)
+        out[4 * s + 3] = if c >= 0 { 1.0 } else { 0.0 }
+        s = s + 1
+    }
+}
+
+// Tüm aktif kartlar üzerinden küresel erken-çıkış oranı.
+fn macro_global_ratio(self: *Arena, n_aktif: i64) -> f64 {
+    var scr: [16]f64 = [0.0; 16]
+    self.macro_summaries(n_aktif, &scr[0])
+    var sp: f64 = 0.0
+    var sq: f64 = 0.0
+    var s: i64 = 0
+    while s < n_aktif {
+        sp = sp + scr[4 * s]
+        sq = sq + scr[4 * s + 1]
+        s = s + 1
+    }
+    return @sqrt(sq) / (@sqrt(sp) + NOEMA_EPS)
+}
+
+// ── Tek makro adım: halo takası → kaba eşitleme → özet ────────────────
+// summaries_out: en az 4*n_aktif f64; null yerine sıfır-hizalı tampon
+// çağıran tarafından verilir (NULL sentinel yok — her zaman geçerli).
+fn macro_sync(self: *Arena, n_aktif: i64, summaries_out: *f64) -> f64 {
+    var scr: [MACRO_SCR]f64 = [0.0; MACRO_SCR]
+    self.macro_halo_exchange(n_aktif)
+    self.macro_coarse_sync(n_aktif, &scr[0])
+    self.macro_summaries(n_aktif, summaries_out)
+    // küresel oranı scr kuyruk bölgesinden değil doğrudan özetten türet
+    var sp: f64 = 0.0
+    var sq: f64 = 0.0
+    var s: i64 = 0
+    while s < n_aktif {
+        sp = sp + summaries_out[4 * s]
+        sq = sq + summaries_out[4 * s + 1]
+        s = s + 1
+    }
+    return @sqrt(sq) / (@sqrt(sp) + NOEMA_EPS)
+}
+}

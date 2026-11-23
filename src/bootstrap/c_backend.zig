@@ -491,7 +491,6 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
         \\        fwrite((const void *)(uintptr_t)s, 1, n, fp);
         \\    }
         \\    if (nl) fputc('\n', fp);
-        \\    fflush(fp);
         \\}
         \\static uint64_t lir_str_concat(uint64_t a, uint64_t b) {
         \\    size_t la = (size_t)lir_str_len(a), lb = (size_t)lir_str_len(b);
@@ -1235,10 +1234,22 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
                     .store_local => try w.print("    slot_mem[{d}] = v{d};\n", .{ if (inst.slot > 0) inst.slot - 1 else 0, inst.src1 }),
                     .addr_of => try w.print("    v{d} = (uint64_t)(uintptr_t)&slot_mem[{d}];\n", .{ inst.dest, if (inst.slot > 0) inst.slot - 1 else 0 }),
                     .alloca => try w.print("    memset(_alloca_{d}_{d}, 0, sizeof(_alloca_{d}_{d})); v{d} = (uint64_t)(uintptr_t)_alloca_{d}_{d};\n", .{ bi, ii, bi, ii, inst.dest, bi, ii }),
-                    .deref_load, .load_mem => try w.print("    lir_chk_ptr_n(v{d}, 8u); memcpy(&v{d}, (const void *)(uintptr_t)v{d}, 8);\n", .{ inst.src1, inst.dest, inst.src1 }),
-                    .deref_store, .store_mem => try w.print("    lir_chk_ptr_n(v{d}, 8u); memcpy((void *)(uintptr_t)v{d}, &v{d}, 8);\n", .{ inst.src1, inst.src1, inst.src2 }),
-                    .field_access => try w.print("    if (v{d} > UINT64_MAX - {d}ULL) lir_trap(); lir_chk_ptr_n(v{d} + {d}ULL, 8u); memcpy(&v{d}, (const uint8_t *)(uintptr_t)v{d} + {d}, 8);\n", .{ inst.src1, inst.field_offset, inst.src1, inst.field_offset, inst.dest, inst.src1, inst.field_offset }),
-                    .field_store => try w.print("    if (v{d} > UINT64_MAX - {d}ULL) lir_trap(); lir_chk_ptr_n(v{d} + {d}ULL, 8u); memcpy((uint8_t *)(uintptr_t)v{d} + {d}, &v{d}, 8);\n", .{ inst.src1, inst.field_offset, inst.src1, inst.field_offset, inst.src1, inst.field_offset, inst.src2 }),
+                    .deref_load, .load_mem => if (inst.unchecked_access)
+                        try w.print("    memcpy(&v{d}, (const void *)(uintptr_t)v{d}, 8);\n", .{ inst.dest, inst.src1 })
+                    else
+                        try w.print("    lir_chk_ptr_n(v{d}, 8u); memcpy(&v{d}, (const void *)(uintptr_t)v{d}, 8);\n", .{ inst.src1, inst.dest, inst.src1 }),
+                    .deref_store, .store_mem => if (inst.unchecked_access)
+                        try w.print("    memcpy((void *)(uintptr_t)v{d}, &v{d}, 8);\n", .{ inst.src1, inst.src2 })
+                    else
+                        try w.print("    lir_chk_ptr_n(v{d}, 8u); memcpy((void *)(uintptr_t)v{d}, &v{d}, 8);\n", .{ inst.src1, inst.src1, inst.src2 }),
+                    .field_access => if (inst.unchecked_access)
+                        try w.print("    if (v{d} > UINT64_MAX - {d}ULL) lir_trap(); memcpy(&v{d}, (const uint8_t *)(uintptr_t)v{d} + {d}, 8);\n", .{ inst.src1, inst.field_offset, inst.dest, inst.src1, inst.field_offset })
+                    else
+                        try w.print("    if (v{d} > UINT64_MAX - {d}ULL) lir_trap(); lir_chk_ptr_n(v{d} + {d}ULL, 8u); memcpy(&v{d}, (const uint8_t *)(uintptr_t)v{d} + {d}, 8);\n", .{ inst.src1, inst.field_offset, inst.src1, inst.field_offset, inst.dest, inst.src1, inst.field_offset }),
+                    .field_store => if (inst.unchecked_access)
+                        try w.print("    if (v{d} > UINT64_MAX - {d}ULL) lir_trap(); memcpy((uint8_t *)(uintptr_t)v{d} + {d}, &v{d}, 8);\n", .{ inst.src1, inst.field_offset, inst.src1, inst.field_offset, inst.src2 })
+                    else
+                        try w.print("    if (v{d} > UINT64_MAX - {d}ULL) lir_trap(); lir_chk_ptr_n(v{d} + {d}ULL, 8u); memcpy((uint8_t *)(uintptr_t)v{d} + {d}, &v{d}, 8);\n", .{ inst.src1, inst.field_offset, inst.src1, inst.field_offset, inst.src1, inst.field_offset, inst.src2 }),
                     .add => try w.print("    v{d} = v{d} + v{d};\n", .{ inst.dest, inst.src1, inst.src2 }),
                     .sub => try w.print("    v{d} = v{d} - v{d};\n", .{ inst.dest, inst.src1, inst.src2 }),
                     .mul => try w.print("    v{d} = v{d} * v{d};\n", .{ inst.dest, inst.src1, inst.src2 }),
@@ -1336,10 +1347,10 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
                     },
                     .call_print => try w.print("    lir_print_str(v{d}, stdout, 0);\n", .{inst.args[0]}),
                     .call_println => try w.print("    lir_print_str(v{d}, stdout, 1);\n", .{inst.args[0]}),
-                    .call_print_int => try w.print("    printf(\"%lld\\n\", (long long)(int64_t)v{d}); fflush(stdout);\n", .{inst.args[0]}),
-                    .call_print_float => try w.print("    do {{ uint64_t _fs = lir_float_to_str(v{d}); fwrite((const void *)(uintptr_t)_fs, 1, (size_t)lir_str_len(_fs), stdout); fflush(stdout); lir_free(_fs); }} while (0);\n", .{inst.args[0]}),
-                    .call_println_float => try w.print("    do {{ uint64_t _fs = lir_float_to_str(v{d}); fwrite((const void *)(uintptr_t)_fs, 1, (size_t)lir_str_len(_fs), stdout); putchar('\\n'); fflush(stdout); lir_free(_fs); }} while (0);\n", .{inst.args[0]}),
-                    .call_printptr => try w.print("    printf(\"%lld\\n\", (long long)(int64_t)v{d}); fflush(stdout);\n", .{inst.args[0]}),
+                    .call_print_int => try w.print("    printf(\"%lld\\n\", (long long)(int64_t)v{d});\n", .{inst.args[0]}),
+                    .call_print_float => try w.print("    do {{ uint64_t _fs = lir_float_to_str(v{d}); fwrite((const void *)(uintptr_t)_fs, 1, (size_t)lir_str_len(_fs), stdout); lir_free(_fs); }} while (0);\n", .{inst.args[0]}),
+                    .call_println_float => try w.print("    do {{ uint64_t _fs = lir_float_to_str(v{d}); fwrite((const void *)(uintptr_t)_fs, 1, (size_t)lir_str_len(_fs), stdout); putchar('\\n'); lir_free(_fs); }} while (0);\n", .{inst.args[0]}),
+                    .call_printptr => try w.print("    printf(\"%lld\\n\", (long long)(int64_t)v{d});\n", .{inst.args[0]}),
                     .call_float_to_string => try w.print("    v{d} = lir_float_to_str(v{d});\n", .{ inst.dest, inst.args[0] }),
                     .call_string_to_float => try w.print("    v{d} = lir_str_to_float(v{d});\n", .{ inst.dest, inst.args[0] }),
                     .call_sqrt => try w.print("    v{d} = lir_d2u(sqrt(lir_u2d(v{d})));\n", .{ inst.dest, inst.args[0] }),
@@ -1358,10 +1369,22 @@ pub fn emitC(alloc: std.mem.Allocator, module: *const IRModule, source: []const 
                     .call_malloc => try w.print("    v{d} = lir_malloc((int64_t)v{d});\n", .{ inst.dest, inst.args[0] }),
                     .call_free => try w.print("    lir_free(v{d});\n", .{inst.args[0]}),
                     .call_ptr_add => try w.print("    v{d} = v{d} + v{d};\n", .{ inst.dest, inst.args[0], inst.args[1] }),
-                    .call_read_byte => try w.print("    lir_chk_ptr_n(v{d}, 1u); v{d} = (uint64_t)*(const uint8_t *)(uintptr_t)v{d};\n", .{ inst.args[0], inst.dest, inst.args[0] }),
-                    .call_write_byte => try w.print("    lir_chk_ptr_n(v{d}, 1u); *(uint8_t *)(uintptr_t)v{d} = (uint8_t)v{d};\n", .{ inst.args[0], inst.args[0], inst.args[1] }),
-                    .call_read_u32 => try w.print("    do {{ lir_chk_ptr_n(v{d}, 4u); uint32_t _t; memcpy(&_t, (const void *)(uintptr_t)v{d}, 4); v{d} = _t; }} while (0);\n", .{ inst.args[0], inst.args[0], inst.dest }),
-                    .call_write_u32 => try w.print("    do {{ lir_chk_ptr_n(v{d}, 4u); uint32_t _t = (uint32_t)v{d}; memcpy((void *)(uintptr_t)v{d}, &_t, 4); }} while (0);\n", .{ inst.args[0], inst.args[1], inst.args[0] }),
+                    .call_read_byte => if (inst.unchecked_access)
+                        try w.print("    v{d} = (uint64_t)*(const uint8_t *)(uintptr_t)v{d};\n", .{ inst.dest, inst.args[0] })
+                    else
+                        try w.print("    lir_chk_ptr_n(v{d}, 1u); v{d} = (uint64_t)*(const uint8_t *)(uintptr_t)v{d};\n", .{ inst.args[0], inst.dest, inst.args[0] }),
+                    .call_write_byte => if (inst.unchecked_access)
+                        try w.print("    *(uint8_t *)(uintptr_t)v{d} = (uint8_t)v{d};\n", .{ inst.args[0], inst.args[1] })
+                    else
+                        try w.print("    lir_chk_ptr_n(v{d}, 1u); *(uint8_t *)(uintptr_t)v{d} = (uint8_t)v{d};\n", .{ inst.args[0], inst.args[0], inst.args[1] }),
+                    .call_read_u32 => if (inst.unchecked_access)
+                        try w.print("    do {{ uint32_t _t; memcpy(&_t, (const void *)(uintptr_t)v{d}, 4); v{d} = _t; }} while (0);\n", .{ inst.args[0], inst.dest })
+                    else
+                        try w.print("    do {{ lir_chk_ptr_n(v{d}, 4u); uint32_t _t; memcpy(&_t, (const void *)(uintptr_t)v{d}, 4); v{d} = _t; }} while (0);\n", .{ inst.args[0], inst.args[0], inst.dest }),
+                    .call_write_u32 => if (inst.unchecked_access)
+                        try w.print("    do {{ uint32_t _t = (uint32_t)v{d}; memcpy((void *)(uintptr_t)v{d}, &_t, 4); }} while (0);\n", .{ inst.args[1], inst.args[0] })
+                    else
+                        try w.print("    do {{ lir_chk_ptr_n(v{d}, 4u); uint32_t _t = (uint32_t)v{d}; memcpy((void *)(uintptr_t)v{d}, &_t, 4); }} while (0);\n", .{ inst.args[0], inst.args[1], inst.args[0] }),
                     .bounds_hoist_guard => try w.print("    lir_chk_ptr_n(v{d}, 1u); /* bounds-hoist guard */\n", .{inst.args[0]}),
                     .call_read_u64 => if (inst.unchecked_access)
                         try w.print("    memcpy(&v{d}, (const void *)(uintptr_t)v{d}, 8);\n", .{ inst.dest, inst.args[0] })

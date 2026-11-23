@@ -1,0 +1,353 @@
+// noema_energy.lir — NOEMA-Φ alan serbest enerjisi taraması ve küresel
+// özetler (Mimari §4.1, §5.2). Tüm durum arena'dadır; noktasal potansiyel
+// ve Wirtinger türevleri noema_pot.lir'dedir.
+//
+// Izgara: kart slot'u k için b ∈ [0,B_FAZ), i ∈ [0,field_n); nokta
+// indeksi p = b*field_n + i, N = B_FAZ*field_n.
+// Maskeler çağıran tarafından sağlanan i64 dizileridir (0/1):
+//   out_m[p]  — çıkış bölgesi (sembol/çekinme/nedensel kuvvetler)
+//   kor_m[p]  — doğrulanmamış yıkıcı eylem bölgesi (V_koruma)
+// vhat: doğrulama birim vektörleri, l başına (re,im,w) üçlüsü.
+// jre/jim: giriş+gözlem akımları J (karmaşık, nokta başına).
+
+import "noema_const.lir"
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_arena_rt.lir"
+import "noema_pot.lir"
+
+fn energy_npts(self: *Arena) -> i64 {
+    return self.b_faz * self.field_n
+}
+
+impl Arena {
+    /// F_alan nokta taraması: V_top + (seçimler) V_sembol/V_koruma/
+    /// V_çekinme/V_doğrulama.
+    /// prm: [lam_sem, cek_g, cek_re, cek_im] — kip-bağımlı λ_sembol
+    /// ve çekinme kapısı parametreleri çağırandan gelir.
+    fn field_energy(self: *Arena, k: i64, prm: *f64,
+                    out_m: *i64, kor_m: *i64,
+                    vhat: *f64, nv: i64) -> f64 {
+        let lam_sem = prm[0]
+        let cek_g = prm[1]
+        let cek_re = prm[2]
+        let cek_im = prm[3]
+        var e = 0.0
+        var p: i64 = 0
+        let n = energy_npts(self)
+        while p < n {
+            let b = p / self.field_n
+            let i = p % self.field_n
+            let x = self.psi_re_at(k, b, i)
+            let y = self.psi_im_at(k, b, i)
+            e = e + v_top_val(x, y)
+            if out_m[p] != 0 {
+                e = e + v_sembol_val(x, y, lam_sem)
+                e = e + v_cekinme_val(x, y, cek_re, cek_im, cek_g, 1)
+            }
+            if kor_m[p] != 0 {
+                e = e + v_koruma_val(x, y, 1)
+            }
+            var l: i64 = 0
+            while l < nv {
+                e = e + v_dogrulama_val(x, y, vhat[l * 3], vhat[l * 3 + 1],
+                                        vhat[l * 3 + 2])
+                l = l + 1
+            }
+            p = p + 1
+        }
+        return e
+    }
+
+    /// Kuvvet alanı: f[p] = -δF/δψ* + J nokta başına (karmaşık,
+    /// re/im ardışık çiftler). j: J_girdi+J_gözlem akımları.
+    /// prm: [lam_sem, cek_g, cek_re, cek_im, nv(f64)].
+    fn field_force(self: *Arena, k: i64, prm: *f64,
+                   out_m: *i64, kor_m: *i64,
+                   vhat: *f64, j: *f64, f: *f64) {
+        let lam_sem = prm[0]
+        let cek_g = prm[1]
+        let cek_re = prm[2]
+        let cek_im = prm[3]
+        let nv = prm[4] as i64
+        var p: i64 = 0
+        let n = energy_npts(self)
+        while p < n {
+            let b = p / self.field_n
+            let i = p % self.field_n
+            let x = self.psi_re_at(k, b, i)
+            let y = self.psi_im_at(k, b, i)
+            var wre = 0.0
+            var wim = 0.0
+            v_top_grad(x, y, &wre, &wim)
+            if out_m[p] != 0 {
+                v_sembol_grad(x, y, lam_sem, &wre, &wim)
+                v_cekinme_grad(x, y, cek_re, cek_im, cek_g, 1, &wre, &wim)
+            }
+            if kor_m[p] != 0 {
+                v_koruma_grad(x, y, 1, &wre, &wim)
+            }
+            var l: i64 = 0
+            while l < nv {
+                v_dogrulama_grad(x, y, vhat[l * 3], vhat[l * 3 + 1],
+                                 vhat[l * 3 + 2], &wre, &wim)
+                l = l + 1
+            }
+            f[p * 2] = -wre + j[p * 2]
+            f[p * 2 + 1] = -wim + j[p * 2 + 1]
+            p = p + 1
+        }
+    }
+
+    /// Kart çifti köprü enerjisi: Γ_ab ≈ tam ızgara çakışması (v1;
+    /// bölgesel maske Faz 5 enjektörüyle gelir).
+    fn bridge_energy(self: *Arena, k1: i64, k2: i64) -> f64 {
+        let kappa = self.atlas_kappa_get(k1, k2)
+        let phi = self.atlas_phi_get(k1, k2)
+        var e = 0.0
+        var p: i64 = 0
+        let n = energy_npts(self)
+        while p < n {
+            let b = p / self.field_n
+            let i = p % self.field_n
+            e = e + kopru_val(self.psi_re_at(k1, b, i),
+                              self.psi_im_at(k1, b, i),
+                              self.psi_re_at(k2, b, i),
+                              self.psi_im_at(k2, b, i),
+                              kappa, phi)
+            p = p + 1
+        }
+        return e
+    }
+
+    // ── Küresel özetler ──────────────────────────────────────────────
+
+    /// E_Ψ = Σ|ψ|² (kart slot'u k, tüm akış/nokta ızgarası).
+    fn field_e_psi(self: *Arena, k: i64) -> f64 {
+        var e = 0.0
+        var p: i64 = 0
+        let n = energy_npts(self)
+        while p < n {
+            let b = p / self.field_n
+            let i = p % self.field_n
+            e = e + pot_r2(self.psi_re_at(k, b, i),
+                           self.psi_im_at(k, b, i))
+            p = p + 1
+        }
+        return e
+    }
+
+    /// Σ|ψ| (L1 genlik toplamı — C_çelişki paydası).
+    fn field_l1_abs(self: *Arena, k: i64) -> f64 {
+        var e = 0.0
+        var p: i64 = 0
+        let n = energy_npts(self)
+        while p < n {
+            let b = p / self.field_n
+            let i = p % self.field_n
+            e = e + @sqrt(pot_r2(self.psi_re_at(k, b, i),
+                                 self.psi_im_at(k, b, i)))
+            p = p + 1
+        }
+        return e
+    }
+
+    /// Karmaşık alan toplamı ∫ψ (re/im ayrı).
+    fn field_sum(self: *Arena, k: i64, sre: *f64, sim: *f64) {
+        var ar = 0.0
+        var ai = 0.0
+        var p: i64 = 0
+        let n = energy_npts(self)
+        while p < n {
+            let b = p / self.field_n
+            let i = p % self.field_n
+            ar = ar + self.psi_re_at(k, b, i)
+            ai = ai + self.psi_im_at(k, b, i)
+            p = p + 1
+        }
+        sre[0] = ar
+        sim[0] = ai
+    }
+
+    /// C_çelişki = 1 - |∫ψ| / (∫|ψ| + ε).
+    fn field_celiski(self: *Arena, k: i64) -> f64 {
+        var sre = 0.0
+        var sim = 0.0
+        self.field_sum(k, &sre, &sim)
+        let mag = @sqrt(sre * sre + sim * sim)
+        return 1.0 - mag / (self.field_l1_abs(k) + NOEMA_EPS)
+    }
+
+    /// Çıkış RMS genliği A = sqrt(E_Ψ / N).
+    fn field_amp_rms(self: *Arena, k: i64) -> f64 {
+        let n = energy_npts(self)
+        if n <= 0 { return 0.0 }
+        return @sqrt(self.field_e_psi(k) / (n as f64))
+    }
+
+    /// De Morgan güven kapısı g_çek (§4.1.7):
+    /// g = 1 - σl((Amax-Aguven)/τA)·σl((Cesc-Cçelişki)/τC)
+    /// Amax: anlık RMS genlik; Cçelişki: field_celiski.
+    fn field_g_cek(self: *Arena, k: i64, a_guven: f64, c_esik: f64) -> f64 {
+        let a = self.field_amp_rms(k)
+        let c = self.field_celiski(k)
+        let sa = noema_logistic((a - a_guven) / NOEMA_TAU_A)
+        let sc = noema_logistic((c_esik - c) / NOEMA_TAU_C)
+        return 1.0 - sa * sc
+    }
+
+    /// E_söz yükleri: q[d] = Re∫ρ_d*ψ. rho düzeni: d başına
+    /// N karmaşık nokta (re,im ardışık) → rho[d*N*2 + p*2 + {0,1}].
+    fn soz_charges(self: *Arena, k: i64, n_d: i64, rho: *f64,
+                   q: *f64) {
+        var d: i64 = 0
+        let n = energy_npts(self)
+        while d < n_d {
+            var acc = 0.0
+            var p: i64 = 0
+            while p < n {
+                let b = p / self.field_n
+                let i = p % self.field_n
+                let ro = rho[(d * n + p) * 2]
+                let ri = rho[(d * n + p) * 2 + 1]
+                acc = acc + ro * self.psi_re_at(k, b, i)
+                acc = acc + ri * self.psi_im_at(k, b, i)
+                p = p + 1
+            }
+            q[d] = acc
+            d = d + 1
+        }
+    }
+
+    /// E_kilit katsayıları: c_j = ⟨χ_j,ψ⟩ karmaşık; ardından
+    /// c̄ = ortalama; resid[j] = c_j - c̄ (re/im ardışık).
+    /// chi düzeni: j başına N karmaşık nokta.
+    fn kilit_coeffs(self: *Arena, k: i64, n_j: i64, chi: *f64,
+                    c_re: *f64, c_im: *f64) {
+        var j: i64 = 0
+        let n = energy_npts(self)
+        while j < n_j {
+            var ar = 0.0
+            var ai = 0.0
+            var p: i64 = 0
+            while p < n {
+                let b = p / self.field_n
+                let i = p % self.field_n
+                let hr = chi[(j * n + p) * 2]
+                let hi = chi[(j * n + p) * 2 + 1]
+                ar = ar + hr * self.psi_re_at(k, b, i)
+                ar = ar + hi * self.psi_im_at(k, b, i)
+                ai = ai + hr * self.psi_im_at(k, b, i)
+                ai = ai - hi * self.psi_re_at(k, b, i)
+                p = p + 1
+            }
+            c_re[j] = ar
+            c_im[j] = ai
+            j = j + 1
+        }
+    }
+
+    /// I_nedensel bileşenleri: z_ort = ⟨Ψ_orta,Ψ⟩.
+    /// orta_re/orta_im: N karmaşık nokta tamponu.
+    fn nedensel_z(self: *Arena, k: i64, orta_re: *f64, orta_im: *f64,
+                  zre: *f64, zim: *f64) {
+        var ar = 0.0
+        var ai = 0.0
+        var p: i64 = 0
+        let n = energy_npts(self)
+        while p < n {
+            let b = p / self.field_n
+            let i = p % self.field_n
+            let pr = self.psi_re_at(k, b, i)
+            let pi = self.psi_im_at(k, b, i)
+            ar = ar + orta_re[p] * pr + orta_im[p] * pi
+            ai = ai + orta_re[p] * pi - orta_im[p] * pr
+            p = p + 1
+        }
+        zre[0] = ar
+        zim[0] = ai
+    }
+
+    // ── R_geom: katmanlı Yamabe düzenleyicisi (§4.2) ──────────────────
+    // Her (kart,kip) düzlemi için κσ/2|∇σ|² + κ0/2 σ² + κu/2||U||²_F
+    // + κb/2||b||². σ/U/b kart başına sabit olduğundan |∇σ|² = 0
+    // (uzaysal çözünürlük Faz 3'te metrik düzlemlerine taşınır).
+    // set 0 → κ_*_0 (ortak taban), set 1..5 → κ_*_kip.
+
+    fn geom_energy_set(self: *Arena, k: i64, set: i64) -> f64 {
+        var k0 = 0.0
+        var ku = 0.0
+        var kb = 0.0
+        if set == 0 {
+            k0 = NOEMA_KAPPA_0_0
+            ku = NOEMA_KAPPA_U_0
+            kb = NOEMA_KAPPA_B_0
+        } else {
+            k0 = NOEMA_KAPPA_0_KIP
+            ku = NOEMA_KAPPA_U_KIP
+            kb = NOEMA_KAPPA_B_KIP
+        }
+        let sig = self.metric_sigma_at(k, set)
+        var e = k0 * 0.5 * sig * sig
+        var rr: i64 = 0
+        while rr < self.cfg.r {
+            var dd: i64 = 0
+            while dd < self.cfg.d {
+                let u = self.metric_u_at(k, set, rr, dd)
+                e = e + ku * 0.5 * u * u
+                dd = dd + 1
+            }
+            rr = rr + 1
+        }
+        var d2: i64 = 0
+        while d2 < self.cfg.d {
+            let bv = self.metric_b_at(k, set, d2)
+            e = e + kb * 0.5 * bv * bv
+            d2 = d2 + 1
+        }
+        return e
+    }
+
+    /// Kart slot'u k için 6 düzlemin (taban + 5 kip) toplamı.
+    fn geom_energy_card(self: *Arena, k: i64) -> f64 {
+        var e = self.geom_energy_set(k, 0)
+        var s: i64 = 1
+        while s <= 5 {
+            e = e + self.geom_energy_set(k, s)
+            s = s + 1
+        }
+        return e
+    }
+
+    /// Tüm aktif slotlar için R_geom toplamı.
+    fn geom_energy_all(self: *Arena, n_aktif: i64) -> f64 {
+        var e = 0.0
+        var k: i64 = 0
+        while k < n_aktif {
+            e = e + self.geom_energy_card(k)
+            k = k + 1
+        }
+        return e
+    }
+}
+
+/// resid[j] = c_j - c̄ (karmaşık, re/im ardışık çiftler).
+fn kilit_residuals(n_j: i64, c_re: *f64, c_im: *f64,
+                   resid: *f64) {
+    var mr = 0.0
+    var mi = 0.0
+    var j: i64 = 0
+    while j < n_j {
+        mr = mr + c_re[j]
+        mi = mi + c_im[j]
+        j = j + 1
+    }
+    mr = mr / (n_j as f64)
+    mi = mi / (n_j as f64)
+    j = 0
+    while j < n_j {
+        resid[j * 2] = c_re[j] - mr
+        resid[j * 2 + 1] = c_im[j] - mi
+        j = j + 1
+    }
+}

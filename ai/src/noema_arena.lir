@@ -1,0 +1,561 @@
+// noema_arena.lir — NOEMA-Φ sıfır-heap SoA arena (Mimari §9.1).
+//
+// TEK seferlik boot tahsisi: Arena.init() hesaplanan toplam boyutu tek bir
+// @malloc çağrısıyla alır ve 64-bayt hizalı tek blok halinde bölüştürür.
+// Bundan sonra çalışma anında hiçbir heap ayırma yoktur; tüm modüller
+// arena içindeki sabit ofsetlere erişir.
+//
+// `lir:allow-alloc` işareti bu dosyayı noalloc_gate.py muafiyetine sokar:
+// boot'taki tek @malloc dışında dosyada başka tahsis çağrısı yoktur.
+//
+// Bölge haritası (Mimari §9.1 tablosu):
+//   TAU_HIZLI  : Psi/Pi/Phi/xi SoA complex alanları + ortak önek görüntüsü
+//   TAU_ORTA   : sabit bayt-halkası (oturum bağlamı, köprüler, CAWR
+//                özetleri, park edilen G/Ç solitonları) — A < A_esik
+//                budamalı
+//   TAU_YAVAS  : aktif kart metrikleri sigma_a, U_a (R*D), b_a (D) —
+//                taban + 5 kip sapması (m_i > 0.01 olanlar etkin)
+//   AKUMULASYON: yalnızca eğitim — Delta_sigma/U/b acc tamponları,
+//                K_kons = 16 darbede tek yazım
+//   TABLOLAR   : Goertzel durumu, 2048'li çeyrek-dalga faz LUT,
+//                E11..E22(k) çalışma alanı, kavite imza tablosu,
+//                1024 girişli O(1) R_dog güvenlik tablosu (< 256 KB)
+//
+// Sayısal temel: tüm alan değerleri f64; complex çiftler (re,im) ayrı
+// SoA dizilerinde tutulur. İşaretçi indeksleme p[i] backend'lerde
+// doğrulanmıştır (native/vm/c).
+
+// lir:allow-alloc
+import "noema_const.lir"
+
+// Halka slotu düzeni (bayt):
+//   [0..8)   used  i64  (0/1)
+//   [8..16)  tag   i64  (kayıt türü: oturum, köprü, cawr, soliton...)
+//   [16..24) ampl  f64  (genlik — budama ölçütü)
+//   [24..32) len   i64  (yük bayt uzunluğu)
+//   [32..)   payload
+const RING_SLOT_HDR: i64 = 32
+const RING_SLOT_VARSAYILAN: i64 = 512
+
+struct ArenaConfig {
+    c_total: i64      // disk toplam kart sayısı (>= NOEMA_C_MIN)
+    k_aktif: i64      // eşzamanlı aktif kart (<= NOEMA_K_AKTIF)
+    b_faz: i64        // faz-ortogonal akış (NOEMA_B_FAZ)
+    d: i64            // Randers/vektör boyutu (NOEMA_D)
+    r: i64            // düşük rütbe (NOEMA_R)
+    field_n: i64      // (kart, akış) başına complex alan uzunluğu
+    ring_bytes: i64   // tau_orta halka baytı (16-64 MB)
+    slot_bytes: i64   // halka slot kapasitesi (>= 64)
+    training: i64     // 1 ise akümülasyon tamponları ayrılsın
+    include_phi: i64  // 0 ise çıkarım: Phi bölgeleri ayrılmaz
+}
+
+// LIR parser sınırı: tek struct en fazla 32 alan taşıyabilir
+// (MAX_AST_NODES bütçesi). Arena bu yüzden dört alt-yapıya bölünür;
+// erişimciler Arena Fast/Metric/Ringst/Tables üzerinden çalışır.
+
+/// TAU_HIZLI — complex SoA (her biri K*B*N f64, include_phi=0'da
+/// phi_* psi_re'ye bağlanır ve asla yazılmaz)
+struct ArenaFast {
+    psi_re: *f64
+    psi_im: *f64
+    pi_re: *f64
+    pi_im: *f64
+    phi_re: *f64
+    phi_im: *f64
+    xi_re: *f64
+    xi_im: *f64
+    // Ortak önek anlık görüntüsü (K*B*N f64)
+    psi_yor_re: *f64
+    psi_yor_im: *f64
+    pi_yor_re: *f64
+    pi_yor_im: *f64
+}
+
+/// TAU_YAVAS + AKUMÜLASYON — üç ayrı düzlem, kart başına:
+///   sigma: 6 f64 (indeks 0 taban, 1..5 kip)
+///   u:     6*R*D f64 (set başına R*D)
+///   b:     6*D f64
+/// acc_* aynı geometriyle delta akılarını biriktirir (yalnızca eğitim).
+struct ArenaMetric {
+    sigma: *f64
+    u: *f64
+    b: *f64
+    acc_sigma: *f64
+    acc_u: *f64
+    acc_b: *f64
+    // Etkin geometri çalışma tamponu (τ_hızlı geçici): kip bileşimi
+    // m∈Δ⁴ ile σ_eff, U_eff (R*D), b_eff — her adımda metric modülü
+    // tarafından yeniden yazılır, kalıcı durum değildir.
+    sigma_eff: *f64    // k
+    u_eff: *f64        // k * R*D
+    b_eff: *f64        // k * D
+}
+
+/// TAU_ORTA — sabit bayt-halkası durumu.
+struct ArenaRing {
+    ring: *u8
+    ring_bytes: i64
+    ring_slot_bytes: i64
+    ring_capacity: i64
+    ring_head: i64
+    ring_tail: i64
+    ring_count: i64
+}
+
+/// L1/L2 tabloları.
+struct ArenaTables {
+    goertzel_re: *f64   // B*W
+    goertzel_im: *f64
+    lut_cos: *f64       // 2048 çeyrek-dalga kosinüs
+    lut_sin: *f64       // 2048 çeyrek-dalga sinüs
+    etd_tab: *f64       // B*N*4 : E11,E12,E21,E22 (mod başına)
+    cavity_sig: *f64    // (2*C-1)*SIG_LEN — ikili kavite ağacı düğüm imzaları
+    atlas_left: *i64    // C-1 iç düğüm sol çocuğu
+    atlas_right: *i64   // C-1 iç düğüm sağ çocuğu
+    atlas_sel: *i64     // C seçim maskesi (sorgu başına temizlenir)
+    atlas_i64: *i64     // 16 — atlas denetim durumu (kök, sayaç, slot'lar)
+    atlas_f64: *f64     // 80 — j_kaba(32) + kappa(16) + phi(16) + skor(4) + yedek
+    mode_w: *f64        // 8 — 5 kip simpleks ağırlığı + pay
+    r_dog: *i64         // 1024 girişli güvenlik tablosu
+    goer_hist: *f64     // B*W — Kayan-Goertzel x[n-W] gecikme hattı
+    goer_pos: *i64      // B — akış başına halka yazma konumu
+}
+
+struct Arena {
+    raw: *u8          // @malloc dönüşü — free için birebir saklanır
+    base: *u8         // 64B hizalı veri başlangıcı (bölge ofsetleri buradan)
+    total_bytes: i64
+    cfg: ArenaConfig
+    fast: ArenaFast
+    metric: ArenaMetric
+    ringst: ArenaRing
+    tables: ArenaTables
+    // Geometrik boyutlar (hızlı indeks hesabı için saklanır)
+    k_aktif: i64
+    b_faz: i64
+    field_n: i64
+    metric_per_card: i64 // 6*(1+R*D+D)
+    u_per_card: i64      // 6*R*D
+    b_per_card: i64      // 6*D
+    plast_beat: i64      // K_kons konsolidasyon darbe sayacı (§7.3, §12.3)
+}
+
+const ARENA_SIG_LEN: i64 = 32   // kavite imza boyutu (Faz 1'de dolar)
+const ARENA_R_DOG_N: i64 = 1024 // O(1) güvenlik tablosu girdisi
+const ARENA_LUT_N: i64 = 2048   // çeyrek-dalga faz LUT uzunluğu
+const ARENA_GOERTZEL_W: i64 = 64
+
+fn align64(addr: i64) -> i64 {
+    let rem = addr % 64
+    if rem == 0 {
+        return addr
+    }
+    return addr + (64 - rem)
+}
+
+/// (k, b, i) complex indeksleyici — SoA düzleminde eleman ofseti.
+fn idx3(k: i64, b: i64, i: i64, b_faz: i64, field_n: i64) -> i64 {
+    return (k * b_faz + b) * field_n + i
+}
+
+impl Arena {
+
+    /// Varsayılan yapılandırma (Mimari §9.1 referans değerleri).
+    fn config_default() -> ArenaConfig {
+        return ArenaConfig {
+            c_total: NOEMA_C_MIN,
+            k_aktif: NOEMA_K_AKTIF,
+            b_faz: NOEMA_B_FAZ,
+            d: NOEMA_D,
+            r: NOEMA_R,
+            field_n: NOEMA_D,
+            ring_bytes: NOEMA_RING_VARSAYILAN_MB * 1048576,
+            slot_bytes: RING_SLOT_VARSAYILAN,
+            training: 1,
+            include_phi: 1,
+        }
+    }
+
+    /// Yapılandırma geçerliliği. 0 = geçerli, <0 = hata kodu.
+    fn config_check(cfg: ArenaConfig) -> i64 {
+        if cfg.c_total < NOEMA_C_MIN { return -1 }
+        if cfg.k_aktif <= 0 or cfg.k_aktif > NOEMA_K_AKTIF { return -2 }
+        if cfg.b_faz <= 0 { return -3 }
+        if cfg.d <= 0 or cfg.r <= 0 { return -4 }
+        if cfg.field_n <= 0 { return -5 }
+        if cfg.ring_bytes < NOEMA_RING_MIN_MB * 1048576 { return -6 }
+        if cfg.ring_bytes > NOEMA_RING_MAX_MB * 1048576 { return -7 }
+        if cfg.slot_bytes < 64 { return -8 }
+        return 0
+    }
+
+    /// Tek seferlik boot tahsisi. Geçersiz yapılandırmada bad() döner;
+    /// @malloc başarısızlıkta çalışma durur (builtin sözleşmesi).
+    fn init(cfg: ArenaConfig) -> Arena {
+        if Arena.config_check(cfg) != 0 {
+            return Arena.bad()
+        }
+        let k = cfg.k_aktif
+        let b = cfg.b_faz
+        let n = cfg.field_n
+        let stream_elems = k * b * n
+        let rd = cfg.r * cfg.d
+
+        // Metrik geometri: 6 set (taban + 5 kip) × (1 + R*D + D) değer.
+        let metric_per_card = 6 * (1 + rd + cfg.d)
+        const NKIP_SET = 6
+
+        // ── Ofset hesabı: her dizi kendi 64B hizasını alır. ──────────────
+        var off: i64 = 0
+        var offs: [20]i64 = [0; 20]
+        var ai: i64 = 0
+        // Hızlı bölge: phi varsa 12 dizi, yoksa 10 (phi_re/im atlanır).
+        const NFAST_PHI = 12
+        const NFAST_NOPHI = 10
+        let NFAST = if cfg.include_phi == 1 { NFAST_PHI } else { NFAST_NOPHI }
+        while ai < NFAST {
+            offs[ai] = off
+            off = align64(off + stream_elems * 8)
+            ai = ai + 1
+        }
+        // Metric düzlemleri (her biri ayrı 64B hizalı).
+        offs[12] = off // sigma: k*6 f64
+        off = align64(off + k * NKIP_SET * 8)
+        offs[13] = off // U: k*6*R*D f64
+        off = align64(off + k * NKIP_SET * rd * 8)
+        offs[14] = off // b: k*6*D f64
+        off = align64(off + k * NKIP_SET * cfg.d * 8)
+        // Akümülasyon düzlemleri (yalnızca eğitim).
+        var acc_sigma_off: i64 = 0
+        var acc_u_off: i64 = 0
+        var acc_b_off: i64 = 0
+        if cfg.training == 1 {
+            acc_sigma_off = off
+            off = align64(off + k * NKIP_SET * 8)
+            acc_u_off = off
+            off = align64(off + k * NKIP_SET * rd * 8)
+            acc_b_off = off
+            off = align64(off + k * NKIP_SET * cfg.d * 8)
+        }
+        // Etkin geometri çalışma tamponu (her zaman ayrılsın — küçük).
+        let eff_sigma_off = off
+        off = align64(off + k * 8)
+        let eff_u_off = off
+        off = align64(off + k * rd * 8)
+        let eff_b_off = off
+        off = align64(off + k * cfg.d * 8)
+
+        let ring_off = align64(off)
+        off = ring_off + cfg.ring_bytes
+
+        // ── L1/L2 tabloları ──────────────────────────────────────────────
+        let goer_elems = b * ARENA_GOERTZEL_W
+        let lut_elems = ARENA_LUT_N
+        let etd_elems = b * n * 4
+        // İkili kavite ağacı: 2C-1 düğüm (C yaprak + C-1 iç düğüm).
+        let cav_elems = (2 * cfg.c_total - 1) * ARENA_SIG_LEN
+        let tree_i64 = cfg.c_total - 1
+        let rdog_elems = ARENA_R_DOG_N
+        let tab_off = align64(off)
+        let goer_re_off = tab_off
+        let goer_im_off = align64(tab_off + goer_elems * 8)
+        let lut_cos_off = align64(goer_im_off + goer_elems * 8)
+        let lut_sin_off = align64(lut_cos_off + lut_elems * 8)
+        let etd_off = align64(lut_sin_off + lut_elems * 8)
+        let cav_off = align64(etd_off + etd_elems * 8)
+        let left_off = align64(cav_off + cav_elems * 8)
+        let right_off = align64(left_off + tree_i64 * 8)
+        let sel_off = align64(right_off + tree_i64 * 8)
+        let ai64_off = align64(sel_off + cfg.c_total * 8)
+        let af64_off = align64(ai64_off + 16 * 8)
+        let mode_off = align64(af64_off + 80 * 8)
+        let rdog_off = align64(mode_off + 8 * 8)
+        off = rdog_off + rdog_elems * 8
+        // Kayan-Goertzel gecikme hattı + konum sayaçları (§8).
+        let goer_hist_off = align64(off)
+        off = align64(off + b * ARENA_GOERTZEL_W * 8)
+        let goer_pos_off = align64(off)
+        off = align64(off + b * 8)
+
+        let total = align64(off) + 64
+        let raw = @malloc(total)
+        let base_addr = raw as i64
+        let aligned_addr = align64(base_addr)
+        let base = @ptr_add(raw, aligned_addr - base_addr) as *u8
+        // total >= off + 64 garantisiyle hizalama sonrası alan yeterli.
+
+        // include_phi=0: phi/xi/önek pointerları mevcut düzlemlere bağlanır;
+        // erişimciler de cfg bayrağını denetler — asla ayrı bellek ayrılmaz.
+        var a = Arena {
+            raw: raw,
+            base: base,
+            total_bytes: total,
+            cfg: cfg,
+            fast: ArenaFast {
+                psi_re: @ptr_add(base, offs[0]) as *f64,
+                psi_im: @ptr_add(base, offs[1]) as *f64,
+                pi_re: @ptr_add(base, offs[2]) as *f64,
+                pi_im: @ptr_add(base, offs[3]) as *f64,
+                phi_re: @ptr_add(base, if cfg.include_phi == 1 { offs[4] } else { offs[0] }) as *f64,
+                phi_im: @ptr_add(base, if cfg.include_phi == 1 { offs[5] } else { offs[1] }) as *f64,
+                xi_re: @ptr_add(base, if cfg.include_phi == 1 { offs[6] } else { offs[2] }) as *f64,
+                xi_im: @ptr_add(base, if cfg.include_phi == 1 { offs[7] } else { offs[3] }) as *f64,
+                psi_yor_re: @ptr_add(base, if cfg.include_phi == 1 { offs[8] } else { offs[4] }) as *f64,
+                psi_yor_im: @ptr_add(base, if cfg.include_phi == 1 { offs[9] } else { offs[5] }) as *f64,
+                pi_yor_re: @ptr_add(base, if cfg.include_phi == 1 { offs[10] } else { offs[6] }) as *f64,
+                pi_yor_im: @ptr_add(base, if cfg.include_phi == 1 { offs[11] } else { offs[7] }) as *f64,
+            },
+            metric: ArenaMetric {
+                sigma: @ptr_add(base, offs[12]) as *f64,
+                u: @ptr_add(base, offs[13]) as *f64,
+                b: @ptr_add(base, offs[14]) as *f64,
+                acc_sigma: @ptr_add(base, acc_sigma_off) as *f64,
+                acc_u: @ptr_add(base, acc_u_off) as *f64,
+                acc_b: @ptr_add(base, acc_b_off) as *f64,
+                sigma_eff: @ptr_add(base, eff_sigma_off) as *f64,
+                u_eff: @ptr_add(base, eff_u_off) as *f64,
+                b_eff: @ptr_add(base, eff_b_off) as *f64,
+            },
+            ringst: ArenaRing {
+                ring: @ptr_add(base, ring_off),
+                ring_bytes: cfg.ring_bytes,
+                ring_slot_bytes: cfg.slot_bytes,
+                ring_capacity: cfg.ring_bytes / cfg.slot_bytes,
+                ring_head: 0,
+                ring_tail: 0,
+                ring_count: 0,
+            },
+            tables: ArenaTables {
+                goertzel_re: @ptr_add(base, goer_re_off) as *f64,
+                goertzel_im: @ptr_add(base, goer_im_off) as *f64,
+                lut_cos: @ptr_add(base, lut_cos_off) as *f64,
+                lut_sin: @ptr_add(base, lut_sin_off) as *f64,
+                etd_tab: @ptr_add(base, etd_off) as *f64,
+                cavity_sig: @ptr_add(base, cav_off) as *f64,
+                atlas_left: @ptr_add(base, left_off) as *i64,
+                atlas_right: @ptr_add(base, right_off) as *i64,
+                atlas_sel: @ptr_add(base, sel_off) as *i64,
+                atlas_i64: @ptr_add(base, ai64_off) as *i64,
+                atlas_f64: @ptr_add(base, af64_off) as *f64,
+                mode_w: @ptr_add(base, mode_off) as *f64,
+                r_dog: @ptr_add(base, rdog_off) as *i64,
+                goer_hist: @ptr_add(base, goer_hist_off) as *f64,
+                goer_pos: @ptr_add(base, goer_pos_off) as *i64,
+            },
+            k_aktif: k,
+            b_faz: b,
+            field_n: n,
+            metric_per_card: metric_per_card,
+            u_per_card: NKIP_SET * rd,
+            b_per_card: NKIP_SET * cfg.d,
+            plast_beat: 0,
+        }
+        // Tek seferlik sıfırlama: tüm float bölgeleri + halka slotları.
+        @memset(base, 0, off)
+        // 2048'li çeyrek-dalga faz LUT'unu doldur (§8): idx → [0,π/2)
+        // eşit faz; tam dalga katlaması inj_cos_phase/inj_sin_phase'te.
+        var li: i64 = 0
+        while li < ARENA_LUT_N {
+            let ph = (NOEMA_PI * 0.5) * (li as f64) / (ARENA_LUT_N as f64)
+            (@ptr_add(base, lut_cos_off) as *f64)[li] = @cos(ph)
+            (@ptr_add(base, lut_sin_off) as *f64)[li] = @sin(ph)
+            li = li + 1
+        }
+        return a
+    }
+
+    /// Geçersiz yapılandırma / hata durumu: tüm pointerlar tek 64B'lık
+    /// ortak bloğa bağlanır; base free edilirken tek free yeterlidir.
+    /// Bu arena ile çalışmak program hatasıdır — init öncesi
+    /// config_check çağıran sorumludur.
+    fn bad() -> Arena {
+        let errblk = @malloc(64)
+        return Arena {
+            raw: errblk,
+            base: errblk,
+            total_bytes: 0,
+            cfg: ArenaConfig {
+                c_total: 0, k_aktif: 0, b_faz: 0, d: 0, r: 0,
+                field_n: 0, ring_bytes: 0, slot_bytes: 0,
+                training: 0, include_phi: 0,
+            },
+            fast: ArenaFast {
+                psi_re: errblk as *f64, psi_im: errblk as *f64,
+                pi_re: errblk as *f64, pi_im: errblk as *f64,
+                phi_re: errblk as *f64, phi_im: errblk as *f64,
+                xi_re: errblk as *f64, xi_im: errblk as *f64,
+                psi_yor_re: errblk as *f64, psi_yor_im: errblk as *f64,
+                pi_yor_re: errblk as *f64, pi_yor_im: errblk as *f64,
+            },
+            metric: ArenaMetric {
+                sigma: errblk as *f64, u: errblk as *f64, b: errblk as *f64,
+                acc_sigma: errblk as *f64, acc_u: errblk as *f64,
+                acc_b: errblk as *f64,
+                sigma_eff: errblk as *f64, u_eff: errblk as *f64,
+                b_eff: errblk as *f64,
+            },
+            ringst: ArenaRing {
+                ring: errblk, ring_bytes: 0, ring_slot_bytes: 0,
+                ring_capacity: 0, ring_head: 0, ring_tail: 0,
+                ring_count: 0,
+            },
+            tables: ArenaTables {
+                goertzel_re: errblk as *f64, goertzel_im: errblk as *f64,
+                lut_cos: errblk as *f64, lut_sin: errblk as *f64,
+                etd_tab: errblk as *f64, cavity_sig: errblk as *f64,
+                atlas_left: errblk as *i64, atlas_right: errblk as *i64,
+                atlas_sel: errblk as *i64,
+                atlas_i64: errblk as *i64, atlas_f64: errblk as *f64,
+                mode_w: errblk as *f64,
+                r_dog: errblk as *i64,
+                goer_hist: errblk as *f64,
+                goer_pos: errblk as *i64,
+            },
+            k_aktif: 0,
+            b_faz: 0,
+            field_n: 0,
+            metric_per_card: 0,
+            u_per_card: 0,
+            b_per_card: 0,
+            plast_beat: 0,
+        }
+    }
+
+    fn free(self: *Arena) {
+        // Tüm bölgeler tek bloktan paylaştırıldığı için tek free yeterli.
+        // @free birebir @malloc pointer'ı ister; hizalı base değil raw
+        // serbest bırakılır (C backend sahiplik denetimi).
+        @free(self.raw)
+    }
+    // ── Hızlı bölge erişimcileri ──────────────────────────────────────────
+
+    fn psi_re_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.psi_re[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn psi_im_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.psi_im[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn pi_re_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.pi_re[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn pi_im_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.pi_im[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn phi_re_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        if self.cfg.include_phi == 0 { return 0.0 }
+        return self.fast.phi_re[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn phi_im_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        if self.cfg.include_phi == 0 { return 0.0 }
+        return self.fast.phi_im[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn xi_re_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.xi_re[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn xi_im_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.xi_im[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn psi_yor_re_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.psi_yor_re[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn psi_yor_im_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.psi_yor_im[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn pi_yor_re_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.pi_yor_re[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+    fn pi_yor_im_at(self: *Arena, k: i64, b: i64, i: i64) -> f64 {
+        return self.fast.pi_yor_im[idx3(k, b, i, self.b_faz, self.field_n)]
+    }
+
+    /// (k,b,i) complex psi/pi/phi yazma.
+    fn psi_set(self: *Arena, k: i64, b: i64, i: i64, re: f64, im: f64) {
+        let ix = idx3(k, b, i, self.b_faz, self.field_n)
+        self.fast.psi_re[ix] = re
+        self.fast.psi_im[ix] = im
+    }
+    fn pi_set(self: *Arena, k: i64, b: i64, i: i64, re: f64, im: f64) {
+        let ix = idx3(k, b, i, self.b_faz, self.field_n)
+        self.fast.pi_re[ix] = re
+        self.fast.pi_im[ix] = im
+    }
+    fn phi_set(self: *Arena, k: i64, b: i64, i: i64, re: f64, im: f64) {
+        if self.cfg.include_phi == 0 { return }
+        let ix = idx3(k, b, i, self.b_faz, self.field_n)
+        self.fast.phi_re[ix] = re
+        self.fast.phi_im[ix] = im
+    }
+
+    // ── Metrik bölgesi (τ_yavaş) ──────────────────────────────────────────
+    // set: 0 = ortak taban, 1..5 = kip sapması (m_i > 0.01 etkin).
+
+    fn metric_sigma_at(self: *Arena, k: i64, set: i64) -> f64 {
+        return self.metric.sigma[k * 6 + set]
+    }
+    fn metric_sigma_set(self: *Arena, k: i64, set: i64, v: f64) {
+        self.metric.sigma[k * 6 + set] = v
+    }
+    /// U kart kümesi: set s (0..5), r-ütbe (0..R-1), d-boyut (0..D-1).
+    fn metric_u_at(self: *Arena, k: i64, set: i64, rr: i64, dd: i64) -> f64 {
+        let rd = self.cfg.r * self.cfg.d
+        return self.metric.u[k * self.u_per_card + set * rd + rr * self.cfg.d + dd]
+    }
+    fn metric_u_set(self: *Arena, k: i64, set: i64, rr: i64, dd: i64, v: f64) {
+        let rd = self.cfg.r * self.cfg.d
+        self.metric.u[k * self.u_per_card + set * rd + rr * self.cfg.d + dd] = v
+    }
+    fn metric_b_at(self: *Arena, k: i64, set: i64, dd: i64) -> f64 {
+        return self.metric.b[k * self.b_per_card + set * self.cfg.d + dd]
+    }
+    fn metric_b_set(self: *Arena, k: i64, set: i64, dd: i64, v: f64) {
+        self.metric.b[k * self.b_per_card + set * self.cfg.d + dd] = v
+    }
+
+    // ── Akümülasyon bölgesi (yalnızca eğitim) ─────────────────────────────
+    fn acc_sigma_at(self: *Arena, k: i64, set: i64) -> f64 {
+        return self.metric.acc_sigma[k * 6 + set]
+    }
+    fn acc_sigma_add(self: *Arena, k: i64, set: i64, v: f64) {
+        self.metric.acc_sigma[k * 6 + set] = self.metric.acc_sigma[k * 6 + set] + v
+    }
+    fn acc_u_at(self: *Arena, k: i64, set: i64, rr: i64, dd: i64) -> f64 {
+        let rd = self.cfg.r * self.cfg.d
+        return self.metric.acc_u[k * self.u_per_card + set * rd + rr * self.cfg.d + dd]
+    }
+    fn acc_u_add(self: *Arena, k: i64, set: i64, rr: i64, dd: i64, v: f64) {
+        let rd = self.cfg.r * self.cfg.d
+        let ix = k * self.u_per_card + set * rd + rr * self.cfg.d + dd
+        self.metric.acc_u[ix] = self.metric.acc_u[ix] + v
+    }
+    fn acc_b_at(self: *Arena, k: i64, set: i64, dd: i64) -> f64 {
+        return self.metric.acc_b[k * self.b_per_card + set * self.cfg.d + dd]
+    }
+    fn acc_b_add(self: *Arena, k: i64, set: i64, dd: i64, v: f64) {
+        let ix = k * self.b_per_card + set * self.cfg.d + dd
+        self.metric.acc_b[ix] = self.metric.acc_b[ix] + v
+    }
+
+    // ── Etkin geometri çalışma tamponu (kip bileşimi çıktısı) ────────────
+    fn sigma_eff_at(self: *Arena, k: i64) -> f64 {
+        return self.metric.sigma_eff[k]
+    }
+    fn sigma_eff_set(self: *Arena, k: i64, v: f64) {
+        self.metric.sigma_eff[k] = v
+    }
+    /// U_eff: R×D satır-major (r*D + d) — metric.u set yerleşimiyle aynı.
+    fn u_eff_at(self: *Arena, k: i64, rr: i64, dd: i64) -> f64 {
+        let rd = self.cfg.r * self.cfg.d
+        return self.metric.u_eff[k * rd + rr * self.cfg.d + dd]
+    }
+    fn u_eff_set(self: *Arena, k: i64, rr: i64, dd: i64, v: f64) {
+        let rd = self.cfg.r * self.cfg.d
+        self.metric.u_eff[k * rd + rr * self.cfg.d + dd] = v
+    }
+    fn b_eff_at(self: *Arena, k: i64, dd: i64) -> f64 {
+        return self.metric.b_eff[k * self.cfg.d + dd]
+    }
+    fn b_eff_set(self: *Arena, k: i64, dd: i64, v: f64) {
+        self.metric.b_eff[k * self.cfg.d + dd] = v
+    }
+}

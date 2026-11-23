@@ -1,0 +1,202 @@
+## Faz 0: Proje İskeleti, Sabitler ve Sıfır-Heap Bellek Mimarisi (Bölüm 9.1 & 11.2)
+
+- [ ] **0.1. Proje Yapısı ve Derleme Hattı**
+  - [ ] Lir tek ikili (single binary) derleme yapılandırmasını kur (sıfır harici kütüphane bağımlılığı).
+  - [ ] Bölüm 11.2'deki tüm referans fiziksel sabitleri (`C`, `K_aktif=4`, `R=4`, `K_dal=4`, `sigma_min/max`, `b_max=0.85`, `eta_b`, `a_4`, `a_6`, `A_0`, `eta_c`, `lambda_sem`, `lambda_soz`, `lambda_v`, `mu_ters`, `lambda_cek`, `kappa_ab`, `gamma_kilit`, `Lambda_kor=1e4`, `dt=0.15`, `tau_2=1.0`, `m=1.5`, `tau_m=0.25`, `r=0.999`, `W=64`, vb.) merkezi sabitler modülüne tanımla.
+  - [ ] Çalışma anında `malloc`/`free` (heap allocation) çağrılarını derleme/test aşamasında yasaklayan doğrulama mekanizması ekle.
+
+- [ ] **0.2. 64-Bayt Hizalı Sıfır-Heap SoA Arena Bellek Haritası**
+  - [ ] **$\tau_{\text{hızlı}}$ (Aktif Dalga & Eşlenik Alan):** Yalnızca $K_{\text{aktif}}$ kart ve $B_{\text{faz}} = 8$ paralel akış için 64-bayt hizalı SoA dizilerini (`Psi_re`, `Psi_im`, `Pi_re`, `Pi_im`, `Phi_re`, `Phi_im`, `xi_yerel`) ayır; çıkarım modunda `Phi` bölgesini ayırma.
+  - [ ] **$\tau_{\text{hızlı}}$ (Ortak Önek Anlık Görüntüsü):** Fine-tuning çatallanması için `Psi_yor_re/im` ve `Pi_yor_re/im` tamponlarını ayır.
+  - [ ] **$\tau_{\text{orta}}$ (Orta Faz-Kilidi Halkası):** Sabit 16–64 MB halka tamponunu kur (oturum bağlamı `Psi_orta`, çok-dosyalı köprüler, CAWR makro özetleri, park edilen G/Ç solitonları) ve $A < A_{\text{eşik}}$ budama mantığını ekle.
+  - [ ] **$\tau_{\text{yavaş}}$ (Aktif Kart Metrikleri):** Yalnızca aktif $K_{\text{aktif}}$ kart ve $\hat{m}_i > 0.01$ kipleri için `sigma_a`, `U_a` ($R \cdot D$), `b_a` ($D$) SoA dizilerini hizala ($D=64, R=4$ için düğümde 321 değer).
+  - [ ] **Birikimli Akı Tamponu (Yalnızca Eğitim):** `Delta_sigma_acc`, `Delta_U_acc`, `Delta_b_acc` tamponlarını oluştur ($K_{\text{kons}} = 16$ darbede tek yazım).
+  - [ ] **L1/L2 Sabit Çekirdek Tabloları (< 256 KB):** Goertzel durumu, 2048 elemanlı 8 KB çeyrek-dalga Faz LUT, analitik `E11..E22(k)` tabloları, kavite ağacı özeti ve 1024 girişli $O(1)$ $\mathcal{R}_{\text{doğ}}$ güvenlik tablosunu statik olarak yerleştir.
+
+---
+
+## Faz 1: Çok-Kartlı Topolojik Atlas ve $U(1)$-Ayarlı Randers-Finsler Geometrisi (Bölüm 3)
+
+- [ ] **1.1. Kavite Rezonanslı Topolojik Atlas**
+  - [ ] $C \ge 64$ yerel kartlık atlas yapısını ve her kartın düşük boyutlu doğal rezonans imzasını ($\Omega_a$) tanımla.
+  - [ ] İkili hiyerarşik kavite ağacını kur; $E_{\text{rez},a} = |\langle \mathcal{J}_{\text{girdi}}^{\text{kaba}}, \Omega_a \rangle|^2$ hesabıyla $O(\log C)$ sürede en yüksek rezonanslı $K_{\text{aktif}}$ kartı seç.
+  - [ ] Aktif kart çiftleri $\{a, b\} \in \mathcal{E}_{\text{aktif}}$ için sınır şeritleri ($\Gamma_{ab}$), üniter faz taşıma bağlantısı ($e^{i\varphi_{ab}}$, $\varphi_{ba} = -\varphi_{ab}$) ve bağlaşım şiddeti ($\kappa_{ab}$) yapılarını uygula.
+
+- [ ] **1.2. Katmanlı Kip Süperpozisyonu ve Metrik Bileşimi**
+  - [ ] 5 temel kip ekseni (`kodlama`, `plan`, `sohbet`, `ozetleme`, `ceviri`) için simpleks ağırlıkları $\mathbf{m} \in \Delta^4$ üzerinden etkin $\sigma_a$, $U_a$, $\tilde{b}_a$ bileşimini kodla (ortak taban + kip sapmaları).
+  - [ ] $\sigma_a \in [-2.5, +2.5]$ ve $\|U_a\| \le u_{\max}$ sınır kısıtlarını uygula.
+
+- [ ] **1.3. $O(R \cdot D)$ Woodbury Tersi ve Randers Dışbükeylik Projeksiyonu**
+  - [ ] Tam $D \times D$ matris oluşturmadan $c_a = e^{-2\sigma_a}$ ve $R \times R$ ($R \in \{2,4\}$) çekirdek matrisi $M_a = I_R + c_a U_a^T U_a$ üzerinden $M_a^{-1}$ çözücüsünü (Cholesky / kapalı-form $4 \times 4$) yaz.
+  - [ ] $g_a^{-1}\mathbf{v} = c_a\mathbf{v} - c_a^2 U_a (M_a^{-1}(U_a^T \mathbf{v}))$ operatörünü dal-sız SIMD ile uygula.
+  - [ ] Sürüklenme vektörü dışbükeylik projeksiyonunu kodla: $\|\tilde{b}_a\|_{g_a} = \sqrt{\tilde{b}_a^T(g_a^{-1}\tilde{b}_a)}$ ve $b_{\max} = 0.85$ kırpması.
+
+- [ ] **1.4. Üniter Yarı-Yoğunluk Ayarı ve $U(1)$ Kovaryant Türev**
+  - [ ] $\Psi_a = |g_a|^{1/4}\psi_a$ yarı-yoğunluk temsilini tüm çekirdekte standartlaştır.
+  - [ ] $D_\mu \Psi_a = (\nabla_\mu - i \eta_b b_{a,\mu})\Psi_a$, $\mathbf{p}_a = D\Psi_a$ ve $\mathbf{w}_a = g_a^{-1}\mathbf{p}_a$ operatörlerini uygula.
+  - [ ] Dış sınırlarda sıfır akı ($n_\mu w_a^\mu|_{\partial\mathcal{M}_a \setminus \Gamma} = 0$) sınır koşulunu garanti et.
+
+---
+
+## Faz 2: Birleşik Serbest Enerji Fonksiyoneli ve Alan Dinamiği (Bölüm 4 & 5)
+
+- [ ] **2.1. Serbest Enerji Terimleri ve Kapalı-Form Wirtinger Türevleri**
+  - [ ] **Kinetik Terim:** $\frac{1}{2}\mathbf{p}_a^\dagger\mathbf{w}_a$ ve türevi $\frac{1}{2}D_\mu w_a^\mu$.
+  - [ ] **Demet Yapıştırma Köprüleri ($\mathcal{F}_{\text{köprü}}$):** $\kappa_{ab}\mathbf{1}_{\Gamma_{ab}}(\Psi_a - e^{i\varphi_{ab}}\Psi_b)$.
+  - [ ] **Çatallanma Potansiyeli ($V_{\text{top}}$):** $a_4, a_6, A_0, \eta_c$ terimleri ve kapalı-form $\partial V_{\text{top}} / \partial\Psi_a^*$.
+  - [ ] **Öz-Denetim Potansiyeli ($V_{\text{doğrulama}}$):** Birim normlu $\hat{v}_\ell$ üzerinden $r_\ell, s_\ell$ hesabı ve $\partial V_{\text{doğrulama}} / \partial\Psi_a^*$.
+  - [ ] **Kuaterner Sembolik Faz-Kilidi ($V_{\text{sembol}}$):** Çıkış bölgesinde $C^\infty$ tekilliksiz $4^4=256$ faz kuyusu potansiyeli ve türevi.
+  - [ ] **Sözdizimsel Topolojik Yük Korunumu ($\mathcal{E}_{\text{söz}}$):** Parantez/blok/tırnak açma ($+1$) / kapama ($-1$) kipleri $\rho_d$ üzerinden net yük $Q_d$ ve geri itme kuvveti.
+  - [ ] **Hızlı Yol Güvenlik Bariyeri ($V_{\text{koruma}}$):** $O(1)$ $\mathcal{R}_{\text{doğ}}(h_\alpha)$ tablosuna bağlı yıkıcı eylem engelleme potansiyeli.
+  - [ ] **Epistemik Çekinme Potansiyeli ($V_{\text{çekinme}}$):** Çelişki ölçütü $C_{\text{çelişki}}$, De Morgan güven kapısı $g_{\text{çek}}$ ve $\Psi_{\text{çekinme}}$ çekicisi.
+  - [ ] **Keywords Faz Kilidi ($\mathcal{E}_{\text{kilit}}$):** $O(M_K)$ ortalama faz kilidi ($c_j, \bar{c}_{\mathcal{K}}$).
+  - [ ] **Sınırlı Bağlam Bilgisi ($\mathcal{I}_{\text{nedensel}}$):** $O(N)$ sinyal-gürültü logaritmik bağıntı terimi ($z_{\text{ort}}, E_\Psi, S$).
+  - [ ] **Katmanlı Yamabe Geometrik Düzenleyicisi ($\mathcal{R}_{\text{geom}}$):** Ortak taban ($\kappa_{\bullet,0} = 5\kappa_{\bullet,\text{kip}}$) ve kip sapmaları düzenleyicisi.
+
+- [ ] **2.2. İkinci Derece Dalga Dinamiği ve Hermityen Jiroskopik Operatör**
+  - [ ] Konum-bağımlı sönümleme $\gamma_a(\mathbf{x})$ (güvenlik duvarında $\gamma_{\text{kor}} = \sqrt{2\tau_2\Lambda_{\text{kor}}}$) hesabını ekle.
+  - [ ] Enerji koruyan Hermityen jiroskopik operatörü ($\hat{\Omega}_{a,\text{ned}}\Pi_a$) uygula ve $\text{Re}\langle \Pi_a, i\hat{\Omega}_{a,\text{ned}}\Pi_a\rangle = 0$ özelliğini doğrula.
+  - [ ] Uzay-zaman bağımlı yerel termal gürültü $\xi_a(\mathbf{x}, t)$ üretecini (koruma bölgesinde sıfırlanan, kip bazlı $\xi_0(\mathbf{m})$ ölçekli) yaz.
+  - [ ] Toplam mekanik-bilgi enerjisi $\mathcal{E}(t) = \mathcal{F}_{\text{alan}} + \tau_2\sum_a \|\Pi_a\|_2^2$ izleme fonksiyonunu ekle.
+
+---
+
+## Faz 3: Optimal Orta-Nokta Strang IMEX-ETD Sayısal Çözücüsü (Bölüm 6)
+
+- [x] **3.1. Operatör Bölünmesi ve Analitik Propagatörler**
+  - [x] Her kart için $c_{a,\max}$, $c_{a,\min}$ ve orta-nokta $\bar{c}_a = \frac{1}{2}(c_{a,\min} + c_{a,\max})$ hesabını yaz.
+  - [x] Blok-yerel mikro-DCT-II ve ters mikro-DCT-II dönüşümlerini L1 önbellek dostu SIMD ile yaz.
+  - [x] Üç rejimli (Aşırı Sönümlü $\zeta > \omega_k$, Kritik Sönümlü $\zeta = \omega_k$, Alt-Sönümlü $\zeta < \omega_k$) tam $2 \times 2$ analitik ETD matrisi ($E_{11}, E_{12}, E_{21}, E_{22}$) oluşturucusunu kodla.
+  - [x] Sert güvenlik bariyeri $V_{\text{koruma}}$ için kritik sönümlü yarım-adım ($\tau = \Delta t / 2$) $2 \times 2$ analitik propagatörü uygula.
+
+- [x] **3.2. L1/L2 Zamansal Döşemeli Strang Mikro/Makro Döngüsü**
+  - [x] 4 ardışık mikro-adımlık L1/L2 döşemeli döngüyü uygula:
+    1. Yarım itki ($\Delta t/2$) — dal-sız tek SIMD geçişi.
+    2. Yarım analitik $V_{\text{koruma}}$ ($\Delta t/2$).
+    3. Analitik Blok-ETD ($\Delta t$): mikro-DCT-II → $E(k)$ → ters mikro-DCT-II.
+    4. Simetrik kapanış ($\Delta t/2$): Adım 2 + Adım 1.
+  - [x] Her 4 mikro-adımda bir Makro Senkronizasyon adımını ekle: kilitsiz halo/köprü ($\Gamma_{ab}$) takası, kaba-ızgara eşitlemesi, küresel özetler ($c_j, z_{\text{ort}}, Q_d, g_{\text{çek}}$).
+  - [x] Erken Kararlılık Çıkışı kriterini ($\|\Pi\|_2 / (\|\Psi\|_2 + \epsilon) < \epsilon_{\text{dur}}$) uygula.
+
+---
+
+## Faz 4: Geri Yayılımsız Derin Öğrenme — Zarf Teoremi & CAWR (Bölüm 7)
+
+- [x] **4.1. Zarf Teoremi (Denge Rejimi Gradyanları)**
+  - [x] $\mathbf{w}_a$ ve $\mathbf{z}_a = U_a^T \mathbf{w}_a$ üzerinden $O(R \cdot D)$ kesin varyasyonel gradyanları ($\mathcal{D}_{a,\sigma}^{\text{denge}}$, $\mathcal{D}_{a,u}^{\text{denge}}$, $\mathcal{D}_{a,b}^{\text{denge}}$) ve $\mathcal{P}_{\text{seyrek}}$ projeksiyonunu kodla.
+
+- [x] **4.2. Sürekli Eşlenik-Dalga Rezonansı (CAWR)**
+  - [x] İleri yörünge boyunca makro-özetleri $\tau_{\text{orta}}$ halkasına kaydet (autodiff bandı yok).
+  - [x] Ters zaman $s = T - t$ boyunca doğal pozitif sönümlü ($+\gamma_a \partial_s \Phi_a$) eşlenik doğrulama dalgası çözücüsünü yaz.
+  - [x] İleri akı $\mathbf{w}_a$ ve geri eşlenik akı $\mathbf{v}_a = g_a^{-1}D\Phi_a$ yerel girişim integrallerini ($\mathcal{D}_{a,\sigma}^{\text{CAWR}}$, $\mathcal{D}_{a,u}^{\text{CAWR}}$, $\mathcal{D}_{a,b}^{\text{CAWR}}$) hesapla.
+
+- [x] **4.3. Tekil Plastisite Yasası, Katmanlı Dağıtım ve 6 Rejimli Kapı**
+  - [x] Birikimli akı tamponunda $K_{\text{kons}} = 16$ darbede bir ortak taban ($\eta_0 = 0.2$) ve aktif kip sapmaları ($m_i$) güncellemelerini uygula.
+  - [x] Bölüm 7.4'teki 6 çalışma rejimi kapısını (`Normal Pretraining`, `do-Bozulum`, `8-Anahtarlı FT`, `Çıkarım Doğrulanmamış = 0`, `Çıkarım ok: Gözlem`, `Çıkarım error: Gözlem`) ve marj fonksiyonu $W_m$'yi kodla.
+
+---
+
+## Faz 5: Tokenizersız Sınır Fiziği ve Asenkron Transdüser (Bölüm 8 & 9.4)
+
+- [x] **5.1. Kuaterner Enjektör ve Kayan-Goertzel**
+  - [x] Sürüklenmesiz $O(1)$ sönümlü Kayan-Goertzel filtresini ($r = 0.999$, $W = 64$, 2048'li L1 Faz LUT) uygula.
+  - [x] Ham UTF-8 baytlarını 4 kuaterner faz alt-kanalına ($4^4 = 256$) ayrıştır; sözdizimi ayraçlarını (`()`, `{}`, `[]`, `"`) $\rho_d$ topolojik yük kanalına bağla.
+  - [x] $W_{\text{ent}} = 16$ baytlık pencerede $H_{\text{yerel}} < H_{\text{eşik}}$ düşük-entropili bayt birleştirme sıkıştırıcısını ekle.
+  - [x] Çıkarım anında 5 baz şablonu ($\Phi_{\text{baz}, i}$) üzerinden otomatik kip kestirimi ($\hat{m}_i$, $T_m = 0.5$) hesapla.
+
+- [ ] **5.2. Enerji-Boşaltmalı Kuaterner Spektral Çözümleyici**
+  - [ ] $g_{\text{çek}} > 0.5$ durumunda Epistemik Çekinme/Netleştirme çıktısı sentezle.
+  - [ ] Kuaterner faz kuyularından tek-karakter hatasız ham UTF-8 akışı çöz; her baytta çıkış enerjisinden düş ve $E_{\text{çıkış}} < E_{\text{bitiş}}$ olduğunda yapay `[EOS]` olmadan doğal olarak dur.
+
+- [ ] **5.3. Asenkron Çift Yönlü Eylem Transdüseri (`fs.*`, `app.*`, `api.*`)**
+  - [ ] Eylem solitonu algılayıcısını ve transdüser arayüzünü yaz.
+  - [ ] `fs.list`, `fs.read`, `app.inspect` `ok:` dönüşlerinde 1024 girişli tabloda $\mathcal{R}_{\text{doğ}}(h_\alpha) = 1$ işaretlemesini yap.
+  - [ ] `fs.edit`, `fs.delete`, `app.set` yıkıcı çağrılarında $\mathcal{R}_{\text{doğ}}(h_\alpha) = 0$ ise kritik sönümlü $V_{\text{koruma}}$ engellemesini ve ters-fazlı uyarı darbesini tetikle.
+  - [ ] Onaylanan G/Ç çağrısında aktif bağlamın sıkıştırılmış faz özetini $\tau_{\text{orta}}$ halkasına park eden asenkron soliton dondurma mekanizmasını kur.
+  - [ ] `ok:` ve `error:` dönüşlerini $\mathcal{J}_{\text{gözlem}}$ olarak geri enjekte et; ardışık hata sayısı $T_{\text{hata,max}} = 3$'ü aşarsa zorunlu Epistemik Çekinme tetikle.
+
+---
+
+## Faz 6: İkili Formatlar — `.nphi v3.0` ve `.nbin v3.0` (Bölüm 9.2 & 9.3)
+
+- [ ] **6.1. Parseval Spektral Disk Konteyneri (`.nphi v3.0`)**
+  - [ ] Her kart bloğunda ortonormal DCT-II uygulayıp $|(\mathcal{C}\theta)_k| \ge \theta_{\text{SNR}}$ modlarını tam hassasiyetle saklayan serileştiriciyi yaz.
+  - [ ] 4096-bayt sayfa hizalı 4 segmentli dosya yapısını oluştur: (1) Başlık & Sağlama Toplamı, (2) Hiyerarşik Kavite İmzaları & Demet Köprü Grafı, (3) Kip Şablonları & Epistemik Çekinme Çekicisi, (4) $C$ Adet Kart Segmenti.
+  - [ ] Kavite seçimine göre yalnızca aktif $K_{\text{aktif}}$ kartı sıfır-kopya `mmap` ile belleğe eşleyen yükleyiciyi yaz.
+
+- [ ] **6.2. Çevrimdışı Zero-Parse İkili Eğitim Akışı (`.nbin v3.0`) ve Derleyicisi**
+  - [ ] Pretraining akış formatını (`belge_uzunlugu`, `sifirlama_turu [tam|kismi]`, `alan_etiketi`, `ham_bayt_akisi`) tanımla.
+  - [ ] 8-anahtarlı Fine-Tuning kayıt formatını (16-bayt hizalı başlık, kip ağırlıkları, veri sınıfı, $S, T, L$, $T \times 4$ bayt örgülü eşleme tablosu, ofset dizini, 8-bayt hizalı ham UTF-8 yük) tanımla.
+  - [ ] `.nbin` derleyicisinde 6 zorunlu doğrulama kuralını (kesin 8 anahtar sırası, ASCII `snake_case`, sıfır-null, kapalı `type` enum, zorunlu veri dağılımı denetimi) zorunlu kıl.
+  - [ ] Çift-tamponlu prefetch okuyucusunu çekirdeğe entegre et.
+
+---
+
+## Faz 7: Hızlandırılmış İki Aşamalı Eğitim Hattı (Bölüm 10)
+
+- [ ] **7.1. 8 Bütünleşik Hızlandırıcı Mekanizma**
+  - [ ] 4 Evreli Kademeli Spektral Müfredat ($\Omega_C$: %25 → %50 → %75 → %100; plato eşiği $|\Delta\bar{\mathcal{F}}|/\bar{\mathcal{F}} < 0.005$).
+  - [ ] Seyrek Kavite Kart Aktivasyonu (yalnızca $K_{\text{aktif}}$ kart güncellemesi).
+  - [ ] Kaba-İnce Çok-Izgaralı Gevşeme (4x kaba ızgara $\Delta t = 0.30$ → ince çözünürlük $\Delta t = 0.15$).
+  - [ ] Faz-Ortogonal Çoklu Akış ($B_{\text{faz}} = 8$ paralel SIMD akışı).
+  - [ ] Birikimli Seyrek Metrik Konsolidasyonu ($K_{\text{kons}} = 16$).
+  - [ ] Ortak Önek Soliton Çatallanması (FT'de ilk 6 anahtar kilitli, yalnızca 7. ve 8. anahtar çatallı).
+  - [ ] Eğitimde Erken Kararlılık & Marj Atlaması ($\mathcal{F}[\Psi_-] - \mathcal{F}[\Psi_+] > 1.25 m$ ise metrik yazımını atla).
+  - [ ] Zero-Parse `.nbin` + Çift-Tamponlu Prefetch + L1/L2 Döşeme entegrasyonu.
+
+- [ ] **7.2. Aşama 1: Hızlandırılmış ve Nedensel Pretraining**
+  - [ ] Sürpriz-kapılı öğrenme ($G_{\text{sürpriz}}$) döngüsünü kur.
+  - [ ] Çift seviyeli faz sıfırlamayı (tam sıfırlama vs. $\tau_{\text{orta}}$'yı koruyan kısmi sıfırlama) uygula.
+  - [ ] Akışın %12.5'inde deterministik koşul/değişken terslemeli $\text{do}$-bozulum hattını ekle.
+
+- [ ] **7.3. Aşama 2: 8 Anahtarlı Birleşik Fine-Tuning**
+  - [ ] `.nbin` indeks tablosuyla `thinking_steps` ve `tools` alanlarının hipotez → gözlem → revizyon → eylem döngüsünde örgülü enjeksiyonunu uygula.
+  - [ ] Tek geçişli marj-kilitli ve CAWR öz-üretimli kayıp ($\mathcal{L}_{\text{FT}}$ ve $\mathcal{E}_{\text{öz-üretim}}$) hesabını bağla.
+  - [ ] 4 Aşamalı Kademeli İskele Kaldırma çizelgesini (gizleme: %0 → %30 → %65 → %90; $\mu_{\text{öz}}$: $0.00 \to 0.25 \to 0.60 \to 1.00$) uygula.
+
+---
+
+## Faz 8: Metrikler ve 10 Zorunlu Matematiksel / Mühendislik Bütünlük Testi (Bölüm 2 & 11.3)
+
+- [ ] **8.1. Fiziksel Zeka ve Kapasite Ölçüm Araçları**
+  - [ ] Topolojik Karmaşıklık Hacmi ($\mathcal{T}$ — Nodus), Spektral Tutarlılık Bant Genişliği ($\Omega_C$), Serbest Enerji Sıkıştırma Verimi ($\eta_{\mathcal{F}}$) ve Nedensel Müdahale Derinliği ($\mathcal{C}_d$) telemetri modülünü yaz.
+
+- [ ] **8.2. 10 Zorunlu Bütünlük Test Paketi (Otomatik CI Kapısı)**
+  - [ ] **Test 1 — Woodbury & Randers Dışbükeylik:** $O(R\cdot D)$ $g_a^{-1}\mathbf{v}$ ile yoğun matris tersi farkı $< 10^{-6}$ ve her adımda $\|b_a\|_{g_a} \le 0.85$.
+  - [ ] **Test 2 — Kesin Lyapunov Monotonluğu:** $\xi_a = 0$, sabit girdi, aktif $\mathcal{F}_{\text{köprü}}$ ve $i\hat{\Omega}_{a,\text{ned}}\Pi_a$ altında her makro-adımda $\mathcal{E}_{n+1} \le \mathcal{E}_n + 10^{-7}$.
+  - [ ] **Test 3 — Zarf Teoremi & CAWR Gradyan Doğrulaması:** Sonlu farklarla ölçülen $d\mathcal{L}/d\theta_a$ ile göreli hata $< 10^{-5}$; $\Phi_a(s)$ ters zamanda üstel kararlı.
+  - [ ] **Test 4 — Nedensel Asimetri Oranı:** $A \to B$ yönünde eğitilmiş yörüngede ileri $U(1)$-ayarlı kinetik eylem, ters $B \to A$ eyleminin $\le 0.5\times$ katı.
+  - [ ] **Test 5 — Çok-Kartlı Atlas Girişimsizlik:** Ayrı kavite kartlarına yazılan ilgisiz görevlerde enerji bozulması $< \%0.1$; RAM'e yalnızca $K_{\text{aktif}}$ kart eşlenir.
+  - [ ] **Test 6 — Kuaterner Sembolik Kilit & Sözdizimsel Yük Korunumu:** Deterministik kodlama çıkışında faz sapması $< 0.02\text{ rad}$ ve dengesiz parantez enjeksiyonunda $Q_d \to 0$.
+  - [ ] **Test 7 — Goertzel Uzun-Akış & Parseval Disk Sınırı:** $10^7$ bayt sonunda $O(1)$ Goertzel ile tam pencere DFT farkı $< 10^{-5}$; `.nphi` kayıt/yükleme serbest enerji kaybı $< \%0.2$.
+  - [ ] **Test 8 — Kritik Sönümlü $V_{\text{koruma}}$ Kesin Engelleme:** $\mathcal{R}_{\text{doğ}}(h_\alpha) = 0$ hedefte yıkıcı soliton tek makro-adımda salınım yapmadan $< 10^{-4}$ düzeyine bastırılır.
+  - [ ] **Test 9 — Sıfır Geometrik Sürüklenme & Ortak Önek Özdeşliği:** Dış $\mathcal{J}_{\text{gözlem}}$ olmadan 10.000 çıkarım turunda yavaş metrik değişimi $\Delta = 0$; ortak önek çatallanması ile iki tam geçiş enerji farkı $< 10^{-6}$.
+  - [ ] **Test 10 — Eşit-Bütçeli Kıyaslama Kapısı:** Eşit RAM ve işlem bütçesinde sentetik çok-adımlı nedensellik, sözdizimi-kritik kod düzenleme ve `fs.*` araç-kurtarma görevlerinde $-\Delta\mathcal{F}/\Delta\mathcal{T}$ ölçeklenme katsayısını ampirik olarak doğrula.
+
+---
+
+## Faz 9: Framework, Araç Zinciri ve Üretim Altyapısı (Bölüm 12)
+
+- [ ] **9.1. CLI, Görev Koşucusu ve Harici Arayüz (API/ABI)**
+  - [ ] `noema compile-nbin`, `noema pretrain`, `noema finetune`, `noema infer`, `noema bench`, `noema verify` alt komutlarını ve yapılandırma yükleyiciyi yaz.
+  - [ ] Dış sistemlerden sıfır-kopya çağrı için C-ABI (FFI) başlık dosyasını ve `stdin/stdout` / Unix Domain Socket ham bayt akış protokolünü uygula.
+
+- [ ] **9.2. Veri Hazırlama ve `.nbin` Derleme Hattı**
+  - [ ] Ham metin/kod depoları için temizleme ve tekilleştirme (deduplication) filtresini yaz.
+  - [ ] 8-anahtarlı FT veri setinde zorunlu dağılım oranlarını (%50 sert karşıtlık, %15 `error:` kurtarma, %10 çekinme, %10 çapraz-kip) otomatik denetleyen doğrulayıcıyı derleyiciye bağla.
+
+- [ ] **9.3. Determinizm, Atomik Checkpoint ve Çökme Kurtarma**
+  - [ ] $\xi_a$ gürültüsü ve %12.5 $\text{do}$-bozulum için sabit tohumlu (seed), akış-bazlı deterministik PRNG uygula.
+  - [ ] `.nphi` anlık görüntüsü + müfredat evresi ($\Omega_C$) + iskele kaldırma aşaması + `.nbin` ofseti + PRNG durumu + $K_{\text{kons}}$ sayacını atomik (`write` + `fsync` + `rename`) kaydeden ve kurtaran checkpoint yöneticisini yaz.
+
+- [ ] **9.4. Çok Çekirdekli Yürütme ve SIMD Hedefleme**
+  - [ ] Aktif $K_{\text{aktif}}$ kart ve $B_{\text{faz}} = 8$ akış için sıfır-heap sabit thread pool, çekirdek sabitleme (CPU pinning) ve kilitsiz halo takası senkronizasyonunu kur.
+  - [ ] Hedef CPU'ya göre (AVX2 / AVX-512 / NEON) SIMD çekirdek seçicisini ve L1/L2 cache-miss profilleme kancalarını ekle.
+
+- [ ] **9.5. Gözlemlenebilirlik ve Sayısal Bekçi (Guard)**
+  - [ ] $\mathcal{F}_{\text{alan}}$, $\mathcal{E}(t)$, kart aktivasyon dağılımı (kart çökmesi tespiti), $g_{\text{çek}}$ oranı ve erken çıkış adım sayısını sıfır-overhead ile kaydeden telemetri çıktısını yaz.
+  - [ ] `NaN`/`Inf` veya Lyapunov enerji sıçramasında ($\mathcal{E}_{n+1} > \mathcal{E}_n + 10^{-7}$) yürütmeyi durdurup aktif kart ve girdi penceresini diske döken sayısal bekçiyi ekle.
+
+- [ ] **9.6. Transdüser OS Bağlantısı ve İzolasyon (Sandboxing)**
+  - [ ] `fs.*`, `app.*`, `api.*` çağrılarını gerçek işletim sistemi çağrılarına bağla.
+  - [ ] İzin verilen dizin/uç nokta kısıtlarını (allowlist) ve yanıt vermeyen dış çağrılarda çekirdeği koruyan zaman aşımı (timeout) mekanizmasını uygula.

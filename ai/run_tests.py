@@ -25,6 +25,16 @@ def main():
         print("hata: ai/tests/*.lir bulunamadi")
         return 1
 
+    # Sıfır-heap kapısı: NOEMA modülleri çalışma anında heap ayıramaz.
+    gate = os.path.join(ROOT, "ai", "tools", "noalloc_gate.py")
+    if os.path.exists(gate):
+        g = subprocess.run([sys.executable, gate],
+                           capture_output=True, text=True)
+        print(g.stdout, end="")
+        if g.returncode != 0:
+            print(g.stderr, end="")
+            return 1
+
     passed = failed = 0
     for t in tests:
         name = os.path.basename(t)[:-4]

@@ -1,0 +1,29 @@
+# NOEMA-Φ runtime modül manifesti (Faz 0.1 — Ai Framework.todo)
+#
+# Her satır ai/ köküne göreli bir LIR kaynağıdır. Bu listedeki dosyalar
+# "sıfır-modern-stack / sıfır-heap" sözleşmesi altındadır:
+#   - çalışma anında @malloc/@free dışı heap ayıran builtin yok,
+#   - tek istisna `// lir:allow-alloc` işaretli boot dosyaları
+#     (Arena.init tek-seferlik büyük tahsis yapar),
+#   - ai/tools/noalloc_gate.py bu listeyi tarar.
+#
+# Burada OLMAYAN ai/src/noema_*.lir dosyaları eski SEL yığınına aittir;
+# geçiş tamamlanana dek heap kullanabilirler.
+
+src/noema_const.lir
+src/noema_math.lir
+src/noema_arena.lir
+src/noema_arena_rt.lir
+src/noema_atlas.lir
+src/noema_metric.lir
+src/noema_metric_uv.lir
+src/noema_pot.lir
+src/noema_energy.lir
+src/noema_dyn.lir
+src/noema_etd.lir
+src/noema_macro.lir
+src/noema_learn.lir
+src/noema_cawr.lir
+src/noema_plast.lir
+src/noema_inj.lir
+src/noema.lir

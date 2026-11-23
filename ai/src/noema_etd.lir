@@ -1,0 +1,302 @@
+// noema_etd.lir — NOEMA-Φ IMEX-ETD Strang çözücüsü (Mimari §6).
+//
+// Operatör bölünmesi: doğrusal parça (metrik/Randers-Laplacian) blok-yerel
+// mikro-DCT-II özvektör basisinde üç rejimli tam 2x2 analitik ETD ile,
+// doğrusal olmayan artık itki yarım-adımlarla, sert güvenlik bariyeri
+// kritik sönümlü yarım-adım propagatörü ile ilerletilir.
+//
+//   Strang mikro-adım (Δt):
+//     1) itki yarım  : Π += (Δt/2τ2)·N_kal(Ψ,Π)
+//     2) koruma yarım: V_koruma kritik sönümlü 2x2 (τ = Δt/2)
+//     3) blok-ETD   : mikro-DCT-II → E(k) → ters mikro-DCT-II (tam Δt)
+//     4) koruma yarım + itki yarım (simetrik kapanış)
+//
+// Her 4 mikro-adımda makro senkronizasyon: global özetler + erken
+// kararlılık çıkışı ‖Π‖/(‖Ψ‖+ε) < ε_dur.
+//
+// Bellek: tek bitişik tampon. Düzen (f64 biriminde, D=NOEMA_D=64):
+//   [0,64)     psi_re     [64,128)   psi_im
+//   [128,192)  pi_re      [192,256)  pi_im
+//   [256,320)  force_re   [320,384)  force_im
+//   [384,512)  modal_re (2*D: [0,D)=ψ-mod, [D,2D)=Π-mod)
+//   [512,640)  modal_im  (aynı düzen)
+//   [640,704)  coeff_e11 [704,768)  coeff_e12
+//   [768,832)  coeff_e21 [832,896)  coeff_e22
+// Toplam 896 f64 = 7168 bayt. Tüm erişimler buf[offset + i].
+// DCT blok boyutu NB = 8; D = 64 alanı 8 blok (L1 dostu, SoA sürekli).
+
+import "noema_const.lir"
+import "noema_math.lir"
+
+const ETD_NB: i64 = 8
+const ETD_NBLK: i64 = NOEMA_D / ETD_NB
+
+const ETD_OFF_PR: i64 = 0
+const ETD_OFF_PI: i64 = NOEMA_D
+const ETD_OFF_RR: i64 = 2 * NOEMA_D
+const ETD_OFF_RI: i64 = 3 * NOEMA_D
+const ETD_OFF_FRE: i64 = 4 * NOEMA_D
+const ETD_OFF_FIM: i64 = 5 * NOEMA_D
+const ETD_OFF_MR: i64 = 6 * NOEMA_D
+const ETD_OFF_MI: i64 = 8 * NOEMA_D
+const ETD_OFF_C11: i64 = 10 * NOEMA_D
+const ETD_OFF_C12: i64 = 11 * NOEMA_D
+const ETD_OFF_C21: i64 = 12 * NOEMA_D
+const ETD_OFF_C22: i64 = 13 * NOEMA_D
+const ETD_BUFSIZE: i64 = 14 * NOEMA_D
+
+// ── §6.1 Operatör bölünmesi: kart başına c_min/c_max/c_bar ─────────────
+// c_max = max_{M_a} e^{-2σ} = e^{-2σ};  c_min = e^{-2σ}/(1+e^{-2σ}‖U‖²).
+// u2: ‖U_a‖_F² Frobenius yaklaşımı (R·D üst-sınırı olarak kesindir).
+fn etd_card_bounds(sig: f64, u2: f64,
+                   cmin_o: *f64, cmax_o: *f64, cbar_o: *f64) {
+    let s2 = noema_exp(0.0 - 2.0 * sig)
+    let cmax = s2
+    let cmin = s2 / (1.0 + s2 * u2)
+    cmin_o[0] = cmin
+    cmax_o[0] = cmax
+    cbar_o[0] = 0.5 * (cmin + cmax)
+}
+
+// ── Yardımcı hiperbolik sarmalayıcılar ─────────────────────────────────
+fn etd_cosh(x: f64) -> f64 {
+    let e = noema_exp(x)
+    let ei = noema_exp(0.0 - x)
+    0.5 * (e + ei)
+}
+
+fn etd_sinh(x: f64) -> f64 {
+    let e = noema_exp(x)
+    let ei = noema_exp(0.0 - x)
+    0.5 * (e - ei)
+}
+
+// ── §6.2 Üç rejimli 2x2 ETD katsayıları ─────────────────────────────────
+// a = ω_k² = cbar·λ_k/(2τ2); b = ζ² = (γ0/2τ2)².
+// ζ>ω (b>a): aşırı sönümlü; |a−b|≤ε: kritik; ω>ζ (a>b): alt sönümlü.
+fn etd_mode_coeffs(cbar: f64, lam: f64, dt: f64,
+                   e11: *f64, e12: *f64, e21: *f64, e22: *f64) {
+    let a = cbar * lam / (2.0 * NOEMA_TAU_2)
+    let zeta = NOEMA_GAMMA_0 / (2.0 * NOEMA_TAU_2)
+    let b = zeta * zeta
+    let zt = zeta * dt
+    let ed = noema_exp(0.0 - zt)
+    if b > a + 1e-12 {
+        // aşırı sönümlü: μ = √(ζ²−ω²)
+        let mu = @sqrt(b - a)
+        let mt = mu * dt
+        let ch = etd_cosh(mt)
+        let sh = etd_sinh(mt)
+        let rat = if @fabs(mu) > 1e-12 { zeta / mu } else { 1.0 }
+        e11[0] = ed * (ch + rat * sh)
+        e12[0] = ed * sh / mu
+        e22[0] = ed * (ch - rat * sh)
+    } else if b > a - 1e-12 {
+        // kritik sönümlü
+        e11[0] = ed * (1.0 + zt)
+        e12[0] = dt * ed
+        e22[0] = ed * (1.0 - zt)
+    } else {
+        // alt sönümlü: ν = √(ω²−ζ²)
+        let nu = @sqrt(a - b)
+        let nt = nu * dt
+        let co = @cos(nt)
+        let si = @sin(nt)
+        let rat = if @fabs(nu) > 1e-12 { zeta / nu } else { 1.0 }
+        e11[0] = ed * (co + rat * si)
+        e12[0] = ed * si / nu
+        e22[0] = ed * (co - rat * si)
+    }
+    e21[0] = (0.0 - a) * e12[0]
+}
+
+// ── Mikro-DCT-II (ortho-normal) ve ters dönüşüm ────────────────────────
+fn dct2_fwd(src: *f64, dst: *f64, n: i64) {
+    let scale0 = @sqrt(1.0 / (n as f64))
+    let scalek = @sqrt(2.0 / (n as f64))
+    let nn = n as f64
+    var k: i64 = 0
+    while k < n {
+        var acc: f64 = 0.0
+        var j: i64 = 0
+        while j < n {
+            let ang = NOEMA_PI * (k as f64) * (2.0 * (j as f64) + 1.0) / (2.0 * nn)
+            acc = acc + src[j] * @cos(ang)
+            j = j + 1
+        }
+        let s = if k == 0 { scale0 } else { scalek }
+        dst[k] = s * acc
+        k = k + 1
+    }
+}
+
+fn dct2_inv(src: *f64, dst: *f64, n: i64) {
+    let scale0 = @sqrt(1.0 / (n as f64))
+    let scalek = @sqrt(2.0 / (n as f64))
+    let nn = n as f64
+    var j: i64 = 0
+    while j < n {
+        var acc: f64 = src[0] * scale0
+        var k: i64 = 1
+        while k < n {
+            let ang = NOEMA_PI * (k as f64) * (2.0 * (j as f64) + 1.0) / (2.0 * nn)
+            acc = acc + scalek * src[k] * @cos(ang)
+            k = k + 1
+        }
+        dst[j] = acc
+        j = j + 1
+    }
+}
+
+// src/dst: buf + eleman ofseti verilmiş *f64 pointer (bayt değil).
+fn etd_dct_fwd_at(buf: *f64, src_off: i64, dst_off: i64) {
+    dct2_fwd(@ptr_add(buf, src_off * 8) as *f64,
+             @ptr_add(buf, dst_off * 8) as *f64, ETD_NB)
+}
+
+fn etd_dct_inv_at(buf: *f64, src_off: i64, dst_off: i64) {
+    dct2_inv(@ptr_add(buf, src_off * 8) as *f64,
+             @ptr_add(buf, dst_off * 8) as *f64, ETD_NB)
+}
+
+// ── Blok ETD: Ψ/Π (re+im) DCT → mod başına E(k) → ters DCT ────────────
+// buf[MR + 0..D)  : psi_re modal     buf[MR + D..2D): pi_re modal
+// buf[MI + 0..D)  : psi_im modal     buf[MI + D..2D): pi_im modal
+// Katsayılar C11..C22 tamponlarında mod başına bir kez hesaplanır.
+fn etd_modal_pass(buf: *f64, dt: f64, cbar: f64) {
+    var e11: f64 = 0.0
+    var e12: f64 = 0.0
+    var e21: f64 = 0.0
+    var e22: f64 = 0.0
+    var k0: i64 = 0
+    while k0 < ETD_NB {
+        let lam0 = 2.0 - 2.0 * @cos(NOEMA_PI * (k0 as f64) / (ETD_NB as f64))
+        etd_mode_coeffs(cbar, lam0, dt, &e11, &e12, &e21, &e22)
+        buf[ETD_OFF_C11 + k0] = e11
+        buf[ETD_OFF_C12 + k0] = e12
+        buf[ETD_OFF_C21 + k0] = e21
+        buf[ETD_OFF_C22 + k0] = e22
+        k0 = k0 + 1
+    }
+    var b: i64 = 0
+    while b < ETD_NBLK {
+        let base = b * ETD_NB
+        // ileri DCT: 4 kanal
+        etd_dct_fwd_at(buf, ETD_OFF_PR + base, ETD_OFF_MR + base)
+        etd_dct_fwd_at(buf, ETD_OFF_PI + base, ETD_OFF_MI + base)
+        etd_dct_fwd_at(buf, ETD_OFF_RR + base, ETD_OFF_MR + NOEMA_D + base)
+        etd_dct_fwd_at(buf, ETD_OFF_RI + base, ETD_OFF_MI + NOEMA_D + base)
+        // mod başına 2x2 ETD
+        var k: i64 = 0
+        while k < ETD_NB {
+            let i0 = ETD_OFF_MR + base + k
+            let i1 = ETD_OFF_MR + NOEMA_D + base + k
+            let j0 = ETD_OFF_MI + base + k
+            let j1 = ETD_OFF_MI + NOEMA_D + base + k
+            let wr = buf[i0]
+            let wi = buf[j0]
+            let vr = buf[i1]
+            let vi = buf[j1]
+            let a11 = buf[ETD_OFF_C11 + k]
+            let a12 = buf[ETD_OFF_C12 + k]
+            let a21 = buf[ETD_OFF_C21 + k]
+            let a22 = buf[ETD_OFF_C22 + k]
+            buf[i0] = a11 * wr + a12 * vr
+            buf[j0] = a11 * wi + a12 * vi
+            buf[i1] = a21 * wr + a22 * vr
+            buf[j1] = a21 * wi + a22 * vi
+            k = k + 1
+        }
+        // ters DCT
+        etd_dct_inv_at(buf, ETD_OFF_MR + base, ETD_OFF_PR + base)
+        etd_dct_inv_at(buf, ETD_OFF_MI + base, ETD_OFF_PI + base)
+        etd_dct_inv_at(buf, ETD_OFF_MR + NOEMA_D + base, ETD_OFF_RR + base)
+        etd_dct_inv_at(buf, ETD_OFF_MI + NOEMA_D + base, ETD_OFF_RI + base)
+        b = b + 1
+    }
+}
+
+// ── İtki yarım-adımı: Π += (dt/2τ2)·F_kal ──────────────────────────────
+fn etd_kick_half(buf: *f64, dt: f64, npts: i64) {
+    let h = dt / (4.0 * NOEMA_TAU_2)
+    var i: i64 = 0
+    while i < npts {
+        buf[ETD_OFF_RR + i] = buf[ETD_OFF_RR + i] + h * buf[ETD_OFF_FRE + i]
+        buf[ETD_OFF_RI + i] = buf[ETD_OFF_RI + i] + h * buf[ETD_OFF_FIM + i]
+        i = i + 1
+    }
+}
+
+// ── §6.2 V_koruma kritik sönümlü yarım-adım propagatörü ─────────────────
+// ω_kor = √(Λ_kor/(2τ2)); τ = dt/2. (Ψ,Π) karmaşık çift; matris reel.
+fn etd_protect_half(buf: *f64, dt: f64, npts: i64) {
+    let tau = dt * 0.5
+    let w = @sqrt(NOEMA_LAMBDA_KOR / (2.0 * NOEMA_TAU_2))
+    let e = noema_exp(0.0 - w * tau)
+    let a11 = e * (1.0 + w * tau)
+    let a12 = e * tau
+    let a21 = e * (0.0 - w * w * tau)
+    let a22 = e * (1.0 - w * tau)
+    var i: i64 = 0
+    while i < npts {
+        let sr = buf[ETD_OFF_PR + i]
+        let si = buf[ETD_OFF_PI + i]
+        let vr = buf[ETD_OFF_RR + i]
+        let vi = buf[ETD_OFF_RI + i]
+        buf[ETD_OFF_PR + i] = a11 * sr + a12 * vr
+        buf[ETD_OFF_PI + i] = a11 * si + a12 * vi
+        buf[ETD_OFF_RR + i] = a21 * sr + a22 * vr
+        buf[ETD_OFF_RI + i] = a21 * si + a22 * vi
+        i = i + 1
+    }
+}
+
+// ── Tek Strang mikro-adım (tam Δt) ─────────────────────────────────────
+fn etd_micro_step(buf: *f64, dt: f64, cbar: f64, npts: i64) {
+    etd_kick_half(buf, dt, npts)
+    etd_protect_half(buf, dt, npts)
+    etd_modal_pass(buf, dt, cbar)
+    etd_protect_half(buf, dt, npts)
+    etd_kick_half(buf, dt, npts)
+}
+
+// ── §6.3 Makro senkronizasyon + erken kararlılık çıkışı ────────────────
+fn etd_macro_sync(buf: *f64, npts: i64,
+                  sum_psi2: *f64, sum_pi2: *f64,
+                  ratio: *f64, exited: *i64) {
+    var sp: f64 = 0.0
+    var sq: f64 = 0.0
+    var i: i64 = 0
+    while i < npts {
+        let pr = buf[ETD_OFF_PR + i]
+        let pi = buf[ETD_OFF_PI + i]
+        let rr = buf[ETD_OFF_RR + i]
+        let ri = buf[ETD_OFF_RI + i]
+        sp = sp + pr * pr + pi * pi
+        sq = sq + rr * rr + ri * ri
+        i = i + 1
+    }
+    sum_psi2[0] = sp
+    sum_pi2[0] = sq
+    let r = @sqrt(sq) / (@sqrt(sp) + NOEMA_EPS)
+    ratio[0] = r
+    exited[0] = if r < NOEMA_EPS_DUR { 1 } else { 0 }
+}
+
+// ── L1/L2 döşemeli Strang: her mikro-adım sonrası senkron + erken çıkış ─
+// Yürütülen mikro-adım sayısını döner.
+fn etd_run_block(buf: *f64, dt: f64, cbar: f64, npts: i64,
+                 micro_steps: i64) -> i64 {
+    var done: i64 = 0
+    var sp: f64 = 0.0
+    var sq: f64 = 0.0
+    var r: f64 = 0.0
+    var ex: i64 = 0
+    while done < micro_steps {
+        etd_micro_step(buf, dt, cbar, npts)
+        done = done + 1
+        etd_macro_sync(buf, npts, &sp, &sq, &r, &ex)
+        if ex == 1 { break }
+    }
+    done
+}

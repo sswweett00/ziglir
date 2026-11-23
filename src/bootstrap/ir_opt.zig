@@ -179,22 +179,22 @@ fn countFnInsts(f: *const IRFn) u32 {
 const INLINE_MAX_INSTS = 56;
 const INLINE_MAX_INSTS_SINGLE_CALL = 120;
 
-fn countCallSites(module: *const IRModule, callee: u32) u32 {
-    var sites: u32 = 0;
+/// Count direct `.call` sites per callee in one module pass. `inlineSmallFunctions`
+/// needs this for every function, so computing it per callee was O(fns x insts)
+/// quadratic on large modules.
+fn countAllCallSites(module: *const IRModule, out: *[ir.MAX_FNS]u32) void {
     for (0..module.fn_count) |fi| {
         const f = &module.fns[fi];
         for (0..f.block_count) |bi| {
             for (0..f.blocks[bi].inst_count) |ii| {
                 const inst = f.blocks[bi].insts[ii];
-                if (inst.op == .call and inst.callee_fn_idx >= 0 and
-                    @as(u32, @intCast(inst.callee_fn_idx)) == callee)
-                {
-                    sites += 1;
+                if (inst.op == .call and inst.callee_fn_idx >= 0) {
+                    const ci: u32 = @intCast(inst.callee_fn_idx);
+                    if (ci < module.fn_count) out[ci] += 1;
                 }
             }
         }
     }
-    return sites;
 }
 
 /// True when `f` contains no call at all and nothing it could call is
@@ -293,11 +293,13 @@ fn inlineSmallFunctions(module: *IRModule) bool {
     var changed = false;
     var eligible: [ir.MAX_FNS]bool = .{false} ** ir.MAX_FNS;
     var leaves: [ir.MAX_FNS]bool = .{false} ** ir.MAX_FNS;
+    var call_sites: [ir.MAX_FNS]u32 = .{0} ** ir.MAX_FNS;
+    countAllCallSites(module, &call_sites);
     computeLeafClosure(module, &leaves);
     for (0..module.fn_count) |i| {
         // A single-call-site callee is inlined even when larger, because total
         // code size cannot shrink by keeping the call.
-        const max_insts: u32 = if (countCallSites(module, @intCast(i)) <= 1)
+        const max_insts: u32 = if (call_sites[i] <= 1)
             INLINE_MAX_INSTS_SINGLE_CALL
         else
             INLINE_MAX_INSTS;

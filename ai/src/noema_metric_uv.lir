@@ -1,0 +1,258 @@
+// noema_metric_uv.lir — NOEMA-Φ Woodbury ters metriği ve Randers
+// dışbükeylik projeksiyonu (Mimari §3.3-3.4).
+//
+// Tam D×D matris asla kurulmaz. c = e^{-2σ} ve R×R SPD çekirdek
+//   M = I_R + c·UᵀU   (U: R×D, u_eff[k*RD + r*D + d])
+// için ters metrik:
+//   g⁻¹v = c·v − c²·U·(M⁻¹(Uᵀv))        — O(R·D), R<=4
+//
+// M çözümü Cholesky (LLᵀ) ile yapılır; R<=4 sabit tavanlı yığın
+// dizileri kullanılır, heap yok.
+//
+// Randers dışbücürlüğü: ||b̃||_g = sqrt(b̃ᵀ g⁻¹b̃) <= b_max=0.85 şartı
+// için b_eff doğrudan ölçeklenir (skaler çarpan — yön korunur).
+//
+// Yarı-yoğunluk faktörü |g|^{1/4} = e^{σD/2}·det(M)^{1/4}
+// (det eşitliği: det(g)=e^{2σD}·det(M), matris determinant lemma).
+//
+// U(1) kovaryant türev: D_μΨ = (∇_μ − i·η_b·b_μ)Ψ;
+//   p_re = g_re + η_b·b_μ·ψ_im
+//   p_im = g_im − η_b·b_μ·ψ_re
+// covariant_re/covariant_im yalnızca bu cebirsel adımı verir;
+// ∇_μ'nin kafes üzerindeki hesabı çözücü katmanına (Faz 3) aittir.
+
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_metric.lir"
+
+// LIR modül sınırı: struct tipleri dosyalar arası görünmez; Arena'ya
+// dokunan işlevler impl Arena yöntemleri olarak tanımlanır.
+
+/// M = I + c·UᵀU çekirdek matrisini m[0..R*R) satır-major *f64
+/// olarak kurar. U: u_eff içinde R×D (r*D+d).
+fn metric_build_m(a: *Arena, k: i64, m: *f64) {
+    let r = a.cfg.r
+    let d = a.cfg.d
+    let sig = a.sigma_eff_at(k)
+    let c = noema_exp(0.0 - 2.0 * sig)
+    var i: i64 = 0
+    while i < r * r {
+        m[i] = 0.0
+        i = i + 1
+    }
+    var rr: i64 = 0
+    while rr < r {
+        var ss: i64 = 0
+        while ss < r {
+            var acc = 0.0
+            var dd: i64 = 0
+            while dd < d {
+                acc = acc + a.u_eff_at(k, rr, dd) * a.u_eff_at(k, ss, dd)
+                dd = dd + 1
+            }
+            if rr == ss {
+                m[rr * r + ss] = 1.0 + c * acc
+            } else {
+                m[rr * r + ss] = c * acc
+            }
+            ss = ss + 1
+        }
+        rr = rr + 1
+    }
+}
+
+/// M (R×R SPD, satır-major *f64) için LLᵀ Cholesky; L alt üçgen
+/// m üzerine yazılır. Başarısızlıkta -1 (M PD değil).
+fn metric_chol(a_m: *f64, r: i64) -> i64 {
+    var i: i64 = 0
+    while i < r {
+        var j: i64 = 0
+        while j <= i {
+            var sum = a_m[j * r + i]
+            var p: i64 = 0
+            while p < j {
+                sum = sum - a_m[j * r + p] * a_m[i * r + p]
+                p = p + 1
+            }
+            if i == j {
+                if sum <= 1e-18 { return -1 }
+                a_m[i * r + i] = @sqrt(sum)
+            } else {
+                a_m[i * r + j] = sum / a_m[j * r + j]
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+/// L (alt üçgen, m içinde) ile M x = y çözümü; sonuç x'e yazılır.
+fn metric_chol_solve(a_m: *f64, r: i64, y: *f64, x: *f64) {
+    // İleri substituted: L z = y (x ara değişken olarak kullanılır)
+    var i: i64 = 0
+    while i < r {
+        var sum = y[i]
+        var p: i64 = 0
+        while p < i {
+            sum = sum - a_m[i * r + p] * x[p]
+            p = p + 1
+        }
+        x[i] = sum / a_m[i * r + i]
+        i = i + 1
+    }
+    // Geri substituted: Lᵀ x = z
+    var ii: i64 = r - 1
+    while ii >= 0 {
+        var sum = x[ii]
+        var q: i64 = ii + 1
+        while q < r {
+            sum = sum - a_m[q * r + ii] * x[q]
+            q = q + 1
+        }
+        x[ii] = sum / a_m[ii * r + ii]
+        ii = ii - 1
+    }
+}
+
+impl Arena {
+    /// g⁻¹v operatörü: v giriş (D uzunluk *f64), w çıkış (D uzunluk
+    /// *f64). v ve w çakışmamalıdır (w ayrı tampon).
+    /// Dönen: 0 başarı, -1 geometri geçersiz.
+    fn metric_ginv_apply(self: *Arena, k: i64, v: *f64, w: *f64) -> i64 {
+        let r = self.cfg.r
+        let d = self.cfg.d
+        let sig = self.sigma_eff_at(k)
+        let c = noema_exp(0.0 - 2.0 * sig)
+        var m: [16]f64 = [0.0; 16]
+        metric_build_m(self, k, &m[0])
+        if metric_chol(&m[0], r) != 0 { return -1 }
+        // y = Uᵀ v  (r bileşeni: Σ_d U[r][d]·v[d])
+        var y: [4]f64 = [0.0; 4]
+        var rr: i64 = 0
+        while rr < r {
+            var acc = 0.0
+            var dd: i64 = 0
+            while dd < d {
+                acc = acc + self.u_eff_at(k, rr, dd) * v[dd]
+                dd = dd + 1
+            }
+            y[rr] = acc
+            rr = rr + 1
+        }
+        var x: [4]f64 = [0.0; 4]
+        metric_chol_solve(&m[0], r, &y[0], &x[0])
+        // w = c·v − c²·U·x
+        var i: i64 = 0
+        while i < d {
+            var corr = 0.0
+            var s2: i64 = 0
+            while s2 < r {
+                corr = corr + self.u_eff_at(k, s2, i) * x[s2]
+                s2 = s2 + 1
+            }
+            w[i] = c * v[i] - c * c * corr
+            i = i + 1
+        }
+        return 0
+    }
+
+    /// ||b̃||_g = sqrt(b̃ᵀ g⁻¹b̃): skaler formülle hesaplanır
+    /// (b·g⁻¹b = c·b·b − c²·yᵀM⁻¹y, y=Uᵀb).
+    fn metric_b_norm_g(self: *Arena, k: i64) -> f64 {
+        let r = self.cfg.r
+        let d = self.cfg.d
+        let sig = self.sigma_eff_at(k)
+        let c = noema_exp(0.0 - 2.0 * sig)
+        var bb = 0.0
+        var dd: i64 = 0
+        while dd < d {
+            let bv = self.b_eff_at(k, dd)
+            bb = bb + bv * bv
+            dd = dd + 1
+        }
+        var m: [16]f64 = [0.0; 16]
+        metric_build_m(self, k, &m[0])
+        if metric_chol(&m[0], r) != 0 { return NOEMA_B_MAX * 2.0 }
+        var y: [4]f64 = [0.0; 4]
+        var rr: i64 = 0
+        while rr < r {
+            var acc = 0.0
+            var i2: i64 = 0
+            while i2 < d {
+                acc = acc + self.u_eff_at(k, rr, i2) * self.b_eff_at(k, i2)
+                i2 = i2 + 1
+            }
+            y[rr] = acc
+            rr = rr + 1
+        }
+        var x: [4]f64 = [0.0; 4]
+        metric_chol_solve(&m[0], r, &y[0], &x[0])
+        var ytx = 0.0
+        var q: i64 = 0
+        while q < r {
+            ytx = ytx + y[q] * x[q]
+            q = q + 1
+        }
+        let g2 = c * bb - c * c * ytx
+        if g2 < 0.0 { return 0.0 }
+        return @sqrt(g2)
+    }
+
+    /// Randers dışbükeylik projeksiyonu: ||b̃||_g <= b_max sağlanana
+    /// dek b_eff skalerle ölçeklenir.
+    /// Dönen: uygulanan ölçek katsayısı (1.0 = değişiklik yok).
+    fn metric_b_project(self: *Arena, k: i64) -> f64 {
+        let nrm = self.metric_b_norm_g(k)
+        if nrm <= NOEMA_B_MAX or nrm <= 1e-12 {
+            return 1.0
+        }
+        let sc = NOEMA_B_MAX / nrm
+        var d: i64 = 0
+        while d < self.cfg.d {
+            self.b_eff_set(k, d, self.b_eff_at(k, d) * sc)
+            d = d + 1
+        }
+        return sc
+    }
+
+    /// Tüm aktif slotlar için b projeksiyonu.
+    fn metric_b_project_all(self: *Arena, n_aktif: i64) {
+        var k: i64 = 0
+        while k < n_aktif {
+            self.metric_b_project(k)
+            k = k + 1
+        }
+    }
+
+    /// |g|^{1/4} yarı-yoğunluk faktörü: e^{σD/2} · det(M)^{1/4}.
+    /// det(M), LLᵀ Cholesky köşegenlerinin karesinin çarpımıdır.
+    fn metric_half_density(self: *Arena, k: i64) -> f64 {
+        let r = self.cfg.r
+        let d = self.cfg.d
+        let sig = self.sigma_eff_at(k)
+        var m: [16]f64 = [0.0; 16]
+        metric_build_m(self, k, &m[0])
+        if metric_chol(&m[0], r) != 0 { return 1.0 }
+        var det = 1.0
+        var i: i64 = 0
+        while i < r {
+            let lii = m[i * r + i]
+            det = det * lii * lii
+            i = i + 1
+        }
+        return noema_exp(sig * (d as f64) * 0.5) * @sqrt(@sqrt(det))
+    }
+}
+
+/// U(1) kovaryant türev — reel bileşen:
+/// p_re = ∇re + η_b·b_μ·ψ_im.
+fn covariant_re(_psi_re: f64, psi_im: f64, grad_re: f64, b_mu: f64) -> f64 {
+    return grad_re + NOEMA_ETA_B * b_mu * psi_im
+}
+
+/// U(1) kovaryant türev — sanal bileşen:
+/// p_im = ∇im − η_b·b_μ·ψ_re.
+fn covariant_im(psi_re: f64, _psi_im: f64, grad_im: f64, b_mu: f64) -> f64 {
+    return grad_im - NOEMA_ETA_B * b_mu * psi_re
+}

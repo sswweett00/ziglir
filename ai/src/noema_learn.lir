@@ -1,0 +1,155 @@
+// noema_learn.lir — NOEMA-Φ geri yayılımsız öğrenme: zarf teoremi
+// denge-rejimi gradyanları (Mimari §7.1, §7.3).
+//
+// w_a = g_a^{-1} DΨ_a  (D: periyodik merkezî fark, complex)
+// z_a = U_a^T w_a    (R bileşen, complex)
+//
+//   D_σ^denge = e^{2σ}(W+‖w+‖² − W-‖w-‖²)
+//   D_{u,μ}^{(r),denge} = P_seyrek(W+ Re(z+^{(r)*} w+^μ) − W- Re(z-^{(r)*} w-^μ))
+//   D_{b,μ}^denge     = η_b(W+ Im(Ψ+* w+^μ) − W- Im(Ψ-* w-^μ))
+//
+// Re(z*w) = zre·wre + zim·wim ;  Im(ψ*w) = ψre·wim − ψim·wre.
+// w+ / w- : artı/eksi dal alanları (ör. güncel ψ ve ortak-önek anlık
+// görüntüsü ψ_yör) — çağıran iki dal için ayrı w/z hesaplatır.
+//
+// P_seyrek: |x| üst-k violeta indirgeme — yalnızca en büyük `keep`
+// genlikli katsayılar korunur, gerisi sıfırlanır (sert eşik).
+//
+// Tüm tamponlar çağırandan; yığın dışı bellek yok.
+
+import "noema_const.lir"
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_metric_uv.lir"
+
+/// İki complex vektörün Re(z†w) bileşeni:
+/// re(z*·w) = zre·wre + zim·wim  (z*,w complex).
+fn learn_re_zw(zre: *f64, zim: *f64, wre: *f64, wim: *f64,
+               r: i64, mu: i64) -> f64 {
+    return zre[r] * wre[mu] + zim[r] * wim[mu]
+}
+
+/// Im(ψ*·w) = ψre·wim − ψim·wre.
+fn learn_im_pw(pre: *f64, pim: *f64, wre: *f64, wim: *f64,
+               mu: i64) -> f64 {
+    return pre[mu] * wim[mu] - pim[mu] * wre[mu]
+}
+
+/// w = g⁻¹∇ψ (complex). Kart k, akış b=0, field_n nokta.
+/// Girdi: psi_re/psi_im kaynak (arena'dan okunur); çıkış wre/wim.
+/// İç tampon olarak vre/vim kullanılır (∇ψ önce oraya yazılır).
+impl Arena {
+    fn learn_field_w(self: *Arena, k: i64,
+                     vre: *f64, vim: *f64, wre: *f64, wim: *f64) -> i64 {
+        let n = self.field_n
+        var i: i64 = 0
+        while i < n {
+            let ip = if i + 1 < n { i + 1 } else { 0 }
+            let im = if i - 1 >= 0 { i - 1 } else { n - 1 }
+            let xr1 = self.fast.psi_re[idx3(k, 0, ip, self.b_faz, n)]
+            let xr0 = self.fast.psi_re[idx3(k, 0, im, self.b_faz, n)]
+            vre[i] = xr1 - xr0
+            let xi1 = self.fast.psi_im[idx3(k, 0, ip, self.b_faz, n)]
+            let xi0 = self.fast.psi_im[idx3(k, 0, im, self.b_faz, n)]
+            vim[i] = xi1 - xi0
+            i = i + 1
+        }
+        if self.metric_ginv_apply(k, vre, wre) != 0 { return -1 }
+        if self.metric_ginv_apply(k, vim, wim) != 0 { return -1 }
+        return 0
+    }
+
+    /// z = Uᵀw (complex, R bileşen). wre/wim: D uzunluk; zre/zim: R.
+    fn learn_zt(self: *Arena, k: i64,
+                wre: *f64, wim: *f64, zre: *f64, zim: *f64) {
+        let r = self.cfg.r
+        let d = self.cfg.d
+        var rr: i64 = 0
+        while rr < r {
+            var ar: f64 = 0.0
+            var ai: f64 = 0.0
+            var dd: i64 = 0
+            while dd < d {
+                let u = self.u_eff_at(k, rr, dd)
+                ar = ar + u * wre[dd]
+                ai = ai + u * wim[dd]
+                dd = dd + 1
+            }
+            zre[rr] = ar
+            zim[rr] = ai
+            rr = rr + 1
+        }
+    }
+
+    /// D_σ^denge = e^{2σ}(W+·‖w+‖² − W-·‖w-‖²).
+    /// np2/nm2: artı/eksi dal w akısının L2 norm kareleri (çağıran
+    /// learn_w_norm2 ile hesaplar).
+    fn learn_D_sigma(self: *Arena, k: i64, wp: f64, wn: f64,
+                     np2: f64, nm2: f64) -> f64 {
+        let sig = self.sigma_eff_at(k)
+        return noema_exp(2.0 * sig) * (wp * np2 - wn * nm2)
+    }
+
+    /// w akısının complex L2 norm kareleri (re+im).
+    fn learn_w_norm2(self: *Arena, wre: *f64, wim: *f64) -> f64 {
+        var s: f64 = 0.0
+        var i: i64 = 0
+        while i < self.cfg.d {
+            s = s + wre[i] * wre[i] + wim[i] * wim[i]
+            i = i + 1
+        }
+        return s
+    }
+
+    /// ψ alanının complex L2 norm karesi (akış 0, kart k).
+    fn learn_psi_norm2(self: *Arena, k: i64) -> f64 {
+        var s: f64 = 0.0
+        var i: i64 = 0
+        while i < self.field_n {
+            let xr = self.fast.psi_re[idx3(k, 0, i, self.b_faz, self.field_n)]
+            let xi = self.fast.psi_im[idx3(k, 0, i, self.b_faz, self.field_n)]
+            s = s + xr * xr + xi * xi
+            i = i + 1
+        }
+        return s
+    }
+}
+
+/// P_seyrek: |x| en büyük `keep` katsayı dışındakileri sıfırlar.
+/// keep <= 0 → hiçbir şey yapmaz. Dönen: korunan katsayı sayısı.
+fn learn_p_svyrek(x: *f64, n: i64, keep: i64) -> i64 {
+    if keep <= 0 or keep >= n { return n }
+    let nn = if n < 64 { n } else { 64 }
+    // eşik: keep'inci en büyük |x| — basit seçim: tam sıralama
+    // yerine k-adım kabarcık maksimumu O(n·keep), n=64 için ucuz.
+    var thr = 0.0
+    {
+        var a: [64]f64 = [0.0; 64]
+        var i: i64 = 0
+        while i < nn { a[i] = @fabs(x[i]) i = i + 1 }
+        var t: i64 = 0
+        while t < keep {
+            var mx = -1.0
+            var bi: i64 = 0
+            var mi2: i64 = 0
+            while mi2 < nn {
+                if a[mi2] > mx { mx = a[mi2] bi = mi2 }
+                mi2 = mi2 + 1
+            }
+            thr = mx
+            a[bi] = -1.0
+            t = t + 1
+        }
+    }
+    var kept: i64 = 0
+    var i: i64 = 0
+    while i < nn {
+        if @fabs(x[i]) >= thr and thr > 0.0 {
+            kept = kept + 1
+        } else {
+            x[i] = 0.0
+        }
+        i = i + 1
+    }
+    return kept
+}

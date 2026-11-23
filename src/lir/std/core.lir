@@ -387,21 +387,36 @@ struct ArrayList(T) {
 // Collections — HashMap
 // ════════════════════════════════════════════════════════════════════════════
 
+// Slot states: 0 = empty, 1 = occupied, 2 = deleted (tombstone)
 struct HashMapEntry(K, V) {
     key: K
     value: V
-    occupied: bool
+    state: u8
+}
+
+fn str_eq_bytes(a: string, b: string) -> bool {
+    if a.len != b.len { return false }
+    var i: u64 = 0
+    while i < a.len {
+        if a.ptr[i] != b.ptr[i] { return false }
+        i += 1
+    }
+    true
 }
 
 struct HashMap(K, V) {
-    entries: ArrayList(HashMapEntry(K, V))
+    slots: *HashMapEntry(K, V)
+    cap: u64
     size: u64
+    used: u64
     allocator: *Allocator
 
     fn init(alloc: *Allocator) -> HashMap(K, V) {
         HashMap(K, V) {
-            entries: ArrayList(HashMapEntry(K, V)).init(alloc)
+            slots: null
+            cap: 0
             size: 0
+            used: 0
             allocator: alloc
         }
     }
@@ -437,75 +452,97 @@ struct HashMap(K, V) {
         h
     }
 
+    fn keyEq(a: K, b: K) -> bool {
+        if K == string {
+            return str_eq_bytes(a, b)
+        }
+        a == b
+    }
+
+    // Returns the slot index for `key`: the matching occupied slot, or the
+    // first reusable slot (tombstone preferred over empty) for insertion.
     fn findSlot(self: *HashMap(K, V), key: K) -> u64 {
-        let cap = self.entries.len()
-        if cap == 0 { return 0 }
+        if self.cap == 0 { return 0 }
 
         let hash = if K == string { HashMap.hashStr(key) } else { HashMap.hashU64(key as u64) }
-        var idx = hash % cap
+        var idx = hash % self.cap
+        var first_tomb: u64 = self.cap
         var probe: u64 = 0
 
-        while probe < cap {
-            let slot = self.entries.get(idx)
-            if slot == null or !slot.occupied {
+        while probe < self.cap {
+            let st = self.slots[idx].state
+            if st == 0 {
+                if first_tomb < self.cap { return first_tomb }
                 return idx
             }
-            // Check key match
-            if K == string {
-                if strcmp(slot.key.ptr, key.ptr) == 0 { return idx }
-            } elif slot.key == key {
-                return idx
+            if st == 2 {
+                if first_tomb == self.cap { first_tomb = idx }
+            } elif st == 1 {
+                if HashMap.keyEq(self.slots[idx].key, key) { return idx }
             }
             probe += 1
-            idx = (idx + 1) % cap
+            idx = (idx + 1) % self.cap
         }
-        idx
+        if first_tomb < self.cap { return first_tomb }
+        0
+    }
+
+    fn allocSlots(self: *HashMap(K, V), new_cap: u64) -> bool {
+        let bytes = new_cap * @size_of(HashMapEntry(K, V))
+        let p = self.allocator.allocator_alloc(bytes)
+        if p == null { return false }
+        self.slots = p as *HashMapEntry(K, V)
+        self.cap = new_cap
+        var i: u64 = 0
+        while i < new_cap {
+            self.slots[i].state = 0
+            i += 1
+        }
+        true
     }
 
     fn put(self: *HashMap(K, V), key: K, value: V) -> bool {
-        // Resize if load factor > 0.75
-        if self.size * 4 > self.entries.len() * 3 {
+        // Resize when occupied + tombstones would exceed 75% of capacity
+        if self.cap == 0 or (self.used + 1) * 4 > self.cap * 3 {
             if !self.resize() { return false }
         }
 
         let idx = self.findSlot(key)
-        let existing = self.entries.get(idx)
-
-        if existing != null and existing.occupied {
-            // Update existing
-            self.entries.ptr[idx].value = value
+        if self.slots[idx].state == 1 {
+            self.slots[idx].value = value
         } else {
-            // Insert new
-            self.entries.insert(idx, HashMapEntry(K, V) {
+            if self.slots[idx].state == 0 { self.used += 1 }
+            self.slots[idx] = HashMapEntry(K, V) {
                 key: key
                 value: value
-                occupied: true
-            })
+                state: 1
+            }
             self.size += 1
         }
         true
     }
 
     fn get(self: *HashMap(K, V), key: K) -> ?V {
-        if self.entries.len() == 0 { return null }
+        if self.cap == 0 { return null }
         let idx = self.findSlot(key)
-        let slot = self.entries.get(idx)
-        if slot != null and slot.occupied { slot.value } else { null }
+        if idx < self.cap and self.slots[idx].state == 1 {
+            self.slots[idx].value
+        } else {
+            null
+        }
     }
 
     fn contains(self: *HashMap(K, V), key: K) -> bool {
-        if self.entries.len() == 0 { return false }
+        if self.cap == 0 { return false }
         let idx = self.findSlot(key)
-        let slot = self.entries.get(idx)
-        slot != null and slot.occupied
+        idx < self.cap and self.slots[idx].state == 1
     }
 
     fn remove(self: *HashMap(K, V), key: K) -> bool {
-        if self.entries.len() == 0 { return false }
+        if self.cap == 0 { return false }
         let idx = self.findSlot(key)
-        let slot = self.entries.get(idx)
-        if slot != null and slot.occupied {
-            self.entries.ptr[idx].occupied = false
+        if idx < self.cap and self.slots[idx].state == 1 {
+            self.slots[idx].state = 2
             self.size -= 1
             true
         } else {
@@ -514,18 +551,26 @@ struct HashMap(K, V) {
     }
 
     fn resize(self: *HashMap(K, V)) -> bool {
-        let old_entries = self.entries.slice()
-        let old_len = old_entries.len
-
-        let new_cap = if old_len == 0 { 8 } else { old_len * 2 }
-        self.entries = ArrayList(HashMapEntry(K, V)).init(self.allocator)
+        let old_slots = self.slots
+        let old_cap = self.cap
+        let new_cap = if old_cap == 0 { 8 } else { old_cap * 2 }
+        if !self.allocSlots(new_cap) { return false }
         self.size = 0
+        self.used = 0
 
         var i: u64 = 0
-        while i < old_len {
-            let old = old_entries.ptr[i]
-            if old.occupied {
-                self.put(old.key, old.value)
+        while i < old_cap {
+            if old_slots[i].state == 1 {
+                let key = old_slots[i].key
+                let value = old_slots[i].value
+                let idx = self.findSlot(key)
+                self.slots[idx] = HashMapEntry(K, V) {
+                    key: key
+                    value: value
+                    state: 1
+                }
+                self.size += 1
+                self.used += 1
             }
             i += 1
         }
@@ -539,18 +584,22 @@ struct HashMap(K, V) {
 
 struct HashSetEntry(K) {
     key: K
-    occupied: bool
+    state: u8
 }
 
 struct HashSet(K) {
-    entries: ArrayList(HashSetEntry(K))
+    slots: *HashSetEntry(K)
+    cap: u64
     size: u64
+    used: u64
     allocator: *Allocator
 
     fn init(alloc: *Allocator) -> HashSet(K) {
         HashSet(K) {
-            entries: ArrayList(HashSetEntry(K)).init(alloc)
+            slots: null
+            cap: 0
             size: 0
+            used: 0
             allocator: alloc
         }
     }
@@ -563,85 +612,104 @@ struct HashSet(K) {
         self.size == 0
     }
 
-    fn insert(self: *HashSet(K), key: K) -> bool {
-        if self.size * 4 > self.entries.len() * 3 {
-            self.resize()
+    fn keyEq(a: K, b: K) -> bool {
+        if K == string {
+            return str_eq_bytes(a, b)
         }
+        a == b
+    }
 
-        let cap = self.entries.len()
-        let hash = HashMap.hashU64(key as u64)
-        var idx = hash % cap
+    fn findSlot(self: *HashSet(K), key: K) -> u64 {
+        if self.cap == 0 { return 0 }
+        let hash = if K == string { HashMap.hashStr(key) } else { HashMap.hashU64(key as u64) }
+        var idx = hash % self.cap
+        var first_tomb: u64 = self.cap
         var probe: u64 = 0
 
-        while probe < cap {
-            let slot = self.entries.get(idx)
-            if slot == null or !slot.occupied {
-                self.entries.insert(idx, HashSetEntry(K) { key: key, occupied: true })
-                self.size += 1
-                return true
+        while probe < self.cap {
+            let st = self.slots[idx].state
+            if st == 0 {
+                if first_tomb < self.cap { return first_tomb }
+                return idx
             }
-            if slot.key == key {
-                return false // already exists
+            if st == 2 {
+                if first_tomb == self.cap { first_tomb = idx }
+            } elif st == 1 {
+                if HashSet.keyEq(self.slots[idx].key, key) { return idx }
             }
             probe += 1
-            idx = (idx + 1) % cap
+            idx = (idx + 1) % self.cap
         }
-        false
+        if first_tomb < self.cap { return first_tomb }
+        0
+    }
+
+    fn allocSlots(self: *HashSet(K), new_cap: u64) -> bool {
+        let bytes = new_cap * @size_of(HashSetEntry(K))
+        let p = self.allocator.allocator_alloc(bytes)
+        if p == null { return false }
+        self.slots = p as *HashSetEntry(K)
+        self.cap = new_cap
+        var i: u64 = 0
+        while i < new_cap {
+            self.slots[i].state = 0
+            i += 1
+        }
+        true
+    }
+
+    fn insert(self: *HashSet(K), key: K) -> bool {
+        if self.cap == 0 or (self.used + 1) * 4 > self.cap * 3 {
+            if !self.resize() { return false }
+        }
+        let idx = self.findSlot(key)
+        if self.slots[idx].state == 1 {
+            return false  // already exists
+        }
+        if self.slots[idx].state == 0 { self.used += 1 }
+        self.slots[idx] = HashSetEntry(K) { key: key, state: 1 }
+        self.size += 1
+        true
     }
 
     fn contains(self: *HashSet(K), key: K) -> bool {
-        if self.entries.len() == 0 { return false }
-        let cap = self.entries.len()
-        let hash = HashMap.hashU64(key as u64)
-        var idx = hash % cap
-        var probe: u64 = 0
-
-        while probe < cap {
-            let slot = self.entries.get(idx)
-            if slot == null or !slot.occupied { return false }
-            if slot.key == key { return true }
-            probe += 1
-            idx = (idx + 1) % cap
-        }
-        false
+        if self.cap == 0 { return false }
+        let idx = self.findSlot(key)
+        idx < self.cap and self.slots[idx].state == 1
     }
 
     fn remove(self: *HashSet(K), key: K) -> bool {
-        if self.entries.len() == 0 { return false }
-        let cap = self.entries.len()
-        let hash = HashMap.hashU64(key as u64)
-        var idx = hash % cap
-        var probe: u64 = 0
-
-        while probe < cap {
-            let slot = self.entries.get(idx)
-            if slot == null or !slot.occupied { return false }
-            if slot.key == key {
-                self.entries.ptr[idx].occupied = false
-                self.size -= 1
-                return true
-            }
-            probe += 1
-            idx = (idx + 1) % cap
+        if self.cap == 0 { return false }
+        let idx = self.findSlot(key)
+        if idx < self.cap and self.slots[idx].state == 1 {
+            self.slots[idx].state = 2
+            self.size -= 1
+            true
+        } else {
+            false
         }
-        false
     }
 
-    fn resize(self: *HashSet(K)) {
-        let old_entries = self.entries.slice()
-        let old_len = old_entries.len
-        let new_cap = if old_len == 0 { 8 } else { old_len * 2 }
-        self.entries = ArrayList(HashSetEntry(K)).init(self.allocator)
+    fn resize(self: *HashSet(K)) -> bool {
+        let old_slots = self.slots
+        let old_cap = self.cap
+        let new_cap = if old_cap == 0 { 8 } else { old_cap * 2 }
+        if !self.allocSlots(new_cap) { return false }
         self.size = 0
+        self.used = 0
 
         var i: u64 = 0
-        while i < old_len {
-            let old = old_entries.ptr[i]
-            if old.occupied {
-                self.insert(old.key)
+        while i < old_cap {
+            if old_slots[i].state == 1 {
+                let key = old_slots[i].key
+                let idx = self.findSlot(key)
+                self.slots[idx] = HashSetEntry(K) { key: key, state: 1 }
+                self.size += 1
+                self.used += 1
             }
             i += 1
         }
+        true
     }
 }
 
@@ -913,8 +981,11 @@ fn strToUpper(s: *u8, buf: *u8) -> u64 {
 }
 
 fn strCharAt(s: *u8, index: u64) -> ?u8 {
-    let len = strlen(s)
-    if index >= len { null } else { s[index] }
+    var i: u64 = 0
+    while i < index and s[i] != 0 {
+        i += 1
+    }
+    if s[i] == 0 { null } else { s[i] }
 }
 
 fn strSubStr(s: *u8, start: u64, end: u64, buf: *u8) -> u64 {
@@ -1168,26 +1239,39 @@ fn allocator_init() -> Allocator {
 
 fn allocator_alloc(self: *Allocator, size: u64) -> ?*anyopaque {
     let aligned = (size + 15) & ~15  // 16-byte alignment
-    let new_current = self.brk_current + aligned
+    let total = aligned + 16        // 16-byte header stores payload capacity
+    let new_current = self.brk_current + total
     if new_current > self.brk_end {
         // Extend heap by at least 1MB or requested size
-        let extend = if aligned > 1024 * 1024 { aligned * 2 } else { 1024 * 1024 }
+        let extend = if total > 1024 * 1024 { total * 2 } else { 1024 * 1024 }
         let new_end = new_current + extend
         let result = syscall_brk(new_end)
         if result == 0 { return null }
         self.brk_end = new_end
     }
-    let ptr = self.brk_current
+    let raw = self.brk_current
     self.brk_current = new_current
-    self.total_allocated += aligned
+    @write_u64(raw as *u8, aligned)
+    self.total_allocated += total
     self.alloc_count += 1
-    ptr as *anyopaque
+    (raw + 16) as *anyopaque
 }
 
 fn allocator_realloc(self: *Allocator, ptr: *anyopaque, new_size: u64) -> ?*anyopaque {
-    // Simple bump allocator — can't actually realloc
-    // Allocate new and copy (simplified)
-    self.allocator_alloc(new_size)
+    if ptr == null {
+        return self.allocator_alloc(new_size)
+    }
+    let new_aligned = (new_size + 15) & ~15
+    let np = self.allocator_alloc(new_size)
+    if np == null { return null }
+    let p8 = ptr as *u8
+    let n8 = np as *u8
+    let old_cap = @read_u64(@ptr_add(p8, 0 - 16)) as u64
+    let copy_len = if old_cap < new_aligned { old_cap } else { new_aligned }
+    if copy_len > 0 {
+        @memcpy(n8, p8, copy_len)
+    }
+    np
 }
 
 fn allocator_free(self: *Allocator, ptr: *anyopaque, size: u64) {

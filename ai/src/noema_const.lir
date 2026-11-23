@@ -1,0 +1,154 @@
+// noema_const.lir — NOEMA-Φ v3.0 merkezi fiziksel sabitler.
+//
+// Kaynak: ai/docs/Ai Framework Architecture.md §11.2 "Kendi İçinde Tutarlı
+// Referans Fiziksel Sabitler Tablosu". Tüm değerler f64'tür; LIR'de global
+// mutable yoktur, bu yüzden sabitler değiştirilmez const olarak yaşar.
+//
+// Sayısal temel: alan değişkenleri sürekli f64 çiftleridir (re/im ayrı SoA
+// dizilerinde). Karmaşık sayı imzası yoktur; tüm çekirdek (re,im) çiftleri
+// üzerinde çalışır.
+
+// ── Atlas ve düşük-rütbe geometri (§11.2) ────────────────────────────────
+const NOEMA_C_MIN: i64 = 64          // C >= 64 toplam kart (disk kapasitesi)
+const NOEMA_K_AKTIF: i64 = 4         // eşzamanlı aktif kart üst sınırı
+const NOEMA_R: i64 = 4               // düşük-rütbe Randers boyutu R ∈ {2,4}
+const NOEMA_K_DAL: i64 = 4           // V_top çatallanma kol sayısı
+const NOEMA_D: i64 = 64              // kart başına alan boyutu (D=64)
+const NOEMA_U_MAX: f64 = 3.0         // ||U_a||_F üst sınırı
+const NOEMA_SIGMA_MIN: f64 = -2.5    // konformal eğrilik alt sınırı
+const NOEMA_SIGMA_MAX: f64 = 2.5     // konformal eğrilik üst sınırı
+const NOEMA_B_MAX: f64 = 0.85        // Randers sürüklenme üst sınırı (<1)
+const NOEMA_M_IYETEK_ESIK: f64 = 0.01 // metrik depolama eşiği m_i > 0.01
+
+// ── Kovaryant ayar ve V_top (§11.2) ──────────────────────────────────────
+const NOEMA_ETA_B: f64 = 1.0         // U(1) kovaryant bağlaşım şiddeti
+const NOEMA_A4: f64 = 1.0            // dördüncü derece çatallanma katsayısı
+const NOEMA_A6: f64 = 0.25           // altıncı derece (kesin koersivite)
+const NOEMA_A0: f64 = 1.0            // hedef genlik A_0
+const NOEMA_ETA_C: f64 = 0.40        // dördüncü-faz kuplajı
+
+// ── Sembolik ve sözdizimsel kilit (§11.2) ────────────────────────────────
+// Deterministik kodlama: lambda_sem = 1.2, lambda_soz = 2.0
+// Sohbet kipi:            lambda_sem = 0.6,  lambda_soz = 0.5
+const NOEMA_LAMBDA_SEM_KOD: f64 = 1.2
+const NOEMA_LAMBDA_SOZ_KOD: f64 = 2.0
+const NOEMA_LAMBDA_SEM_SOHBET: f64 = 0.6
+const NOEMA_LAMBDA_SOZ_SOHBET: f64 = 0.5
+const NOEMA_N_KIP: i64 = 5           // 5 baz kip ekseni (Delta^4)
+const NOEMA_N_SEMBOL: i64 = 256      // 4^4 kuaterner faz kuyusu sayısı
+const NOEMA_KUATERNER: i64 = 4       // kuaterner faz alt-kanalı sayısı
+
+// ── Doğrulama, çekinme ve epistemik kapı (§11.2) ─────────────────────────
+const NOEMA_LAMBDA_V: f64 = 2.0      // V_doğrulama ağırlığı
+const NOEMA_MU_TERS: f64 = 2.0       // negatif-real kısım cezası
+const NOEMA_LAMBDA_CEK: f64 = 1.5    // V_çekinme ağırlığı
+const NOEMA_A_GUVEN: f64 = 0.35      // güven genlik eşiği
+const NOEMA_C_ESIK: f64 = 0.55       // çelişki eşiği
+const NOEMA_TAU_A: f64 = 0.08        // genlik lojistik sıcaklığı
+const NOEMA_TAU_C: f64 = 0.08        // çelişki lojistik sıcaklığı
+
+// ── Köprü, keywords kilidi ve nedensel bilgi (§11.2) ─────────────────────
+const NOEMA_KAPPA_AB: f64 = 0.5      // demet yapıştırma köprü şiddeti
+const NOEMA_GAMMA_KILIT: f64 = 0.8   // keywords faz kilidi ağırlığı
+const NOEMA_LAMBDA_NED: f64 = 0.5    // I_nedensel bilgi terimi ağırlığı
+const NOEMA_SIGMA_GUR: f64 = 0.25    // gürültü ölçeği (S paydası)
+
+// ── IMEX-ETD çözücü ve sönümleme (§11.2) ─────────────────────────────────
+const NOEMA_DT: f64 = 0.15           // ince ızgara mikro-adım
+const NOEMA_DT_KABA: f64 = 0.30      // kaba ızgara (4x gevşeme aşaması)
+const NOEMA_TAU_2: f64 = 1.0         // ikinci derece dalga eylemsizliği
+const NOEMA_GAMMA_0: f64 = 2.0       // taban sönümleme: 2*sqrt(tau_2*omega_min^2), omega_min = 1.0
+const NOEMA_OMEGA_MIN: f64 = 1.0     // en düşük normalize mod frekansı
+const NOEMA_EPS_DUR: f64 = 1e-3       // erken kararlılık çıkış eşiği
+const NOEMA_EPS_DUR_CIKIS: f64 = 5e-4 // çıkış bölgesinde erken çıkış
+
+// ── Güvenlik duvarı V_koruma (§11.2) ─────────────────────────────────────
+const NOEMA_LAMBDA_KOR: f64 = 10000.0 // sert bariyer şiddeti
+const NOEMA_TAU_2_KOR: f64 = 1.0      // bariyer için tau_2 (tau_2 ile aynı)
+const NOEMA_GAMMA_KOR: f64 = 141.4213562373095 // sqrt(2*tau_2*Lambda_kor)
+const NOEMA_OMEGA_KOR: f64 = 100.0    // sqrt(Lambda_kor/(2*tau_2))
+const NOEMA_T_HATA_MAX: i64 = 3       // ardışık hata sonrası çekinme
+
+// ── Marj, plastisite ve CAWR (§11.2) ─────────────────────────────────────
+const NOEMA_M: f64 = 1.5              // marj değeri
+const NOEMA_TAU_M: f64 = 0.25         // lojistik marj sıcaklığı
+const NOEMA_EPS_M: f64 = 0.02         // kapı epsilon'ı
+const NOEMA_KAPPA_OZ: f64 = 1.0       // öz-üretim yakınlık ağırlığı
+const NOEMA_ALPHA_SIGMA: f64 = 1e-3   // yavaş metrik adım (sigma)
+const NOEMA_ALPHA_U: f64 = 5e-4       // yavaş metrik adım (U)
+const NOEMA_ALPHA_B: f64 = 8e-4       // yavaş metrik adım (b)
+const NOEMA_ALPHA_FT_CARPAN: f64 = 3.0 // FT'de öğrenme adımı çarpanı
+const NOEMA_MU_OZ_ESIK: f64 = 0.25    // CAWR öz-ağırlık (iskele aşaması)
+
+// ── Yamabe düzenleyici ve katman sertliği (§11.2) ─────────────────────────
+// kappa_{.,0} = 5 * kappa_{.,kip}; eta_0 = 0.2; K_kons = 16
+const NOEMA_KAPPA_SIGMA_KIP: f64 = 1e-2
+const NOEMA_KAPPA_0_KIP: f64 = 1e-3
+const NOEMA_KAPPA_U_KIP: f64 = 5e-3
+const NOEMA_KAPPA_B_KIP: f64 = 5e-3
+const NOEMA_KAPPA_SIGMA_0: f64 = 5e-2
+const NOEMA_KAPPA_0_0: f64 = 5e-3
+const NOEMA_KAPPA_U_0: f64 = 2.5e-2
+const NOEMA_KAPPA_B_0: f64 = 2.5e-2
+const NOEMA_ETA_0: f64 = 0.2          // ortak taban plastisite ağırlığı
+const NOEMA_K_KONS: i64 = 16          // birikimli akı konsolidasyon darbesi
+const NOEMA_MU_CAWR_DO: f64 = 0.5     // do-bozulum CAWR ağırlığı
+const NOEMA_MU_CAWR_HATA: f64 = 0.25  // error: CAWR ağırlığı
+
+// ── Enjektör, Goertzel ve Parseval disk (§11.2) ──────────────────────────
+const NOEMA_GOERTZEL_R: f64 = 0.999   // sönümlü kayan-Goertzel katsayısı
+const NOEMA_GOERTZEL_W: i64 = 64      // kayan pencere genişliği
+const NOEMA_GOERTZEL_RW: f64 = 0.9379749638258454 // r^W = 0.999^64 (x[n-W] terimi)
+const NOEMA_W_ENT: i64 = 16           // düşük-entropi birleştirme penceresi
+const NOEMA_H_ENT_ESIK: f64 = 2.0     // H_yerel < eşik (nat) → faz paketi birleşimi
+const NOEMA_T_M: f64 = 0.5            // kip kestirimi softmax sıcaklığı T_m
+const NOEMA_THETA_SNR: f64 = 1e-4     // Parseval mod saklama eşiği
+const NOEMA_EPS_HEDEF_KATSAYI: f64 = 1e-3 // epsilon_hedef = katsayi * ||theta||
+
+// ── Çok-akış ve döşeme (§9.1, §10.1) ─────────────────────────────────────
+const NOEMA_B_FAZ: i64 = 8            // faz-ortogonal paralel akış sayısı
+const NOEMA_N_MICRO_L1L2: i64 = 4     // L1/L2 başına ardışık mikro-adım
+const NOEMA_RING_MIN_MB: i64 = 16     // tau_orta halka alt sınırı (MB)
+const NOEMA_RING_MAX_MB: i64 = 64     // tau_orta halka üst sınırı (MB)
+const NOEMA_RING_VARSAYILAN_MB: i64 = 16
+const NOEMA_RING_A_ESIK: f64 = 0.01   // A < A_esik özeti budama eşiği
+
+// ── Müfredat ve iskele (§10) ─────────────────────────────────────────────
+const NOEMA_OMEGA_KADEME: i64 = 4     // 4 evreli spektral müfredat
+const NOEMA_PLATO_ESIK: f64 = 0.005   // |Delta F|/F plato eşiği
+const NOEMA_DO_ORANI: f64 = 0.125     // akışın %12.5'i do-bozumu
+const NOEMA_KABA_ORAN: f64 = 0.25     // akışın ilk %25'i kaba ızgara
+const NOEMA_MARGIN_ATLA_CARPAN: f64 = 1.25 // F[-]-F[+] > 1.25*m atlama
+
+// ── FT veri dağılımı (§12.2) ─────────────────────────────────────────────
+const NOEMA_FT_SERT_KARSIT: f64 = 0.50
+const NOEMA_FT_ERROR_KURTARMA: f64 = 0.15
+const NOEMA_FT_EPISTEMIK: f64 = 0.10
+const NOEMA_FT_CAPRAZ_KIP: f64 = 0.10
+// (kalan %15 normal kayıt)
+
+// ── İskele kaldırma çizelgesi (§10.3) ────────────────────────────────────
+// Aşama:        0      1      2      3
+// gizleme:      %0    %30    %65    %90
+// mu_oz:        0.00   0.25   0.60   1.00
+// LIR const dizi literali desteklemez; aşama değerleri erişimci
+// fonksiyonlarla verilir (0..3, sınır dışı kelepçelenir).
+const NOEMA_ISKELE_ASAMA: i64 = 4
+fn noema_iskele_gizleme(asama: i64) -> f64 {
+    if asama <= 0 { return 0.0 }
+    if asama == 1 { return 0.30 }
+    if asama == 2 { return 0.65 }
+    return 0.90
+}
+fn noema_iskele_mu_oz(asama: i64) -> f64 {
+    if asama <= 0 { return 0.0 }
+    if asama == 1 { return 0.25 }
+    if asama == 2 { return 0.60 }
+    return 1.00
+}
+
+// ── Sayısal hijyen ───────────────────────────────────────────────────────
+const NOEMA_EPS: f64 = 1e-12           // genel epsilon
+const NOEMA_PI: f64 = 3.141592653589793
+const NOEMA_TAU: f64 = 6.283185307179586 // 2*pi
+const NOEMA_F64_MAX: f64 = 1.7976931348623157e308

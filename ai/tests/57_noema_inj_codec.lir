@@ -1,0 +1,102 @@
+// NOEMA-Φ Faz 5.1b testi: kuaterner kodlama, ρ_d topolojik yük
+// kanalı, düşük-entropi faz paketi birleştirme, kip kestirimi
+// (Mimari §8). Bu bölümdeki ilkeller saf fonksiyonlardır — arena
+// gerekmez.
+import "../src/noema_const.lir"
+import "../src/noema_math.lir"
+import "../src/noema_arena.lir"
+import "../src/noema_arena_rt.lir"
+import "../src/noema_inj.lir"
+
+fn q6(x: f64) -> i64 {
+    return @floor(x * 1000000.0 + 0.5) as i64
+}
+
+fn main() -> i64 {
+    var checks: i64 = 0
+    var passed: i64 = 0
+
+    // ── Kuaterner kodlama ───────────────────────────────────────────
+    // 165 = 0b10100101 → taban-4 basamakları (LSB→MSB): 1,1,2,2
+    checks = checks + 4
+    if @fabs(inj_quat_phase(165, 0) - NOEMA_PI * 0.5) < 1e-12 { passed = passed + 1 }
+    if @fabs(inj_quat_phase(165, 1) - NOEMA_PI * 0.5) < 1e-12 { passed = passed + 1 }
+    if @fabs(inj_quat_phase(165, 2) - NOEMA_PI) < 1e-12 { passed = passed + 1 }
+    if @fabs(inj_quat_phase(165, 3) - NOEMA_PI) < 1e-12 { passed = passed + 1 }
+    var qp: [4]f64 = [0.0; 4]
+    checks = checks + 1
+    if inj_quat_phases(0, &qp[0]) == 0 and qp[0] == 0.0 and qp[3] == 0.0 { passed = passed + 1 }
+    if inj_quat_phases(256, &qp[0]) == -1 { passed = passed + 1 }
+    checks = checks + 1
+
+    // ── ρ_d topolojik yük kanalı ─────────────────────────────────────
+    var dl: [3]i64 = [0; 3]
+    checks = checks + 4
+    // '(' → d0, +1, parity 0
+    if inj_delim(40, 0, &dl[0]) == 0 and dl[0] == 0 and dl[1] == 1 and dl[2] == 0 { passed = passed + 1 }
+    // ')' → d0, -1
+    if inj_delim(41, 0, &dl[0]) == 0 and dl[0] == 0 and dl[1] == -1 { passed = passed + 1 }
+    // '"' açılış → d3, +1, parity 1; kapanış → -1, parity 0
+    if inj_delim(34, 0, &dl[0]) == 0 and dl[0] == 3 and dl[1] == 1 and dl[2] == 1 { passed = passed + 1 }
+    if inj_delim(34, 1, &dl[0]) == 0 and dl[0] == 3 and dl[1] == -1 and dl[2] == 0 { passed = passed + 1 }
+    // ayraç değil → -1
+    checks = checks + 1
+    if inj_delim(65, 0, &dl[0]) == -1 { passed = passed + 1 }
+
+    // ── Entropi + faz paketi birleştirme ─────────────────────────────
+    var win: [16]u8 = [0; 16]
+    var i: i64 = 0
+    while i < 16 { @write_u8(@ptr_add(&win[0], i), 65) i = i + 1 }
+    // 16 özdeş bayt → H = 0 → birleşir
+    checks = checks + 2
+    if inj_entropy(&win[0], 16) == 0.0 { passed = passed + 1 }
+    if inj_should_merge(&win[0], 16) == 1 { passed = passed + 1 }
+    var ph: [4]f64 = [0.0; 4]
+    var am: [4]f64 = [0.0; 4]
+    let mp = inj_merge_pack(&win[0], 16, &ph[0], &am[0])
+    checks = checks + 3
+    // 65=0b01000001 → basamaklar 1,0,0,1 → faz [π/2,0,0,π/2], amp=1
+    if mp == 1 { passed = passed + 1 }
+    if @fabs(ph[0] - NOEMA_PI * 0.5) < 1e-12 and @fabs(ph[3] - NOEMA_PI * 0.5) < 1e-12 { passed = passed + 1 }
+    if am[0] == 1.0 and am[3] == 1.0 and @fabs(ph[1]) < 1e-12 { passed = passed + 1 }
+    printInt(q6(ph[0])) println("")
+    printInt(q6(am[2])) println("")
+    // yüksek entropi: 0..15 farklı bayt → H = ln16 ≈ 2.7726 > 2.0
+    i = 0
+    while i < 16 { @write_u8(@ptr_add(&win[0], i), (i % 256) as u8) i = i + 1 }
+    checks = checks + 2
+    if @fabs(inj_entropy(&win[0], 16) - 2.772588722239781) < 1e-9 { passed = passed + 1 }
+    if inj_merge_pack(&win[0], 16, &ph[0], &am[0]) == 0 { passed = passed + 1 }
+
+    // ── Kip kestirimi ────────────────────────────────────────────────
+    // npts=8; şablon 2 = J → m̂[2] ≈ 1
+    var jre: [8]f64 = [0.0; 8]
+    var jim: [8]f64 = [0.0; 8]
+    var tre: [40]f64 = [0.0; 40]
+    var tim: [40]f64 = [0.0; 40]
+    var m: [5]f64 = [0.0; 5]
+    i = 0
+    while i < 8 {
+        jre[i] = 4.0 * 0.3 * @cos(0.7 * (i as f64))
+        jim[i] = 4.0 * 0.2 * @sin(0.9 * (i as f64))
+        tre[2 * 8 + i] = jre[i]
+        tim[2 * 8 + i] = jim[i]
+        i = i + 1
+    }
+    checks = checks + 3
+    if inj_mode_est(&jre[0], &jim[0], &tre[0], &tim[0], 8, &m[0]) == 0 { passed = passed + 1 }
+    var msum: f64 = 0.0
+    i = 0
+    while i < 5 { msum = msum + m[i] i = i + 1 }
+    if @fabs(msum - 1.0) < 1e-9 { passed = passed + 1 }
+    if m[2] > 0.99 and m[0] < 0.01 and m[4] < 0.01 { passed = passed + 1 }
+    printInt(q6(m[2])) println("")
+    printInt(q6(m[0])) println("")
+
+
+    printInt(passed)
+    print("/")
+    printInt(checks)
+    println("")
+    return 0
+}

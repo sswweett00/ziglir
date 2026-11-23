@@ -411,7 +411,7 @@ pub const IRFn = struct {
     total_locals: u32 = 0,
     vreg_count: u16 = 1,
     ast_idx: u32 = 0,
-    local_addr_taken: [256]bool = .{false} ** 256,
+    local_addr_taken: [8192]bool = .{false} ** 8192,
 };
 
 pub const StructInfo = struct {

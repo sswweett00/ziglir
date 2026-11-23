@@ -1,0 +1,119 @@
+// NOEMA-Φ Faz 5.1a testi: Kayan-Goertzel enjektörü ve LUT faz
+// katlaması (Mimari §8). Goertzel doğrulaması test içi bağımsız
+// referans özyinelemeyle (@cos/@sin doğrudan) çapraz kontrol edilir.
+import "../src/noema_const.lir"
+import "../src/noema_math.lir"
+import "../src/noema_arena.lir"
+import "../src/noema_arena_rt.lir"
+import "../src/noema_inj.lir"
+
+fn q6(x: f64) -> i64 {
+    return @floor(x * 1000000.0 + 0.5) as i64
+}
+
+fn main() -> i64 {
+    var checks: i64 = 0
+    var passed: i64 = 0
+
+    var cfg = Arena.config_default()
+    var a = Arena.init(cfg)
+
+    // ── LUT dolumu (init'te) ────────────────────────────────────────
+    // idx 0 → faz 0: cos=1, sin=0. idx 512 → faz π/8.
+    checks = checks + 4
+    if @fabs(a.lut_cos_at(0) - 1.0) < 1e-12 { passed = passed + 1 }
+    if @fabs(a.lut_sin_at(0)) < 1e-12 { passed = passed + 1 }
+    if @fabs(a.lut_cos_at(512) - 0.9238795325112867) < 1e-12 { passed = passed + 1 }
+    if @fabs(a.lut_sin_at(512) - 0.3826834323650897) < 1e-12 { passed = passed + 1 }
+    printInt(q6(a.lut_cos_at(512))) println("")
+    printInt(q6(a.lut_sin_at(512))) println("")
+
+    // ── LUT faz katlaması (tam dalga) ───────────────────────────────
+    checks = checks + 6
+    if @fabs(a.inj_cos_phase(0.0) - 1.0) < 1e-12 { passed = passed + 1 }
+    if @fabs(a.inj_sin_phase(0.0)) < 1e-12 { passed = passed + 1 }
+    if @fabs(a.inj_cos_phase(NOEMA_PI * 0.5)) < 1e-9 { passed = passed + 1 }
+    if @fabs(a.inj_cos_phase(NOEMA_PI) + 1.0) < 1e-9 { passed = passed + 1 }
+    if @fabs(a.inj_sin_phase(NOEMA_PI * 0.5) - 1.0) < 1e-9 { passed = passed + 1 }
+    if @fabs(a.inj_sin_phase(NOEMA_PI * 1.5) + 1.0) < 1e-9 { passed = passed + 1 }
+    printlnFloat(a.inj_cos_phase(NOEMA_PI * 0.25))
+    printlnFloat(a.inj_sin_phase(NOEMA_PI * 1.25))
+
+    // ── Kayan-Goertzel: referans özyineleme ile çapraz doğrulama ─────
+    a.inj_goertzel_reset()
+    // Referans durum (yalnızca k=0 ve k=17 izlenir)
+    var xr0: f64 = 0.0
+    var xi0: f64 = 0.0
+    var xr17: f64 = 0.0
+    var xi17: f64 = 0.0
+    var hist: [64]f64 = [0.0; 64]
+    var pos: i64 = 0
+    var n: i64 = 0
+    var g: [2]f64 = [0.0; 2]
+    while n < 130 {
+        // deterministik test sinyali: karışık genlik + işaret
+        let x = 0.7 * @sin(0.31 * (n as f64)) + 0.2 * (((n * 7) % 5 - 2) as f64)
+        if a.inj_goertzel_push(0, x) != 0 { break }
+        // referans: aynı formül, @cos/@sin doğrudan
+        let delayed = hist[pos]
+        hist[pos] = x
+        pos = (pos + 1) % 64
+        let inp = x - NOEMA_GOERTZEL_RW * delayed
+        var kk: i64 = 0
+        while kk < 64 {
+            let om = NOEMA_TAU * (kk as f64) / 64.0
+            let cr = NOEMA_GOERTZEL_R * @cos(om)
+            let ci = 0.0 - NOEMA_GOERTZEL_R * @sin(om)
+            var oxr = xr0
+            var oxi = xi0
+            if kk == 17 { oxr = xr17 oxi = xi17 }
+            let nr = cr * oxr - ci * oxi + inp
+            let ni = cr * oxi + ci * oxr
+            if kk == 0 { xr0 = nr xi0 = ni }
+            if kk == 17 { xr17 = nr xi17 = ni }
+            kk = kk + 1
+        }
+        n = n + 1
+    }
+    checks = checks + 3
+    if n == 130 { passed = passed + 1 }
+    a.inj_goertzel_get(0, 0, &g[0])
+    if @fabs(g[0] - xr0) < 1e-9 and @fabs(g[1] - xi0) < 1e-9 { passed = passed + 1 }
+    a.inj_goertzel_get(0, 17, &g[0])
+    if @fabs(g[0] - xr17) < 1e-9 and @fabs(g[1] - xi17) < 1e-9 { passed = passed + 1 }
+    printInt(q6(g[0])) println("")
+    printInt(q6(g[1])) println("")
+    // Geçersiz akış reddi
+    checks = checks + 1
+    if a.inj_goertzel_push(-1, 1.0) == -1 and a.inj_goertzel_push(8, 1.0) == -1 { passed = passed + 1 }
+
+    // Determinizm: ikinci arena aynı sinyal → aynı bin değeri
+    var a2 = Arena.init(cfg)
+    a2.inj_goertzel_reset()
+    var m2: i64 = 0
+    while m2 < 40 {
+        let x2 = 0.7 * @sin(0.31 * (m2 as f64)) + 0.2 * (((m2 * 7) % 5 - 2) as f64)
+        a2.inj_goertzel_push(0, x2)
+        m2 = m2 + 1
+    }
+    var g2: [2]f64 = [0.0; 2]
+    // a2'de aynı 130 örneğin ilk 40'ı işlendi — doğrudan karşılaştırma
+    // yerine aynı uzunlukta yeniden itele:
+    while m2 < 130 {
+        let x2 = 0.7 * @sin(0.31 * (m2 as f64)) + 0.2 * (((m2 * 7) % 5 - 2) as f64)
+        a2.inj_goertzel_push(0, x2)
+        m2 = m2 + 1
+    }
+    a2.inj_goertzel_get(0, 17, &g2[0])
+    checks = checks + 1
+    if g2[0] == g[0] and g2[1] == g[1] { passed = passed + 1 }
+    printInt(q6(g2[0])) println("")
+    a2.free()
+
+    a.free()
+    printInt(passed)
+    print("/")
+    printInt(checks)
+    println("")
+    return 0
+}

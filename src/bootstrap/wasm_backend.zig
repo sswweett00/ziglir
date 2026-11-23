@@ -880,36 +880,44 @@ fn emitUserFn(sec: *Buf, alloc: std.mem.Allocator, module: *const IRModule, sour
                     try b.b(OP_DROP);
                 },
                 .deref_load, .load_mem => {
-                    try b.lget(vreg_base + inst.src1);
-                    try b.i64c(8);
-                    try b.call(RT_CHK_PTR_N);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.src1);
+                        try b.i64c(8);
+                        try b.call(RT_CHK_PTR_N);
+                    }
                     try b.lget(vreg_base + inst.src1);
                     try b.b(OP_I32_WRAP_I64);
                     try b.memop(OP_I64_LOAD, 3, 0);
                     try b.lset(vreg_base + inst.dest);
                 },
                 .deref_store, .store_mem => {
-                    try b.lget(vreg_base + inst.src1);
-                    try b.i64c(8);
-                    try b.call(RT_CHK_PTR_N);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.src1);
+                        try b.i64c(8);
+                        try b.call(RT_CHK_PTR_N);
+                    }
                     try b.lget(vreg_base + inst.src1);
                     try b.b(OP_I32_WRAP_I64);
                     try b.lget(vreg_base + inst.src2);
                     try b.memop(OP_I64_STORE, 3, 0);
                 },
                 .field_access => {
-                    try b.lget(vreg_base + inst.src1);
-                    try b.i64c(@as(i64, inst.field_offset) + 8);
-                    try b.call(RT_CHK_PTR_N);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.src1);
+                        try b.i64c(@as(i64, inst.field_offset) + 8);
+                        try b.call(RT_CHK_PTR_N);
+                    }
                     try b.lget(vreg_base + inst.src1);
                     try b.b(OP_I32_WRAP_I64);
                     try b.memop(OP_I64_LOAD, 3, inst.field_offset);
                     try b.lset(vreg_base + inst.dest);
                 },
                 .field_store => {
-                    try b.lget(vreg_base + inst.src1);
-                    try b.i64c(@as(i64, inst.field_offset) + 8);
-                    try b.call(RT_CHK_PTR_N);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.src1);
+                        try b.i64c(@as(i64, inst.field_offset) + 8);
+                        try b.call(RT_CHK_PTR_N);
+                    }
                     try b.lget(vreg_base + inst.src1);
                     try b.b(OP_I32_WRAP_I64);
                     try b.lget(vreg_base + inst.src2);
@@ -1257,52 +1265,64 @@ fn emitUserFn(sec: *Buf, alloc: std.mem.Allocator, module: *const IRModule, sour
                     try b.lset(vreg_base + inst.dest);
                 },
                 .call_read_byte => {
-                    try b.lget(vreg_base + inst.args[0]);
-                    try b.call(RT_CHK_PTR);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.args[0]);
+                        try b.call(RT_CHK_PTR);
+                    }
                     try b.lget(vreg_base + inst.args[0]);
                     try b.b(OP_I32_WRAP_I64);
                     try b.memop(OP_I64_LOAD8_U, 0, 0);
                     try b.lset(vreg_base + inst.dest);
                 },
                 .call_write_byte => {
-                    try b.lget(vreg_base + inst.args[0]);
-                    try b.call(RT_CHK_PTR);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.args[0]);
+                        try b.call(RT_CHK_PTR);
+                    }
                     try b.lget(vreg_base + inst.args[0]);
                     try b.b(OP_I32_WRAP_I64);
                     try b.lget(vreg_base + inst.args[1]);
                     try b.memop(OP_I64_STORE8, 0, 0);
                 },
                 .call_read_u32 => {
-                    try b.lget(vreg_base + inst.args[0]);
-                    try b.i64c(4);
-                    try b.call(RT_CHK_PTR_N);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.args[0]);
+                        try b.i64c(4);
+                        try b.call(RT_CHK_PTR_N);
+                    }
                     try b.lget(vreg_base + inst.args[0]);
                     try b.b(OP_I32_WRAP_I64);
                     try b.memop(OP_I64_LOAD32_U, 2, 0);
                     try b.lset(vreg_base + inst.dest);
                 },
                 .call_write_u32 => {
-                    try b.lget(vreg_base + inst.args[0]);
-                    try b.i64c(4);
-                    try b.call(RT_CHK_PTR_N);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.args[0]);
+                        try b.i64c(4);
+                        try b.call(RT_CHK_PTR_N);
+                    }
                     try b.lget(vreg_base + inst.args[0]);
                     try b.b(OP_I32_WRAP_I64);
                     try b.lget(vreg_base + inst.args[1]);
                     try b.memop(OP_I64_STORE32, 2, 0);
                 },
                 .call_read_u64 => {
-                    try b.lget(vreg_base + inst.args[0]);
-                    try b.i64c(8);
-                    try b.call(RT_CHK_PTR_N);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.args[0]);
+                        try b.i64c(8);
+                        try b.call(RT_CHK_PTR_N);
+                    }
                     try b.lget(vreg_base + inst.args[0]);
                     try b.b(OP_I32_WRAP_I64);
                     try b.memop(OP_I64_LOAD, 3, 0);
                     try b.lset(vreg_base + inst.dest);
                 },
                 .call_write_u64 => {
-                    try b.lget(vreg_base + inst.args[0]);
-                    try b.i64c(8);
-                    try b.call(RT_CHK_PTR_N);
+                    if (!inst.unchecked_access) {
+                        try b.lget(vreg_base + inst.args[0]);
+                        try b.i64c(8);
+                        try b.call(RT_CHK_PTR_N);
+                    }
                     try b.lget(vreg_base + inst.args[0]);
                     try b.b(OP_I32_WRAP_I64);
                     try b.lget(vreg_base + inst.args[1]);

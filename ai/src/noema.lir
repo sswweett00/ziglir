@@ -1,0 +1,35 @@
+// noema.lir — NOEMA-Φ tek-ikili çalışma zamanı giriş noktası (Faz 0.1+).
+//
+// Bu dosya, ai/project.manifest içinde listelenen sıfır-heap runtime
+// modüllerini tek ikili altında birleştiren üst sözleşmedir.
+//
+// IMPORT SIRASI ÖNEMLİDİR: LIR'de struct tipleri içe aktaran modüle
+// görünmez; bir modülün impl/düzeyi ancak tipi tanımlayan modül
+// daha önce import edilmişse çözümlenir. Bu yüzden arena önce,
+// ona bağlı katmanlar sonra gelir.
+//
+//   - noema_const.lir    : §11.2 referans fiziksel sabitler
+//   - noema_math.lir     : f64 transcendentals (exp) — heap yok
+//   - noema_arena.lir    : τ_hızlı/τ_yavaş/τ_orta/akümülasyon/L1-L2 arena
+//   - noema_arena_rt.lir : halka, atlas/tablo erişimcileri, sıfırlama
+//   - noema_atlas.lir    : §3.1 kavite atlası + topolojik seçim
+//   - noema_metric.lir   : §3.2 kip bileşimi + sınırlar
+//   - noema_metric_uv.lir: §3.3-3.4 Woodbury, Randers projeksiyonu,
+//                          yarı-yoğunluk, U(1) kovaryant türev
+//   - noema_pot.lir      : §4.1 serbest enerji terimleri + Wirtinger
+//   - noema_energy.lir   : §4-5 alan enerjisi taraması + küresel özetler
+//   - noema_dyn.lir      : §5 sönümleme, jiroskop, gürültü, Lyapunov
+//
+// Çalışma anında heap ayırma YOKTUR: tek tahsis Arena.init() içindeki
+// boot bloğudur (// lir:allow-alloc).
+
+import "noema_const.lir"
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_arena_rt.lir"
+import "noema_atlas.lir"
+import "noema_metric.lir"
+import "noema_metric_uv.lir"
+import "noema_pot.lir"
+import "noema_energy.lir"
+import "noema_dyn.lir"

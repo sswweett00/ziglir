@@ -1,0 +1,267 @@
+import "noema_arena.lir"
+
+impl Arena {
+    // ── τ_orta halka ──────────────────────────────────────────────────────
+
+    /// Halka slot işaretçisi: sıra numarası s (0..capacity-1).
+    fn ring_slot_ptr(self: *Arena, s: i64) -> *u8 {
+        return @ptr_add(self.ringst.ring, s * self.ringst.ring_slot_bytes)
+    }
+    fn ring_slot_used(self: *Arena, s: i64) -> i64 {
+        return @read_u64(self.ring_slot_ptr(s)) as i64
+    }
+    fn ring_slot_tag(self: *Arena, s: i64) -> i64 {
+        return @read_u64(@ptr_add(self.ring_slot_ptr(s), 8)) as i64
+    }
+    fn ring_slot_ampl(self: *Arena, s: i64) -> f64 {
+        return (@ptr_add(self.ring_slot_ptr(s), 16) as *f64)[0]
+    }
+    fn ring_slot_len(self: *Arena, s: i64) -> i64 {
+        return @read_u64(@ptr_add(self.ring_slot_ptr(s), 24)) as i64
+    }
+    fn ring_slot_payload(self: *Arena, s: i64) -> *u8 {
+        return @ptr_add(self.ring_slot_ptr(s), RING_SLOT_HDR)
+    }
+
+    /// tail'den başlayarak ilk used=1 slotu bulur; yoksa -1.
+    /// Budanan (used=0) delikler atlanır — FIFO düzeni korunur.
+    fn ring_find_used(self: *Arena, from: i64) -> i64 {
+        var p = from
+        var s: i64 = 0
+        while s < self.ringst.ring_capacity {
+            if self.ring_slot_used(p) == 1 { return p }
+            p = (p + 1) % self.ringst.ring_capacity
+            s = s + 1
+        }
+        return -1
+    }
+
+    /// Halka doluyken en eski kullanılan slotu düşürür (used=0).
+    fn ring_evict_oldest(self: *Arena) {
+        let s = self.ring_find_used(self.ringst.ring_tail)
+        if s < 0 { return }
+        @write_u64(self.ring_slot_ptr(s), 0)
+        self.ringst.ring_count = self.ringst.ring_count - 1
+        self.ringst.ring_tail = (s + 1) % self.ringst.ring_capacity
+    }
+
+    /// Slot yaz: tag + ampl + payload (len <= slot_payload). Halka doluysa
+    /// en eski kaydı düşürüp yazmaya devam eder — akış asla bloklanmaz.
+    /// Dönen: yazılan slot sırası veya -1 (geçersiz argüman).
+    fn ring_push(self: *Arena, tag: i64, ampl: f64, payload: *u8, len: i64) -> i64 {
+        if len < 0 or len > self.ringst.ring_slot_bytes - RING_SLOT_HDR { return -1 }
+        if self.ringst.ring_capacity <= 0 { return -1 }
+        if self.ringst.ring_count >= self.ringst.ring_capacity {
+            self.ring_evict_oldest()
+        }
+        let s = self.ringst.ring_head
+        let sp = self.ring_slot_ptr(s)
+        @write_u64(sp, 1)
+        @write_u64(@ptr_add(sp, 8), tag as u64)
+        (@ptr_add(sp, 16) as *f64)[0] = ampl
+        @write_u64(@ptr_add(sp, 24), len as u64)
+        if len > 0 {
+            @memcpy(@ptr_add(sp, RING_SLOT_HDR), payload, len)
+        }
+        self.ringst.ring_head = (self.ringst.ring_head + 1) % self.ringst.ring_capacity
+        self.ringst.ring_count = self.ringst.ring_count + 1
+        return s
+    }
+
+    /// En eski kullanılan slotu okur (silmez). Yoksa -1.
+    /// Çağıran slot alanlarını ring_slot_* ile okur, sonra ring_pop çağırır.
+    fn ring_peek(self: *Arena) -> i64 {
+        if self.ringst.ring_count <= 0 { return -1 }
+        return self.ring_find_used(self.ringst.ring_tail)
+    }
+
+    /// En eski kullanılan slotu tüketir (used=0).
+    fn ring_pop(self: *Arena) {
+        let s = self.ring_find_used(self.ringst.ring_tail)
+        if s < 0 {
+            self.ringst.ring_count = 0
+            return
+        }
+        @write_u64(self.ring_slot_ptr(s), 0)
+        self.ringst.ring_count = self.ringst.ring_count - 1
+        self.ringst.ring_tail = (s + 1) % self.ringst.ring_capacity
+    }
+
+    /// A < A_esik budaması: genliği eşik altındaki TÜM slotların used
+    /// bayrağını sıfırlar. Kalan kayıtlar FIFO sırasıyla korunur.
+    /// Dönen: düşürülen slot sayısı.
+    fn ring_prune(self: *Arena, a_esik: f64) -> i64 {
+        var dropped: i64 = 0
+        var s: i64 = 0
+        while s < self.ringst.ring_capacity {
+            if self.ring_slot_used(s) == 1 and self.ring_slot_ampl(s) < a_esik {
+                @write_u64(self.ring_slot_ptr(s), 0)
+                dropped = dropped + 1
+            }
+            s = s + 1
+        }
+        self.ringst.ring_count = self.ringst.ring_count - dropped
+        return dropped
+    }
+
+    // ── L1/L2 tabloları ───────────────────────────────────────────────────
+
+    /// Goertzel durumu: (b akışı, w bin) complex durum.
+    fn goertzel_re_at(self: *Arena, b: i64, w: i64) -> f64 {
+        return self.tables.goertzel_re[b * ARENA_GOERTZEL_W + w]
+    }
+    fn goertzel_im_at(self: *Arena, b: i64, w: i64) -> f64 {
+        return self.tables.goertzel_im[b * ARENA_GOERTZEL_W + w]
+    }
+    fn goertzel_set(self: *Arena, b: i64, w: i64, re: f64, im: f64) {
+        self.tables.goertzel_re[b * ARENA_GOERTZEL_W + w] = re
+        self.tables.goertzel_im[b * ARENA_GOERTZEL_W + w] = im
+    }
+
+    /// Çeyrek-dalga faz LUT: [0, pi/2) üzerinde 2048 eşit örnek.
+    fn lut_cos_at(self: *Arena, idx: i64) -> f64 {
+        return self.tables.lut_cos[idx]
+    }
+    fn lut_sin_at(self: *Arena, idx: i64) -> f64 {
+        return self.tables.lut_sin[idx]
+    }
+
+    /// ETD tablosu: (b akışı, mod i, katsayı e∈{0..3}) → E11,E12,E21,E22.
+    fn etd_at(self: *Arena, b: i64, mode: i64, e: i64) -> f64 {
+        return self.tables.etd_tab[((b * self.field_n + mode) * 4) + e]
+    }
+    fn etd_set(self: *Arena, b: i64, mode: i64, e: i64, v: f64) {
+        self.tables.etd_tab[((b * self.field_n + mode) * 4) + e] = v
+    }
+
+    /// Kavite imza tablosu: düğüm idx (0..C-1 yaprak = kart, C..2C-2 iç
+    /// düğüm), imza j. Yaprak erişimi için cavity_sig_at(kart,j) kullan.
+    fn cavity_node_at(self: *Arena, idx: i64, j: i64) -> f64 {
+        return self.tables.cavity_sig[idx * ARENA_SIG_LEN + j]
+    }
+    fn cavity_node_set(self: *Arena, idx: i64, j: i64, v: f64) {
+        self.tables.cavity_sig[idx * ARENA_SIG_LEN + j] = v
+    }
+    fn cavity_sig_at(self: *Arena, c: i64, j: i64) -> f64 {
+        return self.cavity_node_at(c, j)
+    }
+    fn cavity_sig_set(self: *Arena, c: i64, j: i64, v: f64) {
+        self.cavity_node_set(c, j, v)
+    }
+
+    /// İkili kavite ağacı iç düğüm çocukları (düğüm id'si C..2C-2,
+    /// dizi indeksi id-C).
+    fn atlas_left_at(self: *Arena, node: i64) -> i64 {
+        return self.tables.atlas_left[node - self.cfg.c_total]
+    }
+    fn atlas_left_set(self: *Arena, node: i64, v: i64) {
+        self.tables.atlas_left[node - self.cfg.c_total] = v
+    }
+    fn atlas_right_at(self: *Arena, node: i64) -> i64 {
+        return self.tables.atlas_right[node - self.cfg.c_total]
+    }
+    fn atlas_right_set(self: *Arena, node: i64, v: i64) {
+        self.tables.atlas_right[node - self.cfg.c_total] = v
+    }
+
+    /// Atlas seçim maskesi: kart c için 0/1.
+    fn atlas_sel_get(self: *Arena, c: i64) -> i64 {
+        return self.tables.atlas_sel[c]
+    }
+    fn atlas_sel_set(self: *Arena, c: i64, v: i64) {
+        self.tables.atlas_sel[c] = v
+    }
+    fn atlas_sel_clear(self: *Arena) {
+        var c: i64 = 0
+        while c < self.cfg.c_total {
+            self.tables.atlas_sel[c] = 0
+            c = c + 1
+        }
+    }
+
+    /// Atlas denetim durumu (i64): idx 0..15 — kök, sayaç, slot haritası.
+    fn atlas_i64_at(self: *Arena, idx: i64) -> i64 {
+        return self.tables.atlas_i64[idx]
+    }
+    fn atlas_i64_set(self: *Arena, idx: i64, v: i64) {
+        self.tables.atlas_i64[idx] = v
+    }
+
+    /// Atlas float durumu (f64): idx 0..79 — j_kaba, kappa, phi, skorlar.
+    fn atlas_f64_at(self: *Arena, idx: i64) -> f64 {
+        return self.tables.atlas_f64[idx]
+    }
+    fn atlas_f64_set(self: *Arena, idx: i64, v: f64) {
+        self.tables.atlas_f64[idx] = v
+    }
+
+    /// Kip simpleks ağırlıkları: mode_w[0..4] = m_1..m_5.
+    fn mode_w_at(self: *Arena, i: i64) -> f64 {
+        return self.tables.mode_w[i]
+    }
+    fn mode_w_set(self: *Arena, i: i64, v: f64) {
+        self.tables.mode_w[i] = v
+    }
+
+    /// O(1) R_dog güvenlik tablosu: hash -> {0,1}.
+    fn r_dog_get(self: *Arena, h: i64) -> i64 {
+        return self.tables.r_dog[h % ARENA_R_DOG_N]
+    }
+    fn r_dog_set(self: *Arena, h: i64, v: i64) -> i64 {
+        self.tables.r_dog[h % ARENA_R_DOG_N] = v
+        return self.tables.r_dog[h % ARENA_R_DOG_N]
+    }
+
+    /// Tüm float bölgelerini sıfırlar (Ψ, Π, Φ, ξ, önek, metrik, acc,
+    /// tablolar). Halka ve sayaçlar korunur.
+    fn zero_fields(self: *Arena) {
+        @memset(self.fast.psi_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.psi_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.pi_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.pi_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        if self.cfg.include_phi == 1 {
+            @memset(self.fast.phi_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+            @memset(self.fast.phi_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        }
+        @memset(self.fast.xi_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.xi_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.psi_yor_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.psi_yor_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.pi_yor_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.pi_yor_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.metric.sigma as *u8, 0, self.k_aktif * 6 * 8)
+        @memset(self.metric.u as *u8, 0, self.k_aktif * self.u_per_card * 8)
+        @memset(self.metric.b as *u8, 0, self.k_aktif * self.b_per_card * 8)
+        @memset(self.metric.sigma_eff as *u8, 0, self.k_aktif * 8)
+        @memset(self.metric.u_eff as *u8, 0, self.k_aktif * self.cfg.r * self.cfg.d * 8)
+        @memset(self.metric.b_eff as *u8, 0, self.k_aktif * self.cfg.d * 8)
+        if self.cfg.training == 1 {
+            @memset(self.metric.acc_sigma as *u8, 0, self.k_aktif * 6 * 8)
+            @memset(self.metric.acc_u as *u8, 0, self.k_aktif * self.u_per_card * 8)
+            @memset(self.metric.acc_b as *u8, 0, self.k_aktif * self.b_per_card * 8)
+        }
+        self.plast_beat = 0
+        @memset(self.tables.goertzel_re as *u8, 0, self.b_faz * ARENA_GOERTZEL_W * 8)
+        @memset(self.tables.goertzel_im as *u8, 0, self.b_faz * ARENA_GOERTZEL_W * 8)
+        @memset(self.tables.etd_tab as *u8, 0, self.b_faz * self.field_n * 4 * 8)
+    }
+
+    /// τ_hızlı alanlarını sıfırlar; τ_orta halkası ve metrikler korunur.
+    /// (Kısmi faz sıfırlama — §10.2.)
+    fn reset_fast(self: *Arena) {
+        @memset(self.fast.psi_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.psi_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.pi_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.pi_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        if self.cfg.include_phi == 1 {
+            @memset(self.fast.phi_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+            @memset(self.fast.phi_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        }
+        @memset(self.fast.xi_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.xi_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.psi_yor_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.psi_yor_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.pi_yor_re as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+        @memset(self.fast.pi_yor_im as *u8, 0, self.k_aktif * self.b_faz * self.field_n * 8)
+    }
+}

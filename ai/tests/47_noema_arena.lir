@@ -1,0 +1,134 @@
+// NOEMA-Φ sıfır-heap SoA arena testi (Mimari §9.1, Faz 0.2).
+// Kapsam: config_check hata kodları, tek-blok boot tahsisi, hizalı SoA
+// erişimcileri, metrik/akümülasyon düzlemleri, L1/L2 tabloları,
+// tau_orta halka (push/peek/pop/prune/evict) ve include_phi=0 modu.
+import "../src/noema_arena.lir"
+import "../src/noema_arena_rt.lir"
+
+fn main() -> i64 {
+    // ── config_check ──────────────────────────────────────────────────
+    var bad1 = Arena.config_default()
+    bad1.c_total = 10
+    printInt(Arena.config_check(bad1)) println("")   // -1
+    var bad2 = Arena.config_default()
+    bad2.k_aktif = 9
+    printInt(Arena.config_check(bad2)) println("")   // -2
+    var bad3 = Arena.config_default()
+    bad3.ring_bytes = 1024
+    printInt(Arena.config_check(bad3)) println("")   // -6
+    printInt(Arena.config_check(Arena.config_default())) println("") // 0
+
+    // ── boot tahsisi + hızlı bölge ────────────────────────────────────
+    var cfg = Arena.config_default()
+    cfg.ring_bytes = NOEMA_RING_MIN_MB * 1048576
+    cfg.slot_bytes = 128
+    var a = Arena.init(cfg)
+    a.psi_set(0, 0, 0, 1.5, -2.5)
+    a.psi_set(3, 7, 63, 0.25, 0.75)
+    printlnFloat(a.psi_re_at(0, 0, 0))
+    printlnFloat(a.psi_im_at(0, 0, 0))
+    printlnFloat(a.psi_re_at(3, 7, 63))
+    printlnFloat(a.pi_re_at(0, 0, 0))          // 0.0 — yazılmadı
+    a.phi_set(1, 2, 5, 9.0, -9.0)
+    printlnFloat(a.phi_re_at(1, 2, 5))
+    printlnFloat(a.phi_im_at(1, 2, 5))
+    a.xi_re_at(0, 0, 0)                        // salt-okunur erişim
+    a.xi_im_at(0, 0, 0)
+    // ortak önek görüntüsü
+    a.fast.psi_yor_re[0] = 4.5
+    a.fast.pi_yor_im[17] = -1.25
+    printlnFloat(a.psi_yor_re_at(0, 0, 0))
+    printlnFloat(a.pi_yor_im_at(0, 0, 17))
+
+    // ── metrik + akümülasyon düzlemleri ───────────────────────────────
+    a.metric_sigma_set(2, 0, 0.75)
+    a.metric_sigma_set(2, 3, -0.5)
+    printlnFloat(a.metric_sigma_at(2, 0))
+    printlnFloat(a.metric_sigma_at(2, 3))
+    a.metric_u_set(1, 2, 1, 3, 9.5)
+    printlnFloat(a.metric_u_at(1, 2, 1, 3))
+    a.metric_b_set(0, 4, 7, -0.125)
+    printlnFloat(a.metric_b_at(0, 4, 7))
+    a.acc_sigma_add(0, 1, 0.5)
+    a.acc_sigma_add(0, 1, 0.25)
+    printlnFloat(a.acc_sigma_at(0, 1))
+    a.acc_u_add(3, 5, 2, 9, 1.5)
+    printlnFloat(a.acc_u_at(3, 5, 2, 9))
+    a.acc_b_add(2, 0, 11, -2.0)
+    a.acc_b_add(2, 0, 11, 0.5)
+    printlnFloat(a.acc_b_at(2, 0, 11))
+
+    // ── L1/L2 tabloları ───────────────────────────────────────────────
+    a.goertzel_set(3, 7, 0.5, -0.25)
+    printlnFloat(a.goertzel_re_at(3, 7))
+    printlnFloat(a.goertzel_im_at(3, 7))
+    a.tables.lut_cos[10] = 0.707
+    a.tables.lut_sin[11] = -0.707
+    printlnFloat(a.lut_cos_at(10))
+    printlnFloat(a.lut_sin_at(11))
+    a.etd_set(1, 4, 2, 3.25)
+    printlnFloat(a.etd_at(1, 4, 2))
+    a.cavity_sig_set(9, 15, 0.125)
+    printlnFloat(a.cavity_sig_at(9, 15))
+    a.r_dog_set(77, 1)
+    printInt(a.r_dog_get(77)) println("")
+    printInt(a.r_dog_get(77 + 1024)) println("")  // aynı h%1024
+
+    // ── tau_orta halka ────────────────────────────────────────────────
+    var pay = @malloc(64)
+    @write_u64(pay, 12345)
+    @write_u64(@ptr_add(pay, 8), 67890)
+    let s0 = a.ring_push(7, 0.9, pay, 16)
+    printInt(s0) println("")                       // 0
+    let s1 = a.ring_push(8, 0.1, pay, 16)
+    printInt(s1) println("")                       // 1
+    let s2 = a.ring_push(9, 0.95, pay, 16)
+    printInt(s2) println("")                       // 2
+    let pk = a.ring_peek()
+    printInt(a.ring_slot_tag(pk)) println("")      // 7
+    printlnFloat(a.ring_slot_ampl(pk))
+    printInt(a.ring_slot_len(pk)) println("")      // 16
+    printInt(@read_u64(a.ring_slot_payload(pk)) as i64) println("") // 12345
+    a.ring_pop()
+    let pk2 = a.ring_peek()
+    printInt(a.ring_slot_tag(pk2)) println("")     // 8
+    // budama: ampl 0.95'lik kayıt düşer (0.1 ve 0.9 kalır — 0.9 > 0.5? hayır:
+    // eşik 0.5 → 0.1 düşer, 0.9 ve 0.95 kalır)
+    printInt(a.ring_prune(0.5)) println("")        // 1
+    a.ring_pop()
+    let pk3 = a.ring_peek()
+    printInt(a.ring_slot_tag(pk3)) println("")     // 9 (0.95)
+    a.ring_pop()
+    a.ring_pop()
+    printInt(a.ring_peek()) println("")            // -1
+    // doluluk tahliyesi: capacity=131072 slot; 200 push + prune
+    var i: i64 = 0
+    while i < 200 {
+        a.ring_push(100 + i, 0.001 + (i as f64) * 0.01, pay, 8)
+        i = i + 1
+    }
+    printInt(a.ring_prune(0.05)) println("")       // düşük ampliler düşer
+    printInt(a.ring_peek()) println("")            // >=0 veya -1
+    a.ringst.ring_count = 0
+    a.ringst.ring_head = 0
+    a.ringst.ring_tail = 0
+    @free(pay)
+    a.free()
+
+    // ── include_phi=0 (çıkarım modu) ──────────────────────────────────
+    var cfg2 = Arena.config_default()
+    cfg2.ring_bytes = NOEMA_RING_MIN_MB * 1048576
+    cfg2.include_phi = 0
+    cfg2.training = 0
+    var b = Arena.init(cfg2)
+    b.phi_set(0, 0, 0, 5.0, 5.0)   // no-op
+    printlnFloat(b.phi_re_at(0, 0, 0))  // 0.0
+    b.psi_set(0, 0, 0, 2.0, 0.0)
+    printlnFloat(b.psi_re_at(0, 0, 0))
+    b.reset_fast()
+    printlnFloat(b.psi_re_at(0, 0, 0))  // 0.0
+    b.zero_fields()
+    printlnFloat(b.metric_sigma_at(0, 0))
+    b.free()
+    return 0
+}

@@ -1,0 +1,168 @@
+// NOEMA-Φ Faz 1 testi: topolojik atlas (kavite ağacı + rezonans seçimi +
+// demet köprüleri) ve Randers-Finsler metrik katmanı (kip bileşimi,
+// σ/U sınırları, Woodbury g⁻¹, Randers projeksiyonu, yarı-yoğunluk,
+// U(1) kovaryant türev). Üç backend'te birebir aynı çıktı.
+//
+// IMPORT SIRASI: struct tipleri modül sınırını aşamaz; arena önce.
+// Tüm NOEMA durumu arena bölgelerinde tutulur (LIR &struct kısıtı).
+import "../src/noema_arena.lir"
+import "../src/noema_arena_rt.lir"
+import "../src/noema_math.lir"
+import "../src/noema_atlas.lir"
+import "../src/noema_metric.lir"
+import "../src/noema_metric_uv.lir"
+
+fn main() -> i64 {
+    // ── exp yardımcıları ──────────────────────────────────────────────
+    printlnFloat(noema_exp(0.0))     // 1.0
+    printlnFloat(noema_exp(1.0))     // 2.718282
+    printlnFloat(noema_exp(-1.0))    // 0.367879
+    printlnFloat(noema_exp(2.5))     // 12.182494
+    printlnFloat(noema_exp(-5.0))    // 0.006738
+
+    // ── Arena (eğitim açık, phi açık) ─────────────────────────────────
+    var cfg = Arena.config_default()
+    cfg.ring_bytes = NOEMA_RING_MIN_MB * 1048576
+    var a = Arena.init(cfg)
+
+    // ── Atlas: 64 kart, imza = birim baz vektör ───────────────────────
+    // c%8==0 kartları e0 (j=0), diğerleri e1 (j=1) yönünde.
+    var c: i64 = 0
+    while c < cfg.c_total {
+        if c % 8 == 0 {
+            a.cavity_sig_set(c, 0, 1.0)
+        } else {
+            a.cavity_sig_set(c, 1, 1.0)
+        }
+        c = c + 1
+    }
+    a.atlas_build()
+    // J = e0 yönü → e0'lı kartlar (c%8==0) rezonanslı.
+    a.atlas_j_set(0, 1.0)
+    let nsel = a.atlas_select(4)
+    printInt(nsel) println("")              // 4
+    var k: i64 = 0
+    while k < nsel {
+        printInt(a.atlas_card_of(k)) println("") // seçilen disk kartları
+        printlnFloat(a.atlas_f64_at(64 + k))     // scores[k]
+        k = k + 1
+    }
+    // kart->slot eşlemesi: seçilen ilk kart slot 0, seçilmeyen -1.
+    printInt(a.atlas_slot_of(a.atlas_card_of(0))) println("")
+    printInt(a.atlas_slot_of(1)) println("")
+
+    // Köprüler: kappa simetrik, phi antisimetri.
+    a.atlas_bridge_set(0, 1, 0.5, 0.7)
+    printlnFloat(a.atlas_kappa_get(0, 1))
+    printlnFloat(a.atlas_kappa_get(1, 0))
+    printlnFloat(a.atlas_phi_get(0, 1))
+    printlnFloat(a.atlas_phi_get(1, 0))
+    a.atlas_bridge_set(2, 2, 9.0, 9.0)   // kendine köprü sıfırlanır
+    printlnFloat(a.atlas_kappa_get(2, 2))
+    a.atlas_bridges_clear()
+    printlnFloat(a.atlas_kappa_get(0, 1))
+
+    // ── Kip simpleksi ─────────────────────────────────────────────────
+    a.mode_uniform()
+    a.mode_set_raw(0, 2.0)
+    a.mode_set_raw(1, -1.0)   // negatif → 0
+    a.mode_project()
+    var mi: i64 = 0
+    var msum = 0.0
+    while mi < 5 {
+        printlnFloat(a.mode_w_get(mi))
+        msum = msum + a.mode_w_get(mi)
+        mi = mi + 1
+    }
+    printlnFloat(msum)    // 1.0
+
+    // ── Metrik bileşimi (slot 0) ──────────────────────────────────────
+    a.metric_sigma_set(0, 0, 0.5)    // taban
+    a.metric_sigma_set(0, 1, 2.0)    // kodlama sapması
+    a.metric_sigma_set(0, 2, -3.0)   // plan sapması
+    a.metric_u_set(0, 0, 0, 0, 0.5)  // taban U[0][0]
+    a.metric_u_set(0, 1, 0, 0, 1.0)  // kodlama sapması U[0][0]
+    a.metric_b_set(0, 0, 0, 0.4)
+    a.metric_b_set(0, 1, 0, 0.6)
+
+    // m = [0.5, 0.5, 0, 0, 0] → σ = 0.5 + 0.5*2.0 + 0.5*(-3.0) = 0.0
+    a.mode_w_set(0, 0.5)
+    a.mode_w_set(1, 0.5)
+    a.mode_w_set(2, 0.0)
+    a.mode_w_set(3, 0.0)
+    a.mode_w_set(4, 0.0)
+    a.metric_compose(0)
+    printlnFloat(a.sigma_eff_at(0))        // 0.0
+    printlnFloat(a.u_eff_at(0, 0, 0))      // 0.5 + 0.5*1.0 = 1.0
+    printlnFloat(a.u_eff_at(0, 0, 1))      // 0.0
+    printlnFloat(a.b_eff_at(0, 0))         // 0.4 + 0.5*0.6 = 0.7
+
+    // σ kelepçesi: taban 3.0 → eff 2.5
+    a.metric_sigma_set(0, 0, 3.0)
+    a.metric_compose(0)
+    printlnFloat(a.sigma_eff_at(0))        // 2.5
+    a.metric_sigma_set(0, 0, 0.5)          // geri al
+
+    // U Frobenius sınırı: devasa sapma → ||U||_F <= 3.0
+    var uu: i64 = 0
+    while uu < a.cfg.r * a.cfg.d {
+        a.metric_u_set(0, 1, uu / a.cfg.d, uu % a.cfg.d, 10.0)
+        uu = uu + 1
+    }
+    a.metric_compose(0)
+    var un = 0.0
+    var ue: i64 = 0
+    while ue < a.cfg.r * a.cfg.d {
+        let vv = a.u_eff_at(0, ue / a.cfg.d, ue % a.cfg.d)
+        un = un + vv * vv
+        ue = ue + 1
+    }
+    printlnFloat(@sqrt(un))               // 3.0 (u_max)
+
+    // ── Woodbury g⁻¹ (U=0 izotropik durum) ────────────────────────────
+    var zz: i64 = 0
+    while zz < a.cfg.r * a.cfg.d {
+        a.u_eff_set(0, zz / a.cfg.d, zz % a.cfg.d, 0.0)
+        zz = zz + 1
+    }
+    a.sigma_eff_set(0, 0.25)
+    // c = e^{-0.5} = 0.606531; U=0 → g⁻¹v = c·v
+    var vin: [64]f64 = [0.0; 64]
+    var wout: [64]f64 = [0.0; 64]
+    var vi: i64 = 0
+    while vi < 64 {
+        vin[vi] = (vi + 1) as f64
+        vi = vi + 1
+    }
+    let grc = a.metric_ginv_apply(0, &vin[0], &wout[0])
+    printInt(grc) println("")               // 0
+    printlnFloat(wout[0])                   // 0.606531
+    printlnFloat(wout[63])                  // 38.817962
+
+    // ── b dışbükeylik projeksiyonu ────────────────────────────────────
+    // b_eff'i büyüt: U=0, σ=0.25 → ||b||_g = sqrt(c·||b||²) ≈ 6.23
+    var bi: i64 = 0
+    while bi < a.cfg.d {
+        a.b_eff_set(0, bi, 1.0)
+        bi = bi + 1
+    }
+    let sc = a.metric_b_project(0)
+    printlnFloat(sc)                         // 0.85/6.23 ≈ 0.13643
+    printlnFloat(a.b_eff_at(0, 0))           // 0.136428
+    let nrm2 = a.metric_b_norm_g(0)
+    printlnFloat(nrm2)                       // ≈ 0.85
+
+    // ── yarı-yoğunluk faktörü ─────────────────────────────────────────
+    a.sigma_eff_set(0, 0.0)                  // σ=0, U=0 → |g|^1/4 = 1
+    printlnFloat(a.metric_half_density(0))   // 1.0
+    a.sigma_eff_set(0, 0.1)                  // e^{0.1*64/2}=e^{3.2}
+    printlnFloat(a.metric_half_density(0))   // 24.532531
+
+    // ── U(1) kovaryant türev ──────────────────────────────────────────
+    // psi=(1,0), grad=(0,0), b_mu=1, eta_b=1 → p = (0,-1)
+    printlnFloat(covariant_re(1.0, 0.0, 0.0, 1.0))  // 0.0
+    printlnFloat(covariant_im(1.0, 0.0, 0.0, 1.0))  // -1.0
+
+    a.free()
+    return 0
+}

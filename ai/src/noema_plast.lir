@@ -1,0 +1,307 @@
+// noema_plast.lir — NOEMA-Φ tekil plastisite yasası, K_kons konsolidasyonu
+// ve §7.4 altı-rejimli kapı (Mimari §7.3, §7.4, §9.1, §10.1).
+//
+// İki bütünleşik parça:
+//
+// 1) KONSOLİDASYON (§7.3, §9.1): acc_sigma/acc_u/acc_b tamponları
+//    her eğitim darbesinde akı katkılarını (acc_*_add) biriktirir;
+//    her K_kons = 16 darbede tek τ_yavaş yazım uygulanır:
+//      σ:  θ += α_σ(κ_{σ,s}·Δθ_köprü − κ_{0,s}·θ + w_s·D_σ^acc)
+//      U:  θ[e] += α_u(−κ_{u,s}·θ[e] + w_s·D_U^acc[e])
+//      b:  θ[d] += α_b(−κ_{b,s}·θ[d] + w_s·D_b^acc[d])
+//    Burada s = 0 ortak taban (w = η_0 = 0.2, κ_•,0), s = 1..5 kip
+//    sapması (w = m_{s-1} = mode_w basitksi, κ_•,kip). σ denklemindeki
+//    Δ terimi kart başına skaler metrikte komşu Laplacian'ıdır:
+//    Δθ_k = Σ_j κ_kj(θ_j − θ_k), κ atlas demet köprülerinden gelir
+//    (köprü yoksa Δ = 0). m_i <= 0.01 olan kip setleri atlanır
+//    (§9.1 "m_i > 0.01 etkin" depolama kuralıyla tutarlı). Yazımdan
+//    sonra acc tamponları sıfırlanır; marj atlamasında (§10.1) yazım
+//    yapılmaz ama tamponlar tüketilmiş sayılıp sıfırlanır.
+//
+// 2) REJİM KAPISI (§7.4): altı çalışma rejimi için
+//    (G_kapi, W_+, W_-, μ_cawr) dörtlüsü çözülür. Marj fonksiyonu
+//    W_m = σ_l((F[Ψ+] − F[Ψ−] + m)/τ_m). G_sürpriz çağıranın ölçtüğü
+//    ΔF_yerel, δ_0 ve F_ref ile hesaplanır (δ_0/F_ref çağıran
+//    parametresidir — §11.2'de sabit değerleri yoktur).
+//
+// Çalışma anında heap yok; tüm durum arena'dadır. plast_beat sayacı
+// Arena yapısında yaşar (checkpoint §12.3'e uygundur).
+//
+// LIR sınırları: struct metotlar impl Arena içinde; modül
+// fonksiyonları düz fn; <= 8 parametre; @ptr_add bayt ofsetli;
+// devam satırları +/- ile başlayamaz.
+
+import "noema_const.lir"
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_arena_rt.lir"
+import "noema_atlas.lir"
+
+// ── §7.4 rejim kodları ──────────────────────────────────────────────────
+const REJIM_PRETRAIN: i64 = 0          // Aşama 1: Normal Pretraining
+const REJIM_DO_BOZULUM: i64 = 1        // Aşama 1: do-bozulum (%12.5)
+const REJIM_FT_TAM: i64 = 2            // Aşama 2: 8-anahtarlı FT (tam)
+const REJIM_CIKARIM_BEKLEME: i64 = 3   // Çıkarım: doğrulanmamış akış
+const REJIM_CIKARIM_OK: i64 = 4        // Çıkarım: ok: dış gözlem
+const REJIM_CIKARIM_ERROR: i64 = 5     // Çıkarım: error: dış gözlem
+
+// ── Marj ve sürpriz kapıları (§7.4) ─────────────────────────────────────
+
+/// Marj fonksiyonu W_m = σ_l((F[Ψ+] − F[Ψ−] + m)/τ_m).
+fn plast_margin_wm(f_plus: f64, f_minus: f64) -> f64 {
+    return noema_logistic((f_plus - f_minus + NOEMA_M) / NOEMA_TAU_M)
+}
+
+/// Sürpriz kapısı G_sürpriz = clip((-ΔF_yerel − δ_0)/F_ref, 0, 1).
+/// F_ref <= 0 → kapı kapalı (0). δ_0/F_ref çağırana aittir.
+fn plast_g_surpriz(dF_yerel: f64, delta0: f64, f_ref: f64) -> f64 {
+    if f_ref <= 0.0 { return 0.0 }
+    let x = (0.0 - dF_yerel - delta0) / f_ref
+    return noema_fmin(1.0, noema_fmax(0.0, x))
+}
+
+/// §10.1 marj atlaması: F[Ψ−] − F[Ψ+] > 1.25·m → metrik yazımı atlanır.
+/// Dönen: 1 = yazım atlanmalı, 0 = yazım serbest.
+fn plast_margin_skip(f_minus: f64, f_plus: f64) -> i64 {
+    if f_minus - f_plus > NOEMA_MARGIN_ATLA_CARPAN * NOEMA_M {
+        return 1
+    }
+    return 0
+}
+
+/// §7.4 altı-rejimli tekil kapı. Girdiler rejim kodu + ölçülen
+/// büyüklükler; mu_oz çağıranın iskele aşamasından gelen öz-ağırlık.
+/// Çıkış out[0..3] = {G_kapi, W_+, W_-, μ_cawr} üzerine yazılır.
+/// Dönen: 0 = çözüldü, -1 = geçersiz rejim.
+fn plast_gate(rejim: i64, wm: f64, g_surpriz: f64,
+              g_onay: f64, g_hata: f64, mu_oz: f64,
+              out: *f64) -> i64 {
+    if rejim == REJIM_PRETRAIN {
+        out[0] = g_surpriz
+        out[1] = 1.0
+        out[2] = 0.0
+        out[3] = 0.0
+        return 0
+    }
+    if rejim == REJIM_DO_BOZULUM {
+        out[0] = g_surpriz
+        out[1] = wm
+        out[2] = wm
+        out[3] = NOEMA_MU_CAWR_DO
+        return 0
+    }
+    if rejim == REJIM_FT_TAM {
+        out[0] = if wm > NOEMA_EPS_M { 1.0 } else { 0.0 }
+        out[1] = wm
+        out[2] = wm
+        out[3] = mu_oz
+        return 0
+    }
+    if rejim == REJIM_CIKARIM_BEKLEME {
+        out[0] = 0.0
+        out[1] = 0.0
+        out[2] = 0.0
+        out[3] = 0.0
+        return 0
+    }
+    if rejim == REJIM_CIKARIM_OK {
+        out[0] = g_onay
+        out[1] = 1.0
+        out[2] = 0.0
+        out[3] = 0.0
+        return 0
+    }
+    if rejim == REJIM_CIKARIM_ERROR {
+        out[0] = g_hata
+        out[1] = 0.0
+        out[2] = 1.0
+        out[3] = NOEMA_MU_CAWR_HATA
+        return 0
+    }
+    return -1
+}
+
+// ── K_kons konsolidasyonu (§7.3) ────────────────────────────────────────
+
+impl Arena {
+    /// Konsolidasyon önkoşulları: eğitim tamponları ayrılmış olmalı
+    /// (training=1), geometri CAWR ile aynı sınırlar içinde.
+    /// 0 = uygun, <0 = hata.
+    fn plast_ok(self: *Arena) -> i64 {
+        if self.cfg.training != 1 { return -1 }
+        if self.cfg.d > NOEMA_D { return -2 }
+        if self.cfg.r > 8 { return -3 }
+        return 0
+    }
+
+    /// σ için kart-komşuluğu Laplacian'ı:
+    /// Δθ_k = Σ_{j<n_aktif, j≠k} κ_kj·(θ_j − θ_k).
+    /// κ atlas demet köprüsünden (atlas_bridge_set ile kurulur);
+    /// köprüsüz çiftlerde katkı yoktur. θ değerleri snap anlık
+    /// görüntüsünden okunur — yazım Jacobi eşzamanlıdır (t anındaki
+    /// tüm σ'ler birlikte güncellenir, Gauss-Seidel kayması yok).
+    fn plast_lap_sigma(self: *Arena, k: i64, set: i64,
+                       n_aktif: i64, snap: *f64) -> f64 {
+        var lap: f64 = 0.0
+        var j: i64 = 0
+        while j < n_aktif {
+            if j != k {
+                let kap = self.atlas_kappa_get(k, j)
+                if kap != 0.0 {
+                    lap = lap + kap * (snap[j * 6 + set] - snap[k * 6 + set])
+                }
+            }
+            j = j + 1
+        }
+        return lap
+    }
+
+    /// Üç acc_* düzleminin tamamını sıfırlar (k_aktif boyutunda).
+    fn plast_acc_clear(self: *Arena) {
+        @memset(self.metric.acc_sigma as *u8, 0,
+                self.k_aktif * 6 * 8)
+        @memset(self.metric.acc_u as *u8, 0,
+                self.k_aktif * self.u_per_card * 8)
+        @memset(self.metric.acc_b as *u8, 0,
+                self.k_aktif * self.b_per_card * 8)
+    }
+
+    /// Tek kartın 6 düzlemini (taban + 5 kip) §7.3 yasasıyla günceller.
+    /// Kip seti m_i <= 0.01 ise atlanır; set 0 her zaman güncellenir.
+    /// snap: konsolidasyon anındaki σ anlık görüntüsü (k*6+set).
+    fn plast_consolidate_card(self: *Arena, k: i64, n_aktif: i64,
+                              snap: *f64) {
+        let rd = self.cfg.r * self.cfg.d
+        let dd_max = self.cfg.d
+        var s: i64 = 0
+        while s < 6 {
+            var w: f64 = NOEMA_ETA_0
+            var aktif: i64 = 1
+            if s > 0 {
+                w = self.mode_w_at(s - 1)
+                if w <= NOEMA_M_IYETEK_ESIK { aktif = 0 }
+            }
+            if aktif == 1 {
+                var ksig: f64 = NOEMA_KAPPA_SIGMA_KIP
+                var k0: f64 = NOEMA_KAPPA_0_KIP
+                var ku: f64 = NOEMA_KAPPA_U_KIP
+                var kb: f64 = NOEMA_KAPPA_B_KIP
+                if s == 0 {
+                    ksig = NOEMA_KAPPA_SIGMA_0
+                    k0 = NOEMA_KAPPA_0_0
+                    ku = NOEMA_KAPPA_U_0
+                    kb = NOEMA_KAPPA_B_0
+                }
+                // σ: köprü Laplacian'ı + sönüm + birikimli akı
+                let sig = self.metric_sigma_at(k, s)
+                let drv_s = ksig * self.plast_lap_sigma(k, s, n_aktif, snap) + w * self.acc_sigma_at(k, s) - k0 * sig
+                self.metric_sigma_set(k, s,
+                    noema_clamp_sigma(sig + NOEMA_ALPHA_SIGMA * drv_s))
+                // U: eleman başına −κu·θ + w·D_acc
+                var e: i64 = 0
+                while e < rd {
+                    let rr = e / dd_max
+                    let dd = e % dd_max
+                    let u = self.metric_u_at(k, s, rr, dd)
+                    let du = self.acc_u_at(k, s, rr, dd)
+                    let un = u + NOEMA_ALPHA_U * (w * du - ku * u)
+                    self.metric_u_set(k, s, rr, dd, un)
+                    e = e + 1
+                }
+                // ||U||_F <= u_max: set başına ölçekleme (metric_compose
+                // ile aynı sınır)
+                var frob: f64 = 0.0
+                e = 0
+                while e < rd {
+                    let rr2 = e / dd_max
+                    let dd2 = e % dd_max
+                    let uu = self.metric_u_at(k, s, rr2, dd2)
+                    frob = frob + uu * uu
+                    e = e + 1
+                }
+                let unf = @sqrt(frob)
+                if unf > NOEMA_U_MAX and unf > 1e-12 {
+                    let sc = NOEMA_U_MAX / unf
+                    e = 0
+                    while e < rd {
+                        let rr3 = e / dd_max
+                        let dd3 = e % dd_max
+                        self.metric_u_set(k, s, rr3, dd3,
+                            self.metric_u_at(k, s, rr3, dd3) * sc)
+                        e = e + 1
+                    }
+                }
+                // b: −κb·θ + w·D_acc, |b| <= b_max
+                var d2: i64 = 0
+                while d2 < dd_max {
+                    let bv = self.metric_b_at(k, s, d2)
+                    let db = self.acc_b_at(k, s, d2)
+                    let bn = bv + NOEMA_ALPHA_B * (w * db - kb * bv)
+                    let bc = noema_fmin(NOEMA_B_MAX,
+                        noema_fmax(0.0 - NOEMA_B_MAX, bn))
+                    self.metric_b_set(k, s, d2, bc)
+                    d2 = d2 + 1
+                }
+            }
+            s = s + 1
+        }
+    }
+
+    /// K_kons penceresi sonunda tek τ_yavaş yazım.
+    /// margin_ok = 0 → yazım atlanır (marj §10.1), tamponlar yine de
+    /// sıfırlanır. Dönen: 1 = yazıldı, 2 = marj atlaması,
+    /// -1/-2 = argüman hatası.
+    fn plast_consolidate(self: *Arena, n_aktif: i64,
+                         margin_ok: i64) -> i64 {
+        if self.plast_ok() != 0 { return -1 }
+        if n_aktif <= 0 or n_aktif > self.k_aktif { return -2 }
+        if margin_ok == 0 {
+            self.plast_acc_clear()
+            return 2
+        }
+        // Jacobi eşzamanlılığı: tüm kartların σ'si yazımdan önce
+        // anlık görüntüye alınır (K_aktif<=4 → en çok 24 f64).
+        var snap: [24]f64 = [0.0; 24]
+        var kk: i64 = 0
+        while kk < self.k_aktif {
+            var ss: i64 = 0
+            while ss < 6 {
+                snap[kk * 6 + ss] = self.metric_sigma_at(kk, ss)
+                ss = ss + 1
+            }
+            kk = kk + 1
+        }
+        var k: i64 = 0
+        while k < n_aktif {
+            self.plast_consolidate_card(k, n_aktif, &snap[0])
+            k = k + 1
+        }
+        self.plast_acc_clear()
+        return 1
+    }
+
+    /// Eğitim darbesi işaretçisi: her çağrıda plast_beat + 1;
+    /// sayaç K_kons katına ulaşınca konsolidasyon çalışır.
+    /// margin_ok: çağıranın marj kararı (1 = yazım serbest).
+    /// Dönen: 0 = pencere açık, 1 = konsolide edildi,
+    ///        2 = marj atlaması, -1/-2 = hata.
+    fn plast_tick(self: *Arena, n_aktif: i64, margin_ok: i64) -> i64 {
+        if self.plast_ok() != 0 { return -1 }
+        self.plast_beat = self.plast_beat + 1
+        if self.plast_beat % NOEMA_K_KONS != 0 { return 0 }
+        return self.plast_consolidate(n_aktif, margin_ok)
+    }
+
+    /// Mevcut darbe sayacı (checkpoint/telemetri için).
+    fn plast_beat_get(self: *Arena) -> i64 {
+        return self.plast_beat
+    }
+
+    /// Konsolidasyon durumunu sıfırlar: sayaç + acc tamponları.
+    /// (zero_fields metrik tamponlarını zaten sıfırlar; bu fonksiyon
+    /// yalnızca sayacı ve açıkça istenen tampon temizliğini yapar.)
+    fn plast_reset(self: *Arena) {
+        self.plast_beat = 0
+        self.plast_acc_clear()
+    }
+}

@@ -1,0 +1,411 @@
+// noema_cawr.lir — NOEMA-Φ Sürekli Eşlenik-Dalga Rezonansı (CAWR)
+// (Mimari §7.2). Geri yayılımsız çok-adımlı derin kredi ataması.
+//
+// İleri yörünge: her makro adımda (k,b) akışının ψ anlık görüntüsü
+// τ_orta halkasına complex re/im çiftleri olarak kaydedilir — autodiff
+// bandı yok, yalnızca alan durumunun kendisi (w = g⁻¹DΨ geri
+// hesaplanabilir; H_lin[Ψ(T−s)] donmuş-yörünge yaklaşımı için ψ
+// gereklidir). Kayıt tag'i CAWR_TAG_BASE + k*B_FAZ + b'dir; genlik
+// alanında A < A_esik budaması ring_prune ile çalışır.
+//
+// Ters zaman s = T−t: eşlenik doğrulama dalgası Φ
+//   τ2 Φ_ss + γ_a Φ_s − i Ω̂_ned Φ_s + H_lin[Ψ(T−s)] Φ = J_hata(T−s)
+// noema_etd Strang yapısının ters-zaman varyantıyla çözülür. +γ_a Φ_s
+// sönümü s yönünde de kararlıdır → aynı üç-rejimli ETD katsayıları
+// (etd_mode_coeffs) aynen kullanılır; yarım itki + blok-ETD + yarım
+// itki simetrik kalır. J_hata(T−s) çağıran tarafından kuvvet
+// tamponuna (FR/FI) yazılır — hata akımının zaman-terslemesi
+// çağıranın sorumluluğundadır.
+//
+// Girişim integralleri (her geriye adımda ds ağırlığıyla birikir):
+//   D_σ    += −2 e^{2σ} Re(v†w) ds          (skaler, ds_o)
+//   D_u[r,μ] += −[Re(z_w^{(r)*} v^μ) + Re(z_v^{(r)*} w^μ)] ds
+//   D_b[μ]   += −η_b Im(Φ* w^μ + Ψ* v^μ) ds
+// w = g⁻¹∇ψ (ψ = halkadan yüklenen T−s görüntüsü), v = g⁻¹∇Φ,
+// z_w = Uᵀw, z_v = Uᵀv (R complex). Kinematik türev learn_field_w
+// ile aynı periyodik merkezî fark şemasını kullanır.
+//
+// Çıkış düzeni (çağıran sıfırlar, fonksiyonlar ÜZERİNE ekler):
+//   ds_o[0]        : D_σ toplamı (skaler)
+//   dudb[0, r*d)   : D_u düzlemsi, indis rr*d + mu
+//   dudb[r*d, r*d+d) : D_b düzlemi, indis mu
+// dudb boyutu >= cfg.r*cfg.d + cfg.d (varsayılan 256+64 = 320 f64).
+//
+// Bellek: tek çağıran tamponu (düz f64 dizisi). Düzen (f64 biriminde,
+// D = NOEMA_D = 64 alan noktası):
+//   [0,D)      phi_re     [D,2D)     phi_im      (Φ)
+//   [2D,3D)    q_re       [3D,4D)    q_im        (∂sΦ momentumu)
+//   [4D,5D)    snap_re    [5D,6D)    snap_im     (Ψ(T−s) halka görüntüsü)
+//   [6D,7D)    wre        [7D,8D)    wim         (ileri akı)
+//   [8D,9D)    vre        [9D,10D)   vim         (geri eşlenik akı)
+//   [10D,11D)  fre        [11D,12D)  fim         (J_hata kuvveti)
+//   [12D,13D)  grad_re    [13D,14D)  grad_im     (∇ψ geçici)
+//   [14D,15D)  grad2_re   [15D,16D)  grad2_im    (∇Φ geçici)
+//   [16D,18D)  modal_re   [18D,20D)  modal_im    (2D: Φ-mod + Q-mod)
+//   [20D..20D+64)  katsayılar (C11..C22, 8'li) + z_w/z_v (8'li)
+// CAWR_BUFSIZE = 20*D + 64 = 1344 f64 ≈ 10.5 KiB. Tüm erişimler
+// buf[offset + i]; @ptr_add bayt ofsetlidir (içeride *8 kullanılır).
+//
+// Kısıtlar: field_n == NOEMA_D, cfg.d <= NOEMA_D, cfg.r <= 8
+// (cawr_ok denetler). Halka slot_bytes >= 32 + 2*field_n*8 gerekir
+// (varsayılan 512 yetmez; CAWR kaydı için >= 1056 önerilir).
+//
+// &Struct cross-module pointer çağrıları native O1+'da bozuk olduğundan
+// tüm Arena etkileşimi impl Arena yöntemleri + düz *f64 tamponları
+// üzerinden yapılır (noema_etd deseni).
+
+import "noema_const.lir"
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_arena_rt.lir"
+import "noema_etd.lir"
+import "noema_learn.lir"
+
+// Halka kayıt türü tabanı: tag = CAWR_TAG_BASE + k*B_FAZ + b.
+const CAWR_TAG_BASE: i64 = 1000
+
+// ── Düz tampon ofsetleri (f64 birimi) ──────────────────────────────────
+const CAWR_OFF_PR: i64 = 0
+const CAWR_OFF_PI: i64 = NOEMA_D
+const CAWR_OFF_QR: i64 = 2 * NOEMA_D
+const CAWR_OFF_QI: i64 = 3 * NOEMA_D
+const CAWR_OFF_SR: i64 = 4 * NOEMA_D
+const CAWR_OFF_SI: i64 = 5 * NOEMA_D
+const CAWR_OFF_WR: i64 = 6 * NOEMA_D
+const CAWR_OFF_WI: i64 = 7 * NOEMA_D
+const CAWR_OFF_VR: i64 = 8 * NOEMA_D
+const CAWR_OFF_VI: i64 = 9 * NOEMA_D
+const CAWR_OFF_FR: i64 = 10 * NOEMA_D
+const CAWR_OFF_FI: i64 = 11 * NOEMA_D
+const CAWR_OFF_GR: i64 = 12 * NOEMA_D
+const CAWR_OFF_GI: i64 = 13 * NOEMA_D
+const CAWR_OFF_G2R: i64 = 14 * NOEMA_D
+const CAWR_OFF_G2I: i64 = 15 * NOEMA_D
+const CAWR_OFF_MR: i64 = 16 * NOEMA_D      // 2D: [0,D)=Φ-mod, [D,2D)=Q-mod
+const CAWR_OFF_MI: i64 = 18 * NOEMA_D
+const CAWR_OFF_C11: i64 = 20 * NOEMA_D
+const CAWR_OFF_C12: i64 = 20 * NOEMA_D + 8
+const CAWR_OFF_C21: i64 = 20 * NOEMA_D + 16
+const CAWR_OFF_C22: i64 = 20 * NOEMA_D + 24
+const CAWR_OFF_ZWR: i64 = 20 * NOEMA_D + 32  // R<=8 complex
+const CAWR_OFF_ZWI: i64 = 20 * NOEMA_D + 40
+const CAWR_OFF_ZVR: i64 = 20 * NOEMA_D + 48
+const CAWR_OFF_ZVI: i64 = 20 * NOEMA_D + 56
+const CAWR_BUFSIZE: i64 = 20 * NOEMA_D + 64
+
+/// (k,b) akışının halka kayıt etiketi.
+fn cawr_tag(k: i64, b: i64) -> i64 {
+    return CAWR_TAG_BASE + k * NOEMA_B_FAZ + b
+}
+
+/// buf + ofset (f64 birimi) → eleman pointer'ı. @ptr_add bayt ofsetlidir.
+fn cawr_at(buf: *f64, off: i64) -> *f64 {
+    return @ptr_add(buf, off * 8) as *f64
+}
+
+/// Tüm CAWR tamponunu sıfırlar.
+fn cawr_buf_zero(buf: *f64) {
+    @memset(buf as *u8, 0, CAWR_BUFSIZE * 8)
+}
+
+/// Φ başlangıç koşulunu (PR/PI) kopyalar; momentum sıfırlanır.
+fn cawr_field_set(buf: *f64, pre: *f64, pim: *f64) {
+    var i: i64 = 0
+    while i < NOEMA_D {
+        buf[CAWR_OFF_PR + i] = pre[i]
+        buf[CAWR_OFF_PI + i] = pim[i]
+        buf[CAWR_OFF_QR + i] = 0.0
+        buf[CAWR_OFF_QI + i] = 0.0
+        i = i + 1
+    }
+}
+
+/// Hata akımı J_hata(T−s) kuvvet tamponunu (FR/FI) yazar.
+fn cawr_force_set(buf: *f64, jre: *f64, jim: *f64) {
+    var i: i64 = 0
+    while i < NOEMA_D {
+        buf[CAWR_OFF_FR + i] = jre[i]
+        buf[CAWR_OFF_FI + i] = jim[i]
+        i = i + 1
+    }
+}
+
+// ── Ters-zaman Strang çözücü (noema_etd varyantı) ──────────────────────
+
+/// Üç-rejimli ETD katsayılarını C11..C22'ye yazar (dt = ds adımı).
+fn cawr_coeffs(buf: *f64, dt: f64, cbar: f64) {
+    var e11: f64 = 0.0
+    var e12: f64 = 0.0
+    var e21: f64 = 0.0
+    var e22: f64 = 0.0
+    var k0: i64 = 0
+    while k0 < ETD_NB {
+        let lam0 = 2.0 - 2.0 * @cos(NOEMA_PI * (k0 as f64) / (ETD_NB as f64))
+        etd_mode_coeffs(cbar, lam0, dt, &e11, &e12, &e21, &e22)
+        buf[CAWR_OFF_C11 + k0] = e11
+        buf[CAWR_OFF_C12 + k0] = e12
+        buf[CAWR_OFF_C21 + k0] = e21
+        buf[CAWR_OFF_C22 + k0] = e22
+        k0 = k0 + 1
+    }
+}
+
+/// Blok-ETD: Φ/Q (re+im) DCT-II → mod başına E(k) → ters DCT-II.
+fn cawr_modal_pass(buf: *f64, dt: f64, cbar: f64) {
+    cawr_coeffs(buf, dt, cbar)
+    var b: i64 = 0
+    while b < ETD_NBLK {
+        let base = b * ETD_NB
+        etd_dct_fwd_at(buf, CAWR_OFF_PR + base, CAWR_OFF_MR + base)
+        etd_dct_fwd_at(buf, CAWR_OFF_PI + base, CAWR_OFF_MI + base)
+        etd_dct_fwd_at(buf, CAWR_OFF_QR + base, CAWR_OFF_MR + NOEMA_D + base)
+        etd_dct_fwd_at(buf, CAWR_OFF_QI + base, CAWR_OFF_MI + NOEMA_D + base)
+        var k: i64 = 0
+        while k < ETD_NB {
+            let i0 = CAWR_OFF_MR + base + k
+            let i1 = CAWR_OFF_MR + NOEMA_D + base + k
+            let j0 = CAWR_OFF_MI + base + k
+            let j1 = CAWR_OFF_MI + NOEMA_D + base + k
+            let wr = buf[i0]
+            let wi = buf[j0]
+            let vr = buf[i1]
+            let vi = buf[j1]
+            let a11 = buf[CAWR_OFF_C11 + k]
+            let a12 = buf[CAWR_OFF_C12 + k]
+            let a21 = buf[CAWR_OFF_C21 + k]
+            let a22 = buf[CAWR_OFF_C22 + k]
+            buf[i0] = a11 * wr + a12 * vr
+            buf[j0] = a11 * wi + a12 * vi
+            buf[i1] = a21 * wr + a22 * vr
+            buf[j1] = a21 * wi + a22 * vi
+            k = k + 1
+        }
+        etd_dct_inv_at(buf, CAWR_OFF_MR + base, CAWR_OFF_PR + base)
+        etd_dct_inv_at(buf, CAWR_OFF_MI + base, CAWR_OFF_PI + base)
+        etd_dct_inv_at(buf, CAWR_OFF_MR + NOEMA_D + base, CAWR_OFF_QR + base)
+        etd_dct_inv_at(buf, CAWR_OFF_MI + NOEMA_D + base, CAWR_OFF_QI + base)
+        b = b + 1
+    }
+}
+
+/// Yarım itki: Q += (ds/2τ2)·J_hata.
+fn cawr_kick_half(buf: *f64, ds: f64) {
+    let h = ds / (4.0 * NOEMA_TAU_2)
+    var i: i64 = 0
+    while i < NOEMA_D {
+        buf[CAWR_OFF_QR + i] = buf[CAWR_OFF_QR + i] + h * buf[CAWR_OFF_FR + i]
+        buf[CAWR_OFF_QI + i] = buf[CAWR_OFF_QI + i] + h * buf[CAWR_OFF_FI + i]
+        i = i + 1
+    }
+}
+
+/// Tek ters-zaman Strang adımı (tam ds): itki yarım → blok-ETD → itki yarım.
+fn cawr_micro_step(buf: *f64, ds: f64, cbar: f64) {
+    cawr_kick_half(buf, ds)
+    cawr_modal_pass(buf, ds, cbar)
+    cawr_kick_half(buf, ds)
+}
+
+impl Arena {
+    /// CAWR çalışma önkoşulları: 0 = uygun, <0 = desteklenmeyen geometri.
+    fn cawr_ok(self: *Arena) -> i64 {
+        if self.field_n != NOEMA_D { return -1 }
+        if self.cfg.d > NOEMA_D { return -2 }
+        if self.cfg.r > 8 { return -3 }
+        if self.cfg.include_phi == 0 { return -4 }
+        return 0
+    }
+
+    /// Kart k için donmuş-ortalama c_bar (§6.1): c = e^{-2σ} ve
+    /// u2 = ||U_eff||_F² üzerinden c_min/c_max/c_bar.
+    fn cawr_cbar(self: *Arena, k: i64) -> f64 {
+        var u2: f64 = 0.0
+        var rr: i64 = 0
+        while rr < self.cfg.r {
+            var dd: i64 = 0
+            while dd < self.cfg.d {
+                let u = self.u_eff_at(k, rr, dd)
+                u2 = u2 + u * u
+                dd = dd + 1
+            }
+            rr = rr + 1
+        }
+        var cmin: f64 = 0.0
+        var cmax: f64 = 0.0
+        var cbar: f64 = 0.0
+        etd_card_bounds(self.sigma_eff_at(k), u2, &cmin, &cmax, &cbar)
+        return cbar
+    }
+
+    // ── τ_orta halka: yörünge kayıtları ─────────────────────────────────
+
+    /// (k,b) akışının ψ anlık görüntüsünü halkaya iter.
+    /// slot_bytes >= RING_SLOT_HDR + 2*field_n*8 gerekir.
+    /// Dönen: yazılan slot veya -1.
+    fn cawr_orbit_push(self: *Arena, k: i64, b: i64) -> i64 {
+        if self.cawr_ok() != 0 { return -1 }
+        var pay: [2 * NOEMA_D]f64 = [0.0; 2 * NOEMA_D]
+        var e: f64 = 0.0
+        var i: i64 = 0
+        while i < NOEMA_D {
+            let xr = self.psi_re_at(k, b, i)
+            let xi = self.psi_im_at(k, b, i)
+            pay[i] = xr
+            pay[NOEMA_D + i] = xi
+            e = e + xr * xr + xi * xi
+            i = i + 1
+        }
+        // ampl = ortalama |ψ|² — A < A_esik budaması için
+        let ampl = e / (2.0 * (NOEMA_D as f64))
+        return self.ring_push(cawr_tag(k, b), ampl,
+                              (&pay[0]) as *u8, 2 * NOEMA_D * 8)
+    }
+
+    /// head'in bir öncesinden başlayıp geriye doğru ilk used+tag slotu.
+    /// Bulunamazsa -1. Diğer tag'li kayıtlar atlanır (korunur).
+    fn cawr_ring_find(self: *Arena, tag: i64) -> i64 {
+        let cap = self.ringst.ring_capacity
+        if cap <= 0 { return -1 }
+        var p = (self.ringst.ring_head + cap - 1) % cap
+        var s: i64 = 0
+        while s < cap {
+            if self.ring_slot_used(p) == 1 and self.ring_slot_tag(p) == tag {
+                return p
+            }
+            p = (p + cap - 1) % cap
+            s = s + 1
+        }
+        return -1
+    }
+
+    /// En yeni yörünge kaydını yükler ve tüketir (used=0).
+    /// Payload → buf[SR..] re, buf[SI..] im. 0 = başarılı, -1 = kayıt yok.
+    fn cawr_orbit_pop_into(self: *Arena, tag: i64, buf: *f64) -> i64 {
+        if self.cawr_ok() != 0 { return -1 }
+        let s = self.cawr_ring_find(tag)
+        if s < 0 { return -1 }
+        let p = self.ring_slot_payload(s)
+        var i: i64 = 0
+        while i < NOEMA_D {
+            buf[CAWR_OFF_SR + i] = (@ptr_add(p, i * 8) as *f64)[0]
+            buf[CAWR_OFF_SI + i] = (@ptr_add(p, (NOEMA_D + i) * 8) as *f64)[0]
+            i = i + 1
+        }
+        @write_u64(self.ring_slot_ptr(s), 0)
+        self.ringst.ring_count = self.ringst.ring_count - 1
+        if self.ringst.ring_count <= 0 {
+            self.ringst.ring_count = 0
+            self.ringst.ring_head = 0
+            self.ringst.ring_tail = 0
+        }
+        return 0
+    }
+
+    // ── Girişim integralleri ────────────────────────────────────────────
+
+    /// ψ görüntüsü (SR/SI) ve Φ (PR/PI) için akıları hesaplar:
+    /// w = g⁻¹∇ψ → WR/WI, v = g⁻¹∇Φ → VR/VI; z_w/z_v → ZW*/ZV*.
+    /// 0 = başarılı, <0 = geometri hatası.
+    fn cawr_flows(self: *Arena, k: i64, buf: *f64) -> i64 {
+        if self.cawr_ok() != 0 { return -1 }
+        var i: i64 = 0
+        while i < NOEMA_D {
+            let ip = if i + 1 < NOEMA_D { i + 1 } else { 0 }
+            let im = if i - 1 >= 0 { i - 1 } else { NOEMA_D - 1 }
+            buf[CAWR_OFF_GR + i] = buf[CAWR_OFF_SR + ip] - buf[CAWR_OFF_SR + im]
+            buf[CAWR_OFF_GI + i] = buf[CAWR_OFF_SI + ip] - buf[CAWR_OFF_SI + im]
+            buf[CAWR_OFF_G2R + i] = buf[CAWR_OFF_PR + ip] - buf[CAWR_OFF_PR + im]
+            buf[CAWR_OFF_G2I + i] = buf[CAWR_OFF_PI + ip] - buf[CAWR_OFF_PI + im]
+            i = i + 1
+        }
+        if self.metric_ginv_apply(k, cawr_at(buf, CAWR_OFF_GR),
+                                  cawr_at(buf, CAWR_OFF_WR)) != 0 { return -1 }
+        if self.metric_ginv_apply(k, cawr_at(buf, CAWR_OFF_GI),
+                                  cawr_at(buf, CAWR_OFF_WI)) != 0 { return -1 }
+        if self.metric_ginv_apply(k, cawr_at(buf, CAWR_OFF_G2R),
+                                  cawr_at(buf, CAWR_OFF_VR)) != 0 { return -1 }
+        if self.metric_ginv_apply(k, cawr_at(buf, CAWR_OFF_G2I),
+                                  cawr_at(buf, CAWR_OFF_VI)) != 0 { return -1 }
+        self.learn_zt(k, cawr_at(buf, CAWR_OFF_WR), cawr_at(buf, CAWR_OFF_WI),
+                      cawr_at(buf, CAWR_OFF_ZWR), cawr_at(buf, CAWR_OFF_ZWI))
+        self.learn_zt(k, cawr_at(buf, CAWR_OFF_VR), cawr_at(buf, CAWR_OFF_VI),
+                      cawr_at(buf, CAWR_OFF_ZVR), cawr_at(buf, CAWR_OFF_ZVI))
+        return 0
+    }
+
+    /// Tek zaman diliminin girişim katkısını dt_w ağırlığıyla biriktirir.
+    /// ds_o/dudb önceki değerlerin üzerine EKLENİR (çağıran sıfırlar).
+    /// dudb: [0,r*d) = D_u (rr*d+mu), [r*d, r*d+d) = D_b (mu).
+    fn cawr_accumulate(self: *Arena, k: i64, dt_w: f64, buf: *f64,
+                       ds_o: *f64, dudb: *f64) -> i64 {
+        if self.cawr_ok() != 0 { return -1 }
+        // D_σ = −2 e^{2σ} Re(v†w) ds ; Re(v†w) = Σ vre·wre + vim·wim
+        var s: f64 = 0.0
+        var i: i64 = 0
+        while i < NOEMA_D {
+            let re = buf[CAWR_OFF_VR + i] * buf[CAWR_OFF_WR + i]
+            let im = buf[CAWR_OFF_VI + i] * buf[CAWR_OFF_WI + i]
+            s = s + re + im
+            i = i + 1
+        }
+        let sig = self.sigma_eff_at(k)
+        ds_o[0] = ds_o[0] - 2.0 * noema_exp(2.0 * sig) * dt_w * s
+        // D_u[r,μ] = −[Re(z_w^{(r)*} v^μ) + Re(z_v^{(r)*} w^μ)] ds
+        let rd = self.cfg.r * self.cfg.d
+        var rr: i64 = 0
+        while rr < self.cfg.r {
+            let zwr = buf[CAWR_OFF_ZWR + rr]
+            let zwi = buf[CAWR_OFF_ZWI + rr]
+            let zvr = buf[CAWR_OFF_ZVR + rr]
+            let zvi = buf[CAWR_OFF_ZVI + rr]
+            var mu: i64 = 0
+            while mu < self.cfg.d {
+                let tu = zwr * buf[CAWR_OFF_VR + mu] + zwi * buf[CAWR_OFF_VI + mu]
+                let tv = zvr * buf[CAWR_OFF_WR + mu] + zvi * buf[CAWR_OFF_WI + mu]
+                let t = tu + tv
+                let ix = rr * self.cfg.d + mu
+                dudb[ix] = dudb[ix] - dt_w * t
+                mu = mu + 1
+            }
+            rr = rr + 1
+        }
+        // D_b[μ] = −η_b Im(Φ* w^μ + Ψ* v^μ) ds  (dudb + rd ofseti)
+        var m2: i64 = 0
+        while m2 < self.cfg.d {
+            let a1 = buf[CAWR_OFF_PR + m2] * buf[CAWR_OFF_WI + m2]
+            let a2 = buf[CAWR_OFF_PI + m2] * buf[CAWR_OFF_WR + m2]
+            let b1 = buf[CAWR_OFF_SR + m2] * buf[CAWR_OFF_VI + m2]
+            let b2 = buf[CAWR_OFF_SI + m2] * buf[CAWR_OFF_VR + m2]
+            dudb[rd + m2] = dudb[rd + m2] - NOEMA_ETA_B * dt_w * ((a1 - a2) + (b1 - b2))
+            m2 = m2 + 1
+        }
+        return 0
+    }
+
+    // ── Geri geçiş sürücüsü ─────────────────────────────────────────────
+
+    /// Tek ters-zaman makro adımı: en yeni (k,b) yörünge kaydını yükle →
+    /// girişim integrali → eşlenik Strang adımı (ds). c_bar her adımda
+    /// donmuş metrikten yeniden hesaplanır (ucuz: R·D + bir exp).
+    /// 0 = adım atıldı, -1 = yörünge tükendi / geometri hatası.
+    fn cawr_step(self: *Arena, k: i64, b: i64, ds: f64,
+                 buf: *f64, ds_o: *f64, dudb: *f64) -> i64 {
+        if self.cawr_orbit_pop_into(cawr_tag(k, b), buf) != 0 { return -1 }
+        if self.cawr_flows(k, buf) != 0 { return -1 }
+        if self.cawr_accumulate(k, ds, buf, ds_o, dudb) != 0 { return -1 }
+        cawr_micro_step(buf, ds, self.cawr_cbar(k))
+        return 0
+    }
+
+    /// Halkadaki tüm (k,b) yörünge kayıtlarını geriye doğru tüketir.
+    /// Dönen: atlanan adım sayısı (yörünge yetmezse erken durur).
+    fn cawr_backward(self: *Arena, k: i64, b: i64, ds: f64, steps: i64,
+                     buf: *f64, ds_o: *f64, dudb: *f64) -> i64 {
+        var done: i64 = 0
+        while done < steps {
+            if self.cawr_step(k, b, ds, buf, ds_o, dudb) != 0 { break }
+            done = done + 1
+        }
+        return done
+    }
+}

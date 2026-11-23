@@ -1,0 +1,121 @@
+// NOEMA-Φ Faz 3.2 testi: makro senkronizasyon (§6.3).
+// Kapsam: kilitsiz halo/köprü (Γ_ab) takası, kaba-ızgara eşitlemesi,
+// küresel özetler (‖Ψ‖², ‖Π‖², oran) ve erken kararlılık çıktısı.
+import "../src/noema_const.lir"
+import "../src/noema_arena.lir"
+import "../src/noema_atlas.lir"
+import "../src/noema_macro.lir"
+
+fn main() -> i64 {
+    var checks: i64 = 0
+    var passed: i64 = 0
+
+    var cfg = Arena.config_default()
+    cfg.ring_bytes = NOEMA_RING_MIN_MB * 1048576
+    var a = Arena.init(cfg)
+
+    var c: i64 = 0
+    while c < cfg.c_total {
+        a.cavity_sig_set(c, c % 4, 1.0)
+        c = c + 1
+    }
+    a.atlas_build()
+    var j: i64 = 0
+    while j < 4 {
+        a.atlas_j_set(j, if j == 0 { 1.0 } else { 0.0 })
+        j = j + 1
+    }
+    let nsel = a.atlas_select(4)
+    checks = checks + 1
+    if nsel == 4 { passed = passed + 1 }
+    printInt(nsel) println("")
+
+    // Aktif kartlara deterministik alan doldur (yalnız akış b=0).
+    var s: i64 = 0
+    while s < nsel {
+        let card = a.atlas_card_of(s)
+        var i: i64 = 0
+        while i < 64 {
+            a.psi_set(card, 0, i, (i as f64) * 0.01 + s as f64, 0.001 * (i as f64))
+            a.pi_set(card, 0, i, 0.0, 0.0)
+            i = i + 1
+        }
+        s = s + 1
+    }
+    // Köprü: slot 0 → 1, κ=0.5, φ=0.3
+    a.atlas_bridge_set(0, 1, 0.5, 0.3)
+
+    // ── Halo takası: yalnız sınır noktaları değişir ──────────────────
+    // Önce kart1 halo değerlerini kaydet.
+    let c0 = a.atlas_card_of(0)
+    let c1 = a.atlas_card_of(1)
+    let h0 = 3
+    let hr = a.psi_re_at(c1, 0, h0)
+    let hi = a.psi_im_at(c1, 0, h0)
+    let mid_before = a.psi_re_at(c1, 0, 32)
+    // kaynak halo takas ÖNCESİ alınmalı (takas sonrası kirlenir)
+    let xr0 = a.psi_re_at(c0, 0, h0)
+    let xi0 = a.psi_im_at(c0, 0, h0)
+    a.macro_halo_exchange(4)
+    let co = @cos(0.3)
+    let sn = @sin(0.3)
+    let er = hr + 0.5 * (co * xr0 - sn * xi0)
+    let ei = hi + 0.5 * (co * xi0 + sn * xr0)
+    checks = checks + 3
+    if @fabs(a.psi_re_at(c1, 0, h0) - er) < 1e-12 { passed = passed + 1 }
+    if @fabs(a.psi_im_at(c1, 0, h0) - ei) < 1e-12 { passed = passed + 1 }
+    if a.psi_re_at(c1, 0, 32) == mid_before { passed = passed + 1 }
+    printlnFloat(a.psi_re_at(c1, 0, h0))
+    printlnFloat(a.psi_im_at(c1, 0, h0))
+
+    // ── Kaba-ızgara eşitlemesi: blok ortalamaları yakınsar ───────────
+    // Köprüsüz durumda kart0 ve kart1 blok-0 ortalamalarını ölç.
+    var scr: [512]f64 = [0.0; 512]
+    a.macro_block_means(4, &scr[0])
+    let d0r = scr[macro_idx(0, 0, 0, NOEMA_B_FAZ)]
+    let d1r = scr[macro_idx(1, 0, 0, NOEMA_B_FAZ)]
+    a.macro_coarse_sync(4, &scr[0])
+    // eşitleme sonrası yeniden ölç
+    var scr2: [512]f64 = [0.0; 512]
+    a.macro_block_means(4, &scr2[0])
+    let e0r = scr2[macro_idx(0, 0, 0, NOEMA_B_FAZ)]
+    let e1r = scr2[macro_idx(1, 0, 0, NOEMA_B_FAZ)]
+    checks = checks + 1
+    // iki kartın blok ortalaması eşitleme yönünde birbirine yaklaşır
+    if @fabs(e0r - e1r) < @fabs(d0r - d1r) or @fabs(e0r - e1r) < 1e-9 { passed = passed + 1 }
+    printlnFloat(@fabs(d0r - d1r))
+    // artık fark backend FP'sinde son basamak değişebilir — nicemli
+    printInt(if @fabs(e0r - e1r) < 1e-9 { 1 } else { 0 })
+    println("")
+
+    // ── Küresel özetler + erken çıkış oranı ──────────────────────────
+    var out: [16]f64 = [0.0; 16]
+    let ratio = a.macro_sync(4, &out[0])
+    checks = checks + 3
+    // pi=0 → oran 0 → erken çıkış eşiği altında
+    if ratio < NOEMA_EPS_DUR { passed = passed + 1 }
+    // özet: slot0 ‖Ψ‖² > 0, ‖Π‖² = 0
+    if out[0] > 0.0 and out[1] == 0.0 { passed = passed + 1 }
+    // determinizm: alanları sıfırlayıp aynı adımı tekrarla → aynı oran
+    var ss: i64 = 0
+    while ss < nsel {
+        let card = a.atlas_card_of(ss)
+        var i2: i64 = 0
+        while i2 < 64 {
+            a.psi_set(card, 0, i2, (i2 as f64) * 0.01 + ss as f64, 0.001 * (i2 as f64))
+            a.pi_set(card, 0, i2, 0.0, 0.0)
+            i2 = i2 + 1
+        }
+        ss = ss + 1
+    }
+    let ratio2 = a.macro_sync(4, &out[0])
+    if ratio == ratio2 { passed = passed + 1 }
+    printlnFloat(ratio)
+
+    a.free()
+    printInt(passed)
+    print("/")
+    printInt(checks)
+    println("")
+    return 0
+}

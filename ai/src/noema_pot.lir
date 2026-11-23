@@ -1,0 +1,310 @@
+// noema_pot.lir — NOEMA-Φ serbest enerji terimleri ve kapalı-form
+// Wirtinger türevleri (Mimari §4.1, §5.1). Saf skaler işlevler;
+// karmaşık ψ = (x + iy) çiftleriyle çalışır.
+//
+// Her "grad" işlevi ∂F/∂ψ* değerini (wre + i·wim) gre/gim çıktı
+// işaretçilerine yazar. Alan kuvveti F = -δF/δψ* olduğundan çağıran
+// işaret çevirir; burada yalnızca türevler ve terim değerleri verilir.
+//
+// Yardımcı özdeşlikler:
+//   |ψ|² = x²+y² = r2 ;  Re(ψ⁴) = r2² - 8x²y²
+//   (ψ*)³ = conj(ψ³): re = x³-3xy² , im = y³-3x²y
+
+import "noema_const.lir"
+import "noema_math.lir"
+
+fn pot_r2(x: f64, y: f64) -> f64 {
+    return x * x + y * y
+}
+
+fn pot_psi4re(x: f64, y: f64) -> f64 {
+    let r2 = x * x + y * y
+    return r2 * r2 - 8.0 * x * x * y * y
+}
+
+fn pot_psim3_re(x: f64, y: f64) -> f64 {
+    return x * x * x - 3.0 * x * y * y
+}
+
+fn pot_psim3_im(x: f64, y: f64) -> f64 {
+    return y * y * y - 3.0 * x * x * y
+}
+
+// ── V_top: çatallanma potansiyeli ─────────────────────────────────────
+// V = a4/4 (|ψ|²-A0²)² + a6/6 |ψ|⁶ - ηc/4 Re(ψ⁴)/(1+|ψ|²)²
+
+fn v_top_val(x: f64, y: f64) -> f64 {
+    let r2 = pot_r2(x, y)
+    let om = 1.0 + r2
+    let a0sq = NOEMA_A0 * NOEMA_A0
+    var v = NOEMA_A4 * 0.25 * (r2 - a0sq) * (r2 - a0sq)
+    v = v + NOEMA_A6 * (1.0 / 6.0) * r2 * r2 * r2
+    v = v - NOEMA_ETA_C * 0.25 * pot_psi4re(x, y) / (om * om)
+    return v
+}
+
+// ∂V/∂ψ* = [a4/2(|ψ|²-A0²) + a6/2|ψ|⁴ + ηc Re(ψ⁴)/(2(1+|ψ|²)³)]ψ
+//          - ηc/2 (ψ*)³/(1+|ψ|²)²
+fn v_top_grad(x: f64, y: f64, gre: *f64, gim: *f64) {
+    let r2 = pot_r2(x, y)
+    let om = 1.0 + r2
+    let om2 = om * om
+    let a0sq = NOEMA_A0 * NOEMA_A0
+    var bcoef = NOEMA_A4 * 0.5 * (r2 - a0sq)
+    bcoef = bcoef + NOEMA_A6 * 0.5 * r2 * r2
+    bcoef = bcoef + NOEMA_ETA_C * pot_psi4re(x, y) / (2.0 * om2 * om)
+    let c3r = pot_psim3_re(x, y)
+    let c3i = pot_psim3_im(x, y)
+    gre[0] = gre[0] + bcoef * x - NOEMA_ETA_C * 0.5 * c3r / om2
+    gim[0] = gim[0] + bcoef * y - NOEMA_ETA_C * 0.5 * c3i / om2
+}
+
+// ── V_sembol: kuaterner faz kilidi (§4.1.4) ────────────────────────────
+// V = λ/4 (|ψ|⁴ - Re(ψ⁴))/(1+|ψ|²)²   (yalnız çıkış bölgesinde)
+
+fn v_sembol_val(x: f64, y: f64, lam: f64) -> f64 {
+    let r2 = pot_r2(x, y)
+    let om = 1.0 + r2
+    return lam * 0.25 * (r2 * r2 - pot_psi4re(x, y)) / (om * om)
+}
+
+// ∂V/∂ψ* = λ/2 [(|ψ|²+Re(ψ⁴))ψ - (1+|ψ|²)(ψ*)³] / (1+|ψ|²)³
+fn v_sembol_grad(x: f64, y: f64, lam: f64, gre: *f64, gim: *f64) {
+    let r2 = pot_r2(x, y)
+    let om = 1.0 + r2
+    let om3 = om * om * om
+    let p4 = pot_psi4re(x, y)
+    let c3r = pot_psim3_re(x, y)
+    let c3i = pot_psim3_im(x, y)
+    let cf = lam * 0.5 / om3
+    gre[0] = gre[0] + cf * ((r2 + p4) * x - om * c3r)
+    gim[0] = gim[0] + cf * ((r2 + p4) * y - om * c3i)
+}
+
+// ── V_doğrulama: birim vektör başına öz-denetim (§4.1.3) ───────────────
+// v̂=(vr,vi) birim, w ağırlık. r_ℓ=Re(ψ*v̂), s_ℓ=Im(ψ*v̂).
+// V += λv/2 w [s² + μ max(0,-r)²]
+// ∂V/∂ψ* += -λv/2 w (i s + μ max(0,-r)) v̂
+
+fn v_dogrulama_val(x: f64, y: f64, vr: f64, vi: f64, w: f64) -> f64 {
+    let rr = x * vr + y * vi
+    let ss = x * vi - y * vr
+    let neg = if -rr > 0.0 { -rr } else { 0.0 }
+    return NOEMA_LAMBDA_V * 0.5 * w * (ss * ss + NOEMA_MU_TERS * neg * neg)
+}
+
+fn v_dogrulama_grad(x: f64, y: f64, vr: f64, vi: f64, w: f64,
+                    gre: *f64, gim: *f64) {
+    let rr = x * vr + y * vi
+    let ss = x * vi - y * vr
+    let neg = if -rr > 0.0 { -rr } else { 0.0 }
+    let br = NOEMA_MU_TERS * neg
+    let bs = ss
+    // (br + i·bs)·(vr + i·vi)
+    let bre = br * vr - bs * vi
+    let bim = br * vi + bs * vr
+    let cf = -NOEMA_LAMBDA_V * 0.5 * w
+    gre[0] = gre[0] + cf * bre
+    gim[0] = gim[0] + cf * bim
+}
+
+// ── V_koruma: hızlı-yol güvenlik bariyeri (§4.1.6) ────────────────────
+// f=1: doğrulanmamış yıkıcı bölge. V = Λkor/2 f |ψ|² ; ∂V/∂ψ* = Λkor/2 f ψ
+
+fn v_koruma_val(x: f64, y: f64, f: i64) -> f64 {
+    if f == 0 { return 0.0 }
+    return NOEMA_LAMBDA_KOR * 0.5 * pot_r2(x, y)
+}
+
+fn v_koruma_grad(x: f64, y: f64, f: i64, gre: *f64, gim: *f64) {
+    if f == 0 { return }
+    let cf = NOEMA_LAMBDA_KOR * 0.5
+    gre[0] = gre[0] + cf * x
+    gim[0] = gim[0] + cf * y
+}
+
+// ── V_çekinme: epistemik çekinme (§4.1.7) ─────────────────────────────
+// V = λcek/2 g out |ψ - ψçek|² ; ∂V/∂ψ* = λcek/2 g out (ψ - ψçek)
+
+fn v_cekinme_val(x: f64, y: f64, cr: f64, ci: f64,
+                 g: f64, out: i64) -> f64 {
+    if out == 0 or g <= 0.0 { return 0.0 }
+    let dx = x - cr
+    let dy = y - ci
+    return NOEMA_LAMBDA_CEK * 0.5 * g * (dx * dx + dy * dy)
+}
+
+fn v_cekinme_grad(x: f64, y: f64, cr: f64, ci: f64,
+                  g: f64, out: i64, gre: *f64, gim: *f64) {
+    if out == 0 or g <= 0.0 { return }
+    let cf = NOEMA_LAMBDA_CEK * 0.5 * g
+    gre[0] = gre[0] + cf * (x - cr)
+    gim[0] = gim[0] + cf * (y - ci)
+}
+
+// ── Demet köprüleri (§4.1.1) ───────────────────────────────────────────
+// F_köprü = κ |ψa - e^{iφ}ψb|²  üzerinde Γ_ab
+// ∂/∂ψa* = κ(ψa - e^{iφ}ψb) ;  ∂/∂ψb* = κ(ψb - e^{-iφ}ψa)
+// Kuvvet: F_a -= κ·diff_a , F_b -= κ·diff_b (işaret çağıranda)
+
+fn kopru_diff_a(ar: f64, ai: f64, br: f64, bi: f64,
+                phi: f64, dre: *f64, dim: *f64) {
+    let c = @cos(phi)
+    let s = @sin(phi)
+    let er = c * br - s * bi
+    let ei = s * br + c * bi
+    dre[0] = ar - er
+    dim[0] = ai - ei
+}
+
+fn kopru_diff_b(ar: f64, ai: f64, br: f64, bi: f64,
+                phi: f64, dre: *f64, dim: *f64) {
+    let c = @cos(phi)
+    let s = @sin(phi)
+    // e^{-iφ}ψa = (c·ar + s·ai) + i(c·ai - s·ar)
+    dre[0] = br - (c * ar + s * ai)
+    dim[0] = bi - (c * ai - s * ar)
+}
+
+fn kopru_val(ar: f64, ai: f64, br: f64, bi: f64,
+             kappa: f64, phi: f64) -> f64 {
+    var dre: f64 = 0.0
+    var dim: f64 = 0.0
+    kopru_diff_a(ar, ai, br, bi, phi, &dre, &dim)
+    return kappa * (dre * dre + dim * dim)
+}
+
+// Köprü kuvvetleri (zaten -δF/δψ* işaretli): F += force
+fn kopru_force_a(ar: f64, ai: f64, br: f64, bi: f64,
+                 kappa: f64, phi: f64, fre: *f64, fim: *f64) {
+    var dre: f64 = 0.0
+    var dim: f64 = 0.0
+    kopru_diff_a(ar, ai, br, bi, phi, &dre, &dim)
+    fre[0] = fre[0] - kappa * dre
+    fim[0] = fim[0] - kappa * dim
+}
+
+fn kopru_force_b(ar: f64, ai: f64, br: f64, bi: f64,
+                 kappa: f64, phi: f64, fre: *f64, fim: *f64) {
+    var dre: f64 = 0.0
+    var dim: f64 = 0.0
+    kopru_diff_b(ar, ai, br, bi, phi, &dre, &dim)
+    fre[0] = fre[0] - kappa * dre
+    fim[0] = fim[0] - kappa * dim
+}
+
+// ── E_söz: sözdizimsel topolojik yük (§4.1.5) ──────────────────────────
+// Q_d = Re∫ρ_d*ψ ; E = λ/2 ΣQ_d² ; kuvvet katkısı -λ/2 Σ Q_d ρ_d(x)
+// rho: bu noktadaki kip değerleri, d başına (re,im) ardışık çift.
+// q:   Q_d değerleri (n_d eleman).
+
+fn soz_force(n_d: i64, q: *f64, rho: *f64, lam: f64,
+             fre: *f64, fim: *f64) {
+    var d: i64 = 0
+    while d < n_d {
+        let cf = -lam * 0.5 * q[d]
+        fre[0] = fre[0] + cf * rho[d * 2]
+        fim[0] = fim[0] + cf * rho[d * 2 + 1]
+        d = d + 1
+    }
+}
+
+// Q_d = Re Σ ρ_d* ψ = Σ (ρre·ψre + ρim·ψim)
+fn soz_charge_one(n_pts: i64, rho: *f64, psi_re: *f64, psi_im: *f64,
+                  stride: i64) -> f64 {
+    var acc = 0.0
+    var i: i64 = 0
+    while i < n_pts {
+        acc = acc + rho[i * stride] * psi_re[i] + rho[i * stride + 1] * psi_im[i]
+        i = i + 1
+    }
+    return acc
+}
+
+// ── E_kilit: keywords faz kilidi (§4.1.8) ──────────────────────────────
+// E = ½Σ|c_j - c̄|² ; kuvvet -γ/2 Σ (c_j-c̄) χ_j(x)
+// resid: karmaşık artıklar (re,im) ardışık; chi: kip değerleri (re,im).
+
+fn kilit_force(n_j: i64, resid: *f64, chi: *f64, gam: f64,
+               fre: *f64, fim: *f64) {
+    var j: i64 = 0
+    while j < n_j {
+        let rr = resid[j * 2]
+        let ri = resid[j * 2 + 1]
+        let hr = chi[j * 2]
+        let hi = chi[j * 2 + 1]
+        // (rr + i·ri)(hr + i·hi)
+        fre[0] = fre[0] - gam * 0.5 * (rr * hr - ri * hi)
+        fim[0] = fim[0] - gam * 0.5 * (rr * hi + ri * hr)
+        j = j + 1
+    }
+}
+
+// c_j = ⟨χ_j, ψ⟩ = Σ conj(χ_j)·ψ → (re,im) çıktı
+fn kilit_coeff_one(n_pts: i64, chi: *f64, psi_re: *f64, psi_im: *f64,
+                   stride: i64, cre: *f64, cim: *f64) {
+    var ar = 0.0
+    var ai = 0.0
+    var i: i64 = 0
+    while i < n_pts {
+        let hr = chi[i * stride]
+        let hi = chi[i * stride + 1]
+        // conj(χ)·ψ = (hr - i·hi)(ψre + i·ψim)
+        ar = ar + hr * psi_re[i] + hi * psi_im[i]
+        ai = ai + hr * psi_im[i] - hi * psi_re[i]
+        i = i + 1
+    }
+    cre[0] = ar
+    cim[0] = ai
+}
+
+// ── I_nedensel: sınırlı bağlam bilgisi (§4.1.8) ────────────────────────
+// S = |z_ort|² / (σ_gür² E_Ψ + ε) ;  I = λ/2 ln(1+S)
+// Kuvvet: +λ(z_ort·Ψ_orta - σ_gür²·S·Ψ) / (2(1+S)(σ_gür²E_Ψ+ε))
+
+fn nedensel_S(zre: f64, zim: f64, e_psi: f64) -> f64 {
+    let z2 = zre * zre + zim * zim
+    return z2 / (NOEMA_SIGMA_GUR * NOEMA_SIGMA_GUR * e_psi + NOEMA_EPS)
+}
+
+fn nedensel_val(s: f64) -> f64 {
+    return NOEMA_LAMBDA_NED * 0.5 * noema_ln(1.0 + s)
+}
+
+// z_ort = ⟨Ψ_orta, Ψ⟩ = Σ conj(Ψ_orta)·Ψ  (karmaşık)
+fn nedensel_z(n_pts: i64, orta_re: *f64, orta_im: *f64,
+              psi_re: *f64, psi_im: *f64, zre: *f64, zim: *f64) {
+    var ar = 0.0
+    var ai = 0.0
+    var i: i64 = 0
+    while i < n_pts {
+        ar = ar + orta_re[i] * psi_re[i] + orta_im[i] * psi_im[i]
+        ai = ai + orta_re[i] * psi_im[i] - orta_im[i] * psi_re[i]
+        i = i + 1
+    }
+    zre[0] = ar
+    zim[0] = ai
+}
+
+// Kuvvet katkısı (doc işaretiyle +): fre/fim üzerine ekler.
+// blk: [x, y, orta_re, orta_im, z_re, z_im, S, E_psi] — 8 f64.
+fn nedensel_force(blk: *f64, fre: *f64, fim: *f64) {
+    let x = blk[0]
+    let y = blk[1]
+    let ore = blk[2]
+    let oim = blk[3]
+    let zre = blk[4]
+    let zim = blk[5]
+    let s = blk[6]
+    let e_psi = blk[7]
+    // z_ort·Ψ_orta
+    let p1r = zre * ore - zim * oim
+    let p1i = zre * oim + zim * ore
+    let sg2 = NOEMA_SIGMA_GUR * NOEMA_SIGMA_GUR
+    let p2r = sg2 * s * x
+    let p2i = sg2 * s * y
+    let den = 2.0 * (1.0 + s) * (sg2 * e_psi + NOEMA_EPS)
+    let cf = NOEMA_LAMBDA_NED / den
+    fre[0] = fre[0] + cf * (p1r - p2r)
+    fim[0] = fim[0] + cf * (p1i - p2i)
+}

@@ -1,0 +1,310 @@
+// noema_inj.lir — NOEMA-Φ tokenizersız sınır fiziği: Kayan-Goertzel
+// enjektörü, kuaterner bayt kodlaması, topolojik yük kanalı ve
+// düşük-entropi faz paketi birleştirme (Mimari §8).
+//
+// 1) KAYAN-GOERTZEL (§8): her akış b ∈ [0,B_faz) için W=64 binlik
+//    sönümlü kayan DFT durumu X_k (arena goertzel_re/im) ve x[n−W]
+//    gecikme hattı (goer_hist/goer_pos) üzerinde
+//      X_k[n] = r·e^{−iω_k}·X_k[n−1] + x[n] − r^W·x[n−W]
+//    ω_k = 2πk/W, r = 0.999. Sabit çarpanlar r·e^{−iω_k} 2048'li
+//    çeyrek-dalga L1 Faz LUT'tan (lut_cos/lut_sin) okunur — tam dalga
+//    katlaması inj_cos_phase/inj_sin_phase ile yapılır. Örnek başına
+//    bin başına O(1) iş → O(W) toplam, kelepçeli durum, sürüklenme yok.
+//
+// 2) KUATERNER KODLAMA: her UTF-8 baytı b ∈ [0,256) taban-4'e ayrılır;
+//    alt-kanal s ∈ {0..3} fazı φ_s = d_s·(π/2), d_s = (b >> 2s) & 3
+//    (4^4 = 256 kuaterner faz kuyusu). Sözdizimi ayraçları
+//    (){}[]" ayrı bir topolojik yük kanalına bağlanır: inj_delim
+//    (d, ±1, tırnak paritesi) üretir; Q_d = Re∫ρ_d*ψ integrali
+//    noema_pot/noema_energy'deki soz_* ilkelleriyle birikir.
+//
+// 3) DÜŞÜK-BİLGİLİ BİRLEŞTİRME: W_ent = 16 baytlık pencerede bayt
+//    entropisi H < H_ent_esik ise ardışık baytlar tek genlik-ölçekli
+//    faz paketine indirgenir (her kuaterner kanalında baskın basamak
+//    + uyum genliği). Sınır adımı azalır; aksi halde pencere bayt
+//    bayt işlenir (inj_should_merge = 0).
+//
+// 4) KİP KESTİRİMİ (§8): 5 baz şablonu Φ_baz,i üzerinden
+//    m̂_i = softmax_i(Re⟨J_girdi, Φ_baz,i⟩ / T_m), T_m = 0.5.
+//    İç çarpım konvansiyonu learn_re_zw ile aynı: Re Σ conj(J)·Φ.
+//
+// Bellek: tüm durum arena tablolarındadır; yığın dışında tahsis yok.
+// LIR sınırları: impl Arena içinde metotlar, düz fn modül
+// fonksiyonları, <= 8 parametre, devam satırları +/- ile başlamaz.
+
+import "noema_const.lir"
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_arena_rt.lir"
+
+// ── Goertzel durum erişimcileri ────────────────────────────────────────
+
+impl Arena {
+    /// Gecikme hattı: akış b'nin pos konumundaki x[n-W] adayı.
+    fn goer_hist_at(self: *Arena, b: i64, i: i64) -> f64 {
+        return self.tables.goer_hist[b * ARENA_GOERTZEL_W + i]
+    }
+    fn goer_hist_set(self: *Arena, b: i64, i: i64, v: f64) {
+        self.tables.goer_hist[b * ARENA_GOERTZEL_W + i] = v
+    }
+    fn goer_pos_at(self: *Arena, b: i64) -> i64 {
+        return self.tables.goer_pos[b]
+    }
+    fn goer_pos_set(self: *Arena, b: i64, v: i64) {
+        self.tables.goer_pos[b] = v
+    }
+
+    // ── LUT faz katlaması (§8: sabit çarpanlar LUT'tan) ────────────────
+
+    /// keyfi faz için kosinüs: [0,2π) indirgeme + dörtte-bir dalga
+    /// LUT katlaması. idx her zaman [0,2048) içindedir.
+    fn inj_cos_phase(self: *Arena, phase: f64) -> f64 {
+        var p = phase - @floor(phase / NOEMA_TAU) * NOEMA_TAU
+        var q = @floor(p / (NOEMA_PI * 0.5)) as i64
+        var rem = p - (q as f64) * (NOEMA_PI * 0.5)
+        var idx = @floor(rem / (NOEMA_PI * 0.5) * (ARENA_LUT_N as f64)) as i64
+        if idx >= ARENA_LUT_N { idx = ARENA_LUT_N - 1 }
+        if idx < 0 { idx = 0 }
+        let c = self.lut_cos_at(idx)
+        let s = self.lut_sin_at(idx)
+        if q == 0 { return c }
+        if q == 1 { return 0.0 - s }
+        if q == 2 { return 0.0 - c }
+        return s
+    }
+
+    /// keyfi faz için sinüs — inj_cos_phase ile aynı katlama.
+    fn inj_sin_phase(self: *Arena, phase: f64) -> f64 {
+        var p = phase - @floor(phase / NOEMA_TAU) * NOEMA_TAU
+        var q = @floor(p / (NOEMA_PI * 0.5)) as i64
+        var rem = p - (q as f64) * (NOEMA_PI * 0.5)
+        var idx = @floor(rem / (NOEMA_PI * 0.5) * (ARENA_LUT_N as f64)) as i64
+        if idx >= ARENA_LUT_N { idx = ARENA_LUT_N - 1 }
+        if idx < 0 { idx = 0 }
+        let c = self.lut_cos_at(idx)
+        let s = self.lut_sin_at(idx)
+        if q == 0 { return s }
+        if q == 1 { return c }
+        if q == 2 { return 0.0 - s }
+        return 0.0 - c
+    }
+
+    // ── Kayan-Goertzel (§8) ────────────────────────────────────────────
+
+    /// Tüm akışların Goertzel durumunu + gecikme hattını sıfırlar.
+    fn inj_goertzel_reset(self: *Arena) {
+        @memset(self.tables.goertzel_re as *u8, 0,
+                self.b_faz * ARENA_GOERTZEL_W * 8)
+        @memset(self.tables.goertzel_im as *u8, 0,
+                self.b_faz * ARENA_GOERTZEL_W * 8)
+        @memset(self.tables.goer_hist as *u8, 0,
+                self.b_faz * ARENA_GOERTZEL_W * 8)
+        @memset(self.tables.goer_pos as *u8, 0,
+                self.b_faz * 8)
+    }
+
+    /// Tek örnek x'i akış b'nin tüm W binine yayar.
+    /// X_k ← r·e^{−iω_k}·X_k + (x − r^W·x[n−W]).
+    /// Dönen: 0 = başarılı, -1 = geçersiz akış.
+    fn inj_goertzel_push(self: *Arena, b: i64, x: f64) -> i64 {
+        if b < 0 or b >= self.b_faz { return -1 }
+        let w = ARENA_GOERTZEL_W
+        let pos = self.goer_pos_at(b)
+        let delayed = self.goer_hist_at(b, pos)
+        self.goer_hist_set(b, pos, x)
+        self.goer_pos_set(b, (pos + 1) % w)
+        let inp = x - NOEMA_GOERTZEL_RW * delayed
+        var k: i64 = 0
+        while k < w {
+            let om = NOEMA_TAU * (k as f64) / (w as f64)
+            // rot = r·e^{−iω} = cr + i·ci
+            let cr = NOEMA_GOERTZEL_R * self.inj_cos_phase(om)
+            let ci = 0.0 - NOEMA_GOERTZEL_R * self.inj_sin_phase(om)
+            let xr = self.goertzel_re_at(b, k)
+            let xi = self.goertzel_im_at(b, k)
+            self.goertzel_set(b, k,
+                cr * xr - ci * xi + inp,
+                cr * xi + ci * xr)
+            k = k + 1
+        }
+        return 0
+    }
+
+    /// (b,k) Goertzel bin değerini out[0]=re, out[1]=im olarak yazar.
+    fn inj_goertzel_get(self: *Arena, b: i64, k: i64,
+                        out: *f64) -> i64 {
+        if b < 0 or b >= self.b_faz { return -1 }
+        if k < 0 or k >= ARENA_GOERTZEL_W { return -1 }
+        out[0] = self.goertzel_re_at(b, k)
+        out[1] = self.goertzel_im_at(b, k)
+        return 0
+    }
+}
+
+// ── Kuaterner bayt kodlaması (§8) ──────────────────────────────────────
+
+/// Baytın s'inci kuaterner alt-kanal fazı: φ = ((b>>2s)&3)·(π/2).
+/// Geçersiz bayt/kanal → -1.0.
+fn inj_quat_phase(byte: i64, s: i64) -> f64 {
+    if byte < 0 or byte > 255 { return -1.0 }
+    if s < 0 or s > 3 { return -1.0 }
+    let d = (byte >> (2 * s)) & 3
+    return (d as f64) * (NOEMA_PI * 0.5)
+}
+
+/// 4 alt-kanalın fazlarını out[0..3]'e yazar. Dönen: 0 / -1.
+fn inj_quat_phases(byte: i64, out: *f64) -> i64 {
+    if byte < 0 or byte > 255 { return -1 }
+    var s: i64 = 0
+    while s < NOEMA_KUATERNER {
+        out[s] = inj_quat_phase(byte, s)
+        s = s + 1
+    }
+    return 0
+}
+
+// ── Topolojik yük kanalı ρ_d (§8, §4.1.5) ──────────────────────────────
+
+/// Sözdizimi ayıracının topolojik yük sınıfı d ∈ {0..3}:
+/// 0='()' 1='[]' 2='{}' 3='"'. Ayraç değilse -1.
+fn inj_delim_d(byte: i64) -> i64 {
+    if byte == 40 or byte == 41 { return 0 }   // ( )
+    if byte == 91 or byte == 93 { return 1 }   // [ ]
+    if byte == 123 or byte == 125 { return 2 } // { }
+    if byte == 34 { return 3 }                 // "
+    return -1
+}
+
+/// Tek baytın ρ_d yük katkısı. out[0]=d, out[1]=işaret (+1 açma,
+/// -1 kapama), out[2]=yeni tırnak paritesi. Tırnak kendi aç/kapa
+/// durumunu parity ile değiştirir; parantezler sabit yönlüdür.
+/// Dönen: 0 = ayraç, -1 = ayraç değil (out dokunulmaz).
+fn inj_delim(byte: i64, quote_open: i64, out: *i64) -> i64 {
+    let d = inj_delim_d(byte)
+    if d < 0 { return -1 }
+    out[0] = d
+    var qn = quote_open
+    if d == 3 {
+        if quote_open == 0 {
+            out[1] = 1
+            qn = 1
+        } else {
+            out[1] = -1
+            qn = 0
+        }
+    } else if byte == 40 or byte == 91 or byte == 123 {
+        out[1] = 1
+    } else {
+        out[1] = -1
+    }
+    out[2] = qn
+    return 0
+}
+
+// ── Düşük-bilgili faz paketi birleştirme (§8) ──────────────────────────
+
+/// Pencere bayt entropisi (nat): H = ln n − (1/n)Σ c_i·ln c_i.
+/// n <= 0 → 0.0.
+fn inj_entropy(win: *u8, n: i64) -> f64 {
+    if n <= 0 { return 0.0 }
+    var cnt: [256]i64 = [0; 256]
+    var i: i64 = 0
+    while i < n {
+        let by = (@ptr_add(win, i) as *u8)[0] as i64
+        cnt[by] = cnt[by] + 1
+        i = i + 1
+    }
+    var acc: f64 = 0.0
+    var b: i64 = 0
+    while b < 256 {
+        if cnt[b] > 0 {
+            acc = acc + (cnt[b] as f64) * noema_ln(cnt[b] as f64)
+        }
+        b = b + 1
+    }
+    return noema_ln(n as f64) - acc / (n as f64)
+}
+
+/// H_yerel < H_ent_esik → 1 (birleştir), değilse 0.
+fn inj_should_merge(win: *u8, n: i64) -> i64 {
+    if inj_entropy(win, n) < NOEMA_H_ENT_ESIK { return 1 }
+    return 0
+}
+
+/// Düşük-bilgili pencereyi tek genlik-ölçekli faz paketine indirger.
+/// Her kuaterner kanalında baskın basamak seçilir; phase[s] = d_s·π/2,
+/// amp[s] = uyum oranı (count/n). Pencere entropisi eşiği aşarsa
+/// birleştirme yapılmaz → 0. Başarılıda 1.
+/// n ∈ [1, W_ent]; win ham baytlar.
+fn inj_merge_pack(win: *u8, n: i64, phase: *f64, amp: *f64) -> i64 {
+    if n <= 0 or n > NOEMA_W_ENT { return -1 }
+    if inj_should_merge(win, n) == 0 { return 0 }
+    var s: i64 = 0
+    while s < NOEMA_KUATERNER {
+        var cnt: [4]i64 = [0; 4]
+        var i: i64 = 0
+        while i < n {
+            let by = (@ptr_add(win, i) as *u8)[0] as i64
+            let d = (by >> (2 * s)) & 3
+            cnt[d] = cnt[d] + 1
+            i = i + 1
+        }
+        var best: i64 = 0
+        var bi: i64 = 1
+        while bi < 4 {
+            if cnt[bi] > cnt[best] { best = bi }
+            bi = bi + 1
+        }
+        phase[s] = (best as f64) * (NOEMA_PI * 0.5)
+        amp[s] = (cnt[best] as f64) / (n as f64)
+        s = s + 1
+    }
+    return 1
+}
+
+// ── Kip kestirimi (§8) ─────────────────────────────────────────────────
+
+/// 5 baz şablonu üzerinden kip ağırlığı tahmini:
+///   skor_i = Re Σ_p conj(J[p])·Φ_i[p]  (learn_re_zw konvansiyonu)
+///   m̂_i = exp(skor_i/T_m) / Σ_j exp(skor_j/T_m)
+/// jre/jim: girdi alanı (npts complex, re/im ayrı).
+/// tre/tim: 5 şablon × npts complex (düzen: i*npts + p).
+/// m_out: 5 ağırlık (basitkside normalize). Dönen: 0 / -1.
+fn inj_mode_est(jre: *f64, jim: *f64, tre: *f64, tim: *f64,
+                npts: i64, m_out: *f64) -> i64 {
+    if npts <= 0 { return -1 }
+    var sc: [5]f64 = [0.0; 5]
+    var i: i64 = 0
+    while i < 5 {
+        var acc: f64 = 0.0
+        var p: i64 = 0
+        while p < npts {
+            let ix = i * npts + p
+            acc = acc + jre[p] * tre[ix] + jim[p] * tim[ix]
+            p = p + 1
+        }
+        sc[i] = acc / NOEMA_T_M
+        i = i + 1
+    }
+    // Sayısal olarak kararlı softmax (maks çıkarma)
+    var mx = sc[0]
+    i = 1
+    while i < 5 {
+        if sc[i] > mx { mx = sc[i] }
+        i = i + 1
+    }
+    var sum: f64 = 0.0
+    i = 0
+    while i < 5 {
+        sc[i] = noema_exp(sc[i] - mx)
+        sum = sum + sc[i]
+        i = i + 1
+    }
+    if sum <= 0.0 { return -1 }
+    i = 0
+    while i < 5 {
+        m_out[i] = sc[i] / sum
+        i = i + 1
+    }
+    return 0
+}

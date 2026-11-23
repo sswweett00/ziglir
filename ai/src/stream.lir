@@ -1,0 +1,377 @@
+// stream.lir — SEL akış hattı: sınırlı bellekli akan TXT kayıt okuyucu.
+//
+// Kayıt biçimi: `---` ayırıcısı YALNIZCA satır başında duran ve ardından
+// LF, CRLF veya dosya sonu gelen tam olarak üç '-' karakteridir. Kayıt
+// içeriği ayırıcı satırları içermez; ayırıcının önündeki tek satır sonu
+// (LF veya CRLF) kayda dahil edilmez, yani kayıt asla satır sonu ile bitmez.
+//
+// Bellek bütçesi: girdi parça tamponu (chunk_cap) + kayıt tamponu (rec_cap)
+// + isteğe bağlı tekilleştirme tablosu (seen_cap x 8 bayt). Bunların dışında
+// hiçbir şey büyümez; kayıt boyutu rec_cap'i aşarsa kayıt atlanır ve
+// `oversize` sayacı artar — akış durmaz, sessiz veri kaybı olmaz.
+//
+// UTF-8: artımlı doğrulama her bayt için yapılır; bozuk kayıt atlanır
+// (`invalids`). Doğrulama parça sınırlarını aşan çok-baytlı dizileri de
+// yakalar: kesik bir diziden sonra gelen LF geçersiz devam baytı sayılır.
+//
+// Tekilleştirme: seen_cap > 0 ise FNV-1a (64-bit) tabanlı açık adresleme
+// tablosu kullanılır. Tablo dolunca `dedup_full` set edilir ve yeni kayıtlar
+// yine de yayınlanır (tekilleştirme durur, akış durmaz). Hash çakışması
+// teorik olarak yanlış-pozitif üretebilir; 63-bit hash ile ihmal edilebilir.
+//
+// Sözleşme: next() sıfırdan büyük dönerse kayıt self.rec[0..n) içindedir ve
+// bir sonraki next() çağrısına kadar geçerlidir. 0 = EOF, <0 = hata.
+
+const STREAM_OK: i64 = 1
+const STREAM_EOF: i64 = 0
+const STREAM_ERR_OPEN: i64 = -1
+const STREAM_ERR_READ: i64 = -2
+const STREAM_ERR_ARG: i64 = -3
+const STREAM_ERR_STATE: i64 = -4
+const STREAM_MIN_CHUNK: i64 = 8
+const STREAM_MAX_CHUNK: i64 = 4194304
+const STREAM_MAX_REC: i64 = 67108864
+const STREAM_MAX_SEEN: i64 = 16777216
+
+struct StreamReader {
+    fd: i64
+    buf: *u8
+    buf_cap: i64
+    pos: i64
+    len: i64
+    eof: i64
+    rec: *u8
+    rec_cap: i64
+    rec_len: i64
+    bol: i64
+    skipping: i64
+    u8need: i64
+    u8lo: i64
+    u8hi: i64
+    u8sec: i64
+    recbad: i64
+    seen: *u8
+    seen_cap: i64
+    seen_used: i64
+    dedup_full: i64
+    finished: i64
+    status: i64
+    records: i64
+    bytes_read: i64
+    dups: i64
+    invalids: i64
+    oversize: i64
+    empties: i64
+
+    fn bad(code: i64) -> StreamReader {
+        return StreamReader {
+            fd: -1, buf: @malloc(8), buf_cap: 8, pos: 0, len: 0, eof: 1,
+            rec: @malloc(8), rec_cap: 8, rec_len: 0,
+            bol: 1, skipping: 0,
+            u8need: 0, u8lo: 0, u8hi: 0, u8sec: 0, recbad: 0,
+            seen: @malloc(8), seen_cap: 0, seen_used: 0, dedup_full: 0,
+            finished: 1, status: code,
+            records: 0, bytes_read: 0, dups: 0, invalids: 0, oversize: 0, empties: 0,
+        }
+    }
+
+    /// Dosya açar. chunk_cap: okuma parçası (>=16), rec_cap: azami kayıt
+    /// baytı, seen_cap: tekilleştirme tablosu boyutu (0 = kapalı).
+    fn open(path: string, chunk_cap: i64, rec_cap: i64, seen_cap: i64) -> StreamReader {
+        if chunk_cap < STREAM_MIN_CHUNK or chunk_cap > STREAM_MAX_CHUNK { return StreamReader.bad(STREAM_ERR_ARG) }
+        if rec_cap <= 0 or rec_cap > STREAM_MAX_REC { return StreamReader.bad(STREAM_ERR_ARG) }
+        if seen_cap < 0 or seen_cap > STREAM_MAX_SEEN { return StreamReader.bad(STREAM_ERR_ARG) }
+        let fd = @open(path, 0, 0)
+        if fd < 0 { return StreamReader.bad(STREAM_ERR_OPEN) }
+        var seen_ptr = @malloc(8) as *u8
+        if seen_cap > 0 { seen_ptr = @malloc(seen_cap * 8) }
+        return StreamReader {
+            fd: fd,
+            buf: @malloc(chunk_cap),
+            buf_cap: chunk_cap,
+            pos: 0, len: 0, eof: 0,
+            rec: @malloc(rec_cap),
+            rec_cap: rec_cap, rec_len: 0,
+            bol: 1, skipping: 0,
+            u8need: 0, u8lo: 0, u8hi: 0, u8sec: 0, recbad: 0,
+            seen: seen_ptr,
+            seen_cap: seen_cap, seen_used: 0, dedup_full: 0,
+            finished: 0, status: STREAM_OK,
+            records: 0, bytes_read: 0, dups: 0, invalids: 0, oversize: 0, empties: 0,
+        }
+    }
+
+    fn free(self: *StreamReader) {
+        if self.fd >= 0 { @close(self.fd) self.fd = -1 }
+        @free(self.buf) @free(self.rec) @free(self.seen)
+    }
+
+    /// 63-bit pozitif FNV-1a — tekilleştirme tablosu anahtarı.
+    /// i64 + @wrapping_mul: çarpım 2^64 mod sarar (FNV tanımı gereği).
+    fn hash_bytes(ptr: *u8, len: i64) -> i64 {
+        var h: i64 = -3750763034362895579 // 0xcbf29ce484222325
+        var i: i64 = 0
+        while i < len {
+            h = h ^ (@read_u8(@ptr_add(ptr, i)) as i64)
+            h = @wrapping_mul(h, 1099511628211)
+            i = i + 1
+        }
+        return h & 0x7fffffffffffffff
+    }
+
+    /// `---` + sonlandırıcı denetimi. self.buf[pos] == '-' ve satır başı
+    /// olduğu çağıran tarafından doğrulanır.
+    /// Dönen: 0 = ayırıcı değil, 3/4/5 = ayırıcı bayt uzunluğu.
+    fn sep_len(self: *StreamReader, pos: i64, len: i64, eof: i64) -> i64 {
+        var b1: i64 = -1
+        var b2: i64 = -1
+        var b3: i64 = -1
+        var b4: i64 = -1
+        if pos + 1 < len { b1 = @read_u8(@ptr_add(self.buf, pos + 1)) as i64 }
+        if pos + 2 < len { b2 = @read_u8(@ptr_add(self.buf, pos + 2)) as i64 }
+        if pos + 3 < len { b3 = @read_u8(@ptr_add(self.buf, pos + 3)) as i64 }
+        if pos + 4 < len { b4 = @read_u8(@ptr_add(self.buf, pos + 4)) as i64 }
+        if b1 != 45 or b2 != 45 { return 0 }
+        if b3 == 10 { return 4 } // "---\n"
+        if b3 == 13 { // "---\r..."
+            if b4 == 10 { return 5 } // "---\r\n"
+            if b4 == -1 {
+                if eof == 1 { return 4 } // "---\r" + EOF
+                return 0
+            }
+            return 0
+        }
+        if b3 == -1 {
+            if eof == 1 { return 3 } // "---" + EOF
+            return 0
+        }
+        return 0
+    }
+
+    /// Kayıt sonu kararı: boş/geçersiz/tekil kayıtları eler, tekil ise
+    /// self.records'i artırır. 1 = yayınla, 0 = atla.
+    fn try_emit(self: *StreamReader, content_len: i64, bad_flag: i64) -> i64 {
+        if content_len <= 0 {
+            self.empties = self.empties + 1
+            return 0
+        }
+        if bad_flag == 1 {
+            self.invalids = self.invalids + 1
+            return 0
+        }
+        if self.seen_cap > 0 {
+            let h = StreamReader.hash_bytes(self.rec, content_len)
+            let want = h | 1
+            var slot = h % self.seen_cap
+            var probes: i64 = 0
+            var verdict: i64 = 0 // 0 = tablo tükendi, 1 = tekil, 2 = mükerrer
+            while probes < self.seen_cap and verdict == 0 {
+                let cell = @ptr_add(self.seen, slot * 8)
+                let v = @read_u64(cell) as i64
+                if v == 0 {
+                    if self.seen_used < self.seen_cap {
+                        @write_u64(cell, want as u64)
+                        self.seen_used = self.seen_used + 1
+                        verdict = 1
+                    } else {
+                        verdict = 0
+                        probes = self.seen_cap
+                    }
+                } else if v == want {
+                    verdict = 2
+                } else {
+                    slot = (slot + 1) % self.seen_cap
+                    probes = probes + 1
+                }
+            }
+            if verdict == 2 {
+                self.dups = self.dups + 1
+                return 0
+            }
+            if verdict == 0 { self.dedup_full = 1 }
+        }
+        self.records = self.records + 1
+        return 1
+    }
+
+    /// Sonraki kaydı okur. >0: uzunluk (kayıt self.rec içinde), 0: EOF,
+    /// <0: hata kodu (STREAM_ERR_*). Kayıt bir sonraki next()'e dek geçerli.
+    fn next(self: *StreamReader) -> i64 {
+        if self.finished == 1 { self.status = STREAM_EOF return 0 }
+        if self.fd < 0 { self.status = STREAM_ERR_STATE return STREAM_ERR_STATE }
+        var pos = self.pos
+        var len = self.len
+        var eof = self.eof
+        var rec_len = self.rec_len
+        var bol = self.bol
+        var skipping = self.skipping
+        var need = self.u8need
+        var ulo = self.u8lo
+        var uhi = self.u8hi
+        var usec = self.u8sec
+        var bad = self.recbad
+        var emitted: i64 = 0
+        var out_len: i64 = 0
+        var err: i64 = 0
+        var need_refill: i64 = 0
+        var buf = self.buf
+        var rec = self.rec
+        var rec_cap = self.rec_cap
+        var buf_cap = self.buf_cap
+        var scanning: i64 = 1
+        while scanning == 1 {
+            if pos >= len or need_refill == 1 {
+                need_refill = 0
+                if eof == 1 and pos >= len { scanning = 0 }
+                else {
+                    var tail = len - pos
+                    if pos > 0 {
+                        var ci: i64 = 0
+                        while ci < tail {
+                            @write_u8(@ptr_add(buf, ci), @read_u8(@ptr_add(buf, pos + ci)))
+                            ci = ci + 1
+                        }
+                    }
+                    len = tail
+                    pos = 0
+                    var n = @read(self.fd, @ptr_add(buf, len), buf_cap - len)
+                    if n < 0 {
+                        err = STREAM_ERR_READ
+                        scanning = 0
+                    } else if n == 0 {
+                        eof = 1
+                    } else {
+                        len = len + n
+                        self.bytes_read = self.bytes_read + n
+                    }
+                }
+                continue
+            }
+            let b = @read_u8(@ptr_add(buf, pos)) as i64
+            var is_sep: i64 = 0
+            var sep_len_v: i64 = 0
+            if bol == 1 and b == 45 {
+                if eof == 0 and pos + 5 > len {
+                    need_refill = 1 // "---\r\n" için 5. bayt gerekebilir
+                } else {
+                    let sl = self.sep_len(pos, len, eof)
+                    if sl > 0 { is_sep = 1 sep_len_v = sl }
+                }
+            }
+            if need_refill == 1 { continue }
+            if is_sep == 1 {
+                var content_end = rec_len
+                if content_end > 0 and @read_u8(@ptr_add(rec, content_end - 1)) == 10 { content_end = content_end - 1 }
+                if content_end > 0 and @read_u8(@ptr_add(rec, content_end - 1)) == 13 { content_end = content_end - 1 }
+                if skipping == 0 {
+                    let bad_flag = if bad == 1 or need != 0 { 1 } else { 0 }
+                    if self.try_emit(content_end, bad_flag) == 1 {
+                        emitted = 1
+                        out_len = content_end
+                    }
+                }
+                pos = pos + sep_len_v
+                bol = 1
+                rec_len = 0
+                skipping = 0
+                need = 0
+                ulo = 0
+                uhi = 0
+                usec = 0
+                bad = 0
+                if emitted == 1 { scanning = 0 }
+                continue
+            }
+            if skipping == 0 {
+                if rec_len >= rec_cap {
+                    skipping = 1
+                    self.oversize = self.oversize + 1
+                } else {
+                    @write_u8(@ptr_add(rec, rec_len), b as u8)
+                    rec_len = rec_len + 1
+                    if b < 128 {
+                        if need != 0 { bad = 1 need = 0 usec = 0 }
+                    } else if need == 0 {
+                        if b >= 194 and b <= 223 {
+                            need = 1 ulo = 128 uhi = 191 usec = 1
+                        } else if b == 224 {
+                            need = 2 ulo = 160 uhi = 191 usec = 1
+                        } else if (b >= 225 and b <= 236) or (b >= 238 and b <= 239) {
+                            need = 2 ulo = 128 uhi = 191 usec = 1
+                        } else if b == 237 {
+                            need = 2 ulo = 128 uhi = 159 usec = 1
+                        } else if b == 240 {
+                            need = 3 ulo = 144 uhi = 191 usec = 1
+                        } else if b >= 241 and b <= 243 {
+                            need = 3 ulo = 128 uhi = 191 usec = 1
+                        } else if b == 244 {
+                            need = 3 ulo = 128 uhi = 143 usec = 1
+                        } else {
+                            bad = 1
+                        }
+                    } else {
+                        if b < ulo or b > uhi {
+                            bad = 1
+                            need = 0
+                            usec = 0
+                        } else {
+                            need = need - 1
+                            if usec == 1 { usec = 0 ulo = 128 uhi = 191 }
+                        }
+                    }
+                }
+            }
+            if b == 10 { bol = 1 } else { bol = 0 }
+            pos = pos + 1
+        }
+        self.pos = pos
+        self.len = len
+        self.eof = eof
+        self.rec_len = rec_len
+        self.bol = bol
+        self.skipping = skipping
+        self.u8need = need
+        self.u8lo = ulo
+        self.u8hi = uhi
+        self.u8sec = usec
+        self.recbad = bad
+        if err != 0 {
+            self.finished = 1
+            self.status = err
+            return err
+        }
+        if emitted == 1 {
+            self.status = STREAM_OK
+            return out_len
+        }
+        // EOF: sondaki yarım kalan kaydı da boşalt.
+        if eof == 1 {
+            if skipping == 0 and (rec_len > 0 or bad == 1) {
+                var content_end = rec_len
+                if content_end > 0 and @read_u8(@ptr_add(rec, content_end - 1)) == 10 { content_end = content_end - 1 }
+                if content_end > 0 and @read_u8(@ptr_add(rec, content_end - 1)) == 13 { content_end = content_end - 1 }
+                let bad_flag = if bad == 1 or need != 0 { 1 } else { 0 }
+                if self.try_emit(content_end, bad_flag) == 1 {
+                    self.pos = 0
+                    self.len = 0
+                    self.rec_len = 0
+                    self.bol = 1
+                    self.skipping = 0
+                    self.u8need = 0
+                    self.u8lo = 0
+                    self.u8hi = 0
+                    self.u8sec = 0
+                    self.recbad = 0
+                    self.finished = 0
+                    self.status = STREAM_OK
+                    return content_end
+                }
+            }
+            self.finished = 1
+            self.status = STREAM_EOF
+            return 0
+        }
+        self.status = STREAM_OK
+        return 0
+    }
+}

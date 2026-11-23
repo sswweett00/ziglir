@@ -1,0 +1,152 @@
+// noema_dyn.lir — NOEMA-Φ alan dinamiği yardımcıları (Mimari §5).
+//
+// İkinci derece dalga denklemi:
+//   ∂Ψ/∂t = Π
+//   τ2 ∂Π/∂t + γ(x)Π = -δF/δΨ* + i·Ω̂_ned Π + ξ(x,t)
+//
+// Bu modül çözücü olmayan saf parçaları sağlar:
+//   - konum-bağımlı sönümleme γ(x) (güvenlik duvarı kritik sönümü),
+//   - enerji koruyan Hermityen jiroskopik operatör iΩ̂Π uygulaması,
+//   - deterministik (tohumlu) yerel termal gürültü ξ(x,t),
+//   - mekanik-bilgi enerjisi E(t) ve Lyapunov türevi izleme.
+//
+// Uzaysal ∇ işleçleri (b·∇Π + ∇·(bΠ)) Woodbury akıları üzerinden
+// Faz 3 çözücüsünde hesaplanır; burada operatörün cebirsel uygulaması
+// ve enerji-koruma özdeşliğinin doğrulaması verilir.
+
+import "noema_const.lir"
+import "noema_math.lir"
+import "noema_arena.lir"
+import "noema_arena_rt.lir"
+
+// ── Deterministik PRNG (§9.3'ün basit öncüsü) ──────────────────────────
+// (tohum, x, t, akış) → [-1,1) tekdüze. Tüm işlemler tamsayı; üç
+// backend'te bit-bit aynıdır. Durum tutulmaz — her (x,t) bağımsızdır.
+
+fn dyn_hash_mix(h0: i64) -> i64 {
+    var x = h0 & 0xFFFFFFFF
+    x = x ^ (x >> 16)
+    x = (x * 0x7FEB352D) & 0xFFFFFFFF
+    x = x ^ (x >> 15)
+    x = (x * 0x846CA68B) & 0xFFFFFFFF
+    x = x ^ (x >> 16)
+    return x
+}
+
+/// Deterministik birim gürültü ϑ(x,t,stream) ∈ [-1,1).
+fn dyn_noise_unit(seed: i64, x: i64, t: i64, stream: i64) -> f64 {
+    var h = (seed & 0xFFFFF)
+    h = h ^ ((x & 0xFFFFF) * 0x9E37)
+    h = h ^ ((t & 0xFFFFF) * 0x85EB)
+    h = h ^ ((stream & 0xFF) * 0x27D4)
+    let u = dyn_hash_mix(h)
+    return (u as f64) / 4294967296.0 * 2.0 - 1.0
+}
+
+/// ξ(x,t) = ξ0(m)·tanh(||δF/δΨ*||/F0)·(1-1_Bkor)·ϑ — karmaşık çıktı.
+/// grad_norm: kuvvet vektörünün L2 normu; koruma bölgesinde 0.
+/// prm: [xi0, grad_norm, f0, koruma] — skalerler f64.
+fn dyn_noise_xi(prm: *f64, seed: i64, x: i64, t: i64,
+                fre: *f64, fim: *f64) {
+    if prm[3] != 0.0 {
+        fre[0] = 0.0
+        fim[0] = 0.0
+        return
+    }
+    let scale = prm[0] * noema_tanh(prm[1] / prm[2])
+    fre[0] = scale * dyn_noise_unit(seed, x, t, 0)
+    fim[0] = scale * dyn_noise_unit(seed, x, t, 1)
+}
+
+// ── Sönümleme γ(x) (§5.1) ─────────────────────────────────────────────
+// γ(x) = γ0 + Σ_α (1-R(h_α)) 1_{B_α}(x) γ_kor
+// koruma bayrağı nokta başına maskeden gelir; burada skaler biçim.
+
+fn dyn_gamma(koruma_aktif: i64) -> f64 {
+    if koruma_aktif != 0 {
+        return NOEMA_GAMMA_0 + NOEMA_GAMMA_KOR
+    }
+    return NOEMA_GAMMA_0
+}
+
+// ── Hermityen jiroskopik operatör (§5.1) ──────────────────────────────
+// Ω̂Π = ω0 Π - i/2 (b∇Π + ∇(bΠ)) ≡ ω0 Π - i/2 G
+// iΩ̂Π = iω0Π + G/2 ;  G = (gre + i·gim) çağıran tarafından verilir.
+//   re = gre/2 - ω0·pim
+//   im = gim/2 + ω0·pre
+
+fn dyn_gyro_apply(omega0: f64, gre: f64, gim: f64,
+                  pre: f64, pim: f64, out_re: *f64, out_im: *f64) {
+    out_re[0] = gre * 0.5 - omega0 * pim
+    out_im[0] = gim * 0.5 + omega0 * pre
+}
+
+/// Re⟨Π, iΩ̂Π⟩ = pre·re + pim·im — teoride tam 0 (enerji koruma).
+fn dyn_gyro_orth(omega0: f64, gre: f64, gim: f64,
+                 pre: f64, pim: f64) -> f64 {
+    var re = 0.0
+    var im = 0.0
+    dyn_gyro_apply(omega0, gre, gim, pre, pim, &re, &im)
+    return pre * re + pim * im
+}
+
+// ── Enerji ve Lyapunov izleme (§5.2) ──────────────────────────────────
+// E(t) = F_alan + τ2 Σ||Π||² ;  dE/dt = -2Σγ(x)|Π|²
+
+impl Arena {
+    /// ||Π||² toplamı (kart slot'u k, tüm ızgara).
+    fn pi_norm2(self: *Arena, k: i64) -> f64 {
+        var e = 0.0
+        var p: i64 = 0
+        let n = self.b_faz * self.field_n
+        while p < n {
+            let b = p / self.field_n
+            let i = p % self.field_n
+            e = e + pot_r2_local(self.pi_re_at(k, b, i),
+                                 self.pi_im_at(k, b, i))
+            p = p + 1
+        }
+        return e
+    }
+
+    /// ||Π||² koruma-maskeli alt toplamı (kor_m[p]!=0 noktalar).
+    fn pi_norm2_koruma(self: *Arena, k: i64, kor_m: *i64) -> f64 {
+        var e = 0.0
+        var p: i64 = 0
+        let n = self.b_faz * self.field_n
+        while p < n {
+            if kor_m[p] != 0 {
+                let b = p / self.field_n
+                let i = p % self.field_n
+                e = e + pot_r2_local(self.pi_re_at(k, b, i),
+                                     self.pi_im_at(k, b, i))
+            }
+            p = p + 1
+        }
+        return e
+    }
+
+    /// Toplam mekanik-bilgi enerjisi: F_alan + τ2·Σ_k||Π_k||².
+    fn energy_total(self: *Arena, f_alan: f64, n_aktif: i64) -> f64 {
+        var e = f_alan
+        var k: i64 = 0
+        while k < n_aktif {
+            e = e + NOEMA_TAU_2 * self.pi_norm2(k)
+            k = k + 1
+        }
+        return e
+    }
+
+    /// Lyapunov türevi: dE/dt = -2[γ0·||Π||² + γ_kor·||Π||²_kor].
+    /// koruma yoksa sıfır maskeli tampon verilir.
+    fn lyapunov_dot(self: *Arena, k: i64, kor_m: *i64) -> f64 {
+        let tot = self.pi_norm2(k)
+        let kor = self.pi_norm2_koruma(k, kor_m)
+        return -2.0 * (NOEMA_GAMMA_0 * tot + NOEMA_GAMMA_KOR * kor)
+    }
+}
+
+// pot_r2 noema_pot.lir'de modül-özel; burada yerel kopya (çakışma yok).
+fn pot_r2_local(x: f64, y: f64) -> f64 {
+    return x * x + y * y
+}

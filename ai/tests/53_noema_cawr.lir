@@ -1,0 +1,118 @@
+// NOEMA-Φ Faz 4.2a testi: CAWR girişim integralleri cebiri (Mimari §7.2).
+// Kapsam: w = g⁻¹∇ψ ve v = g⁻¹∇Φ akı hesapları (birim geometride
+// nokta nokta doğrulama), D_σ/D_u[r,μ]/D_b[μ] birikiminin bağımsız
+// elle-hesap karşılaştırması, U≠0 ile Woodbury + D_u kolu.
+//
+// Halka/yörünge ve geri geçiş 54_noema_cawr_orbit.lir'dedir.
+import "../src/noema_const.lir"
+import "../src/noema_arena.lir"
+import "../src/noema_cawr.lir"
+
+// Hassas integralleri backend'ler arası son-basamak farkına karşı
+// 1e-6 çözünürlükte nicele.
+fn q6(x: f64) -> i64 {
+    return @floor(x * 1000000.0 + 0.5) as i64
+}
+
+fn zero_dudb(d: *f64) {
+    var z: i64 = 0
+    while z < 320 { d[z] = 0.0 z = z + 1 }
+}
+
+fn main() -> i64 {
+    var checks: i64 = 0
+    var passed: i64 = 0
+
+    var cfg = Arena.config_default()
+    var a = Arena.init(cfg)
+    // Birim geometri: init sonrası tüm float bölgeleri 0 → σ_eff=0,
+    // U_eff=0 → g=I, c=1. metric_compose gerekmez.
+
+    var buf: [CAWR_BUFSIZE]f64 = [0.0; CAWR_BUFSIZE]
+    // ψ görüntüsü: re=i, im=0.05i ; Φ: re=0.01i, im=0.02i
+    var i: i64 = 0
+    while i < NOEMA_D {
+        buf[CAWR_OFF_SR + i] = (i as f64)
+        buf[CAWR_OFF_SI + i] = 0.05 * (i as f64)
+        buf[CAWR_OFF_PR + i] = 0.01 * (i as f64)
+        buf[CAWR_OFF_PI + i] = 0.02 * (i as f64)
+        i = i + 1
+    }
+    let frc = a.cawr_flows(0, &buf[0])
+    checks = checks + 5
+    if frc == 0 { passed = passed + 1 }
+    // w = ∇ψ (merkezî fark): içte ψ[i+1]−ψ[i−1]; periyodik uç sarar
+    if @fabs(buf[CAWR_OFF_WR + 10] - 2.0) < 1e-9 { passed = passed + 1 }
+    if @fabs(buf[CAWR_OFF_WI + 10] - 0.1) < 1e-9 { passed = passed + 1 }
+    if @fabs(buf[CAWR_OFF_VR + 10] - 0.02) < 1e-9 { passed = passed + 1 }
+    if @fabs(buf[CAWR_OFF_WR + 0] - (-62.0)) < 1e-9 { passed = passed + 1 }
+    printlnFloat(buf[CAWR_OFF_WR + 10])
+    printlnFloat(buf[CAWR_OFF_WI + 10])
+    printlnFloat(buf[CAWR_OFF_VR + 10])
+    printlnFloat(buf[CAWR_OFF_WR + 0])
+
+    // Tek birikim adımı (dt_w = 0.5); bağımsız beklenti testte hesaplanır.
+    var dso: f64 = 0.0
+    // dudb: [0,256) = D_u (rr*64+mu), [256,320) = D_b (mu)
+    var dudb: [320]f64 = [0.0; 320]
+    let arc = a.cawr_accumulate(0, 0.5, &buf[0], &dso, &dudb[0])
+    var es: f64 = 0.0
+    i = 0
+    while i < NOEMA_D {
+        let tr = buf[CAWR_OFF_VR + i] * buf[CAWR_OFF_WR + i]
+        let ti = buf[CAWR_OFF_VI + i] * buf[CAWR_OFF_WI + i]
+        es = es + tr + ti
+        i = i + 1
+    }
+    let eds = 0.0 - es    // −2·e^{2σ}·dt_w·Σ(v†w), σ=0, dt_w=0.5
+    // db[μ] = −η_b·dt_w·[Im(Φ*w) + Im(Ψ*v)] ; μ=10 için bağımsız beklenti
+    let t1 = buf[CAWR_OFF_PR + 10] * buf[CAWR_OFF_WI + 10] - buf[CAWR_OFF_PI + 10] * buf[CAWR_OFF_WR + 10]
+    let t2 = buf[CAWR_OFF_SR + 10] * buf[CAWR_OFF_VI + 10] - buf[CAWR_OFF_SI + 10] * buf[CAWR_OFF_VR + 10]
+    let edb10 = 0.0 - 0.5 * (t1 + t2)
+    checks = checks + 4
+    if arc == 0 { passed = passed + 1 }
+    if @fabs(dso - eds) < 1e-9 { passed = passed + 1 }
+    if @fabs(dudb[266] - edb10) < 1e-9 { passed = passed + 1 }
+    // U=0 → z_w = z_v = 0 → tüm D_u sıfır
+    if dudb[0] == 0.0 and dudb[137] == 0.0 and dudb[255] == 0.0 { passed = passed + 1 }
+    printInt(q6(dso)) println("")
+    printInt(q6(eds)) println("")
+    printInt(q6(dudb[266])) println("")
+    printInt(q6(edb10)) println("")
+
+    // U ≠ 0: u_eff[0][10]=2 → z_w[0]=2·wre[10], D_u kolu sınanır.
+    // ginv artık Woodbury düzeltmesi yapar; beklenti tampon değerlerinden
+    // bağımsız olarak yeniden hesaplanır.
+    a.u_eff_set(0, 0, 10, 2.0)
+    let frc2 = a.cawr_flows(0, &buf[0])
+    checks = checks + 1
+    if frc2 == 0 { passed = passed + 1 }
+    dso = 0.0
+    zero_dudb(&dudb[0])
+    a.cawr_accumulate(0, 0.5, &buf[0], &dso, &dudb[0])
+    let u1 = buf[CAWR_OFF_ZWR] * buf[CAWR_OFF_VR + 10] + buf[CAWR_OFF_ZWI] * buf[CAWR_OFF_VI + 10]
+    let u2 = buf[CAWR_OFF_ZVR] * buf[CAWR_OFF_WR + 10] + buf[CAWR_OFF_ZVI] * buf[CAWR_OFF_WI + 10]
+    let edu10 = 0.0 - 0.5 * (u1 + u2)
+    checks = checks + 2
+    if @fabs(dudb[10] - edu10) < 1e-9 { passed = passed + 1 }
+    if dudb[10] != 0.0 { passed = passed + 1 }
+    printlnFloat(buf[CAWR_OFF_ZWR])
+    printInt(q6(dudb[10])) println("")
+    printInt(q6(edu10)) println("")
+
+    // cawr_ok önkoşul denetimi: field_n=8 yapılandırması reddedilir.
+    var cfg2 = Arena.config_default()
+    cfg2.field_n = 8
+    cfg2.ring_bytes = NOEMA_RING_MIN_MB * 1048576
+    var a2 = Arena.init(cfg2)
+    checks = checks + 1
+    if a2.cawr_ok() == -1 { passed = passed + 1 }
+    a2.free()
+
+    a.free()
+    printInt(passed)
+    print("/")
+    printInt(checks)
+    println("")
+    return 0
+}

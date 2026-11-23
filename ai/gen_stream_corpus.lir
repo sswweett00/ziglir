@@ -1,0 +1,69 @@
+// Akış hattı demo veri kümesi üretici: ai/noema-training/stream_corpus.txt
+// Biçim: her kayıt metin satırları + "label:<0-3>" son satırı, ardından "---".
+// Sınıflar (answer/ask/tool/abstain) farklı anahtar kelimeler taşır; SEL
+// hash'li torba-kelimeleri gerçek bir ayrım öğrenebilir. ~%4 kayıt birebir
+// tekrar içerir (tekilleştirme demosu). Tamamı sentetik/template üretimidir.
+import "src/noema_corpus.lir"
+
+fn gen_i64(fd: i64, value: i64) {
+    corpus_write_i64(fd, value)
+}
+fn gen_record(fd: i64, i: i64) {
+    let class = i % 4
+    let variant = (i / 4) % 6
+    let a = 2 + (i * 7) % 89
+    let b = 1 + (i * 13) % 97
+    if class == 0 {
+        if variant == 0 { corpus_write(fd, "Bir depoda ") gen_i64(fd, a) corpus_write(fd, " koli ve ") gen_i64(fd, b) corpus_write(fd, " koli daha var. Toplam kaç koli olur?") }
+        else if variant == 1 { corpus_write(fd, "Sepette ") gen_i64(fd, a) corpus_write(fd, " elma ve ") gen_i64(fd, b) corpus_write(fd, " armut var. Toplam meyve sayısı kaçtır?") }
+        else if variant == 2 { corpus_write(fd, "Bir rafta ") gen_i64(fd, a) corpus_write(fd, " kitap vardı, ") gen_i64(fd, b) corpus_write(fd, " kitap daha kondu. Yeni toplam kaçtır?") }
+        else if variant == 3 { corpus_write(fd, "Bahçeye ") gen_i64(fd, a) corpus_write(fd, " fidan ve ") gen_i64(fd, b) corpus_write(fd, " fidan daha dikildi. Toplam fidan kaç oldu?") }
+        else if variant == 4 { corpus_write(fd, "Depoda ") gen_i64(fd, a) corpus_write(fd, " koli varken ") gen_i64(fd, b) corpus_write(fd, " koli geldi. Kaç koli var şimdi?") }
+        else { corpus_write(fd, "Otobüste ") gen_i64(fd, a) corpus_write(fd, " yolcu vardı, ") gen_i64(fd, b) corpus_write(fd, " kişi bindi. Son toplam kaç yolcu?") }
+        corpus_write(fd, "\nlabel:0\n---\n")
+        return
+    }
+    if class == 1 {
+        if variant == 0 { corpus_write(fd, "Bir kutunun kütlesi ") gen_i64(fd, a) corpus_write(fd, " gram. İçindeki tek parçanın kütlesi kaçtır?") }
+        else if variant == 1 { corpus_write(fd, "Dikdörtgenin alanı ") gen_i64(fd, a) corpus_write(fd, " santimetrekare. Bir kenarın uzunluğu nedir?") }
+        else if variant == 2 { corpus_write(fd, "Bir sınıfta ") gen_i64(fd, a) corpus_write(fd, " öğrenci var. Kaçı kız öğrencidir?") }
+        else if variant == 3 { corpus_write(fd, "Bir ürünün fiyatı ") gen_i64(fd, a) corpus_write(fd, " lira. İndirimli fiyatı nedir?") }
+        else if variant == 4 { corpus_write(fd, "Bir havuzda ") gen_i64(fd, a) corpus_write(fd, " litre su var. Derinliği kaç metredir?") }
+        else { corpus_write(fd, "Bir pakette ") gen_i64(fd, a) corpus_write(fd, " parça var. Her parçanın ağırlığı kaçtır?") }
+        corpus_write(fd, " Bu bilgiyle yanıt belirlenemez.\nlabel:1\n---\n")
+        return
+    }
+    if class == 2 {
+        if variant == 0 { corpus_write(fd, "n=") gen_i64(fd, a) corpus_write(fd, " için toplamı bulan LIR fonksiyonunu yaz ve test et. İlgili sayı: ") gen_i64(fd, b) }
+        else if variant == 1 { corpus_write(fd, "En çok ") gen_i64(fd, a) corpus_write(fd, " satırlı dosyanın satırlarını sayan programı derle ve çalıştır.") }
+        else if variant == 2 { corpus_write(fd, "Metindeki ") gen_i64(fd, a) corpus_write(fd, " kelimeyi sayan LIR kodunu üret.") }
+        else if variant == 3 { corpus_write(fd, "Dizideki en büyük ") gen_i64(fd, a) corpus_write(fd, " elemanı bulan fonksiyonu yaz ve doğrula.") }
+        else if variant == 4 { corpus_write(fd, "Dosyada ") gen_i64(fd, a) corpus_write(fd, " kaydı tarayıp eşleşmeyi bulan kodu derle.") }
+        else { corpus_write(fd, "Verilen ") gen_i64(fd, a) corpus_write(fd, " koşul için LIR fonksiyonu üret, derle, test et.") }
+        corpus_write(fd, "\nlabel:2\n---\n")
+        return
+    }
+    if variant == 0 { corpus_write(fd, "Reklam harcaması ") gen_i64(fd, a) corpus_write(fd, " lira, satışlar ") gen_i64(fd, b) corpus_write(fd, " arttı. Reklam artışın nedeni midir?") }
+    else if variant == 1 { corpus_write(fd, "Kahve tüketimi ") gen_i64(fd, a) corpus_write(fd, " fincan, üretkenlik ") gen_i64(fd, b) corpus_write(fd, " yükseldi. Nedensellik kanıtlandı mı?") }
+    else if variant == 2 { corpus_write(fd, "Bisiklet sayısı ") gen_i64(fd, a) corpus_write(fd, ", güneşli gün ") gen_i64(fd, b) corpus_write(fd, ". Bisikletler havaya neden olur mu?") }
+    else if variant == 3 { corpus_write(fd, "Şemsiye satışı ") gen_i64(fd, a) corpus_write(fd, " iken kaldırım ") gen_i64(fd, b) corpus_write(fd, " ıslandı. Bu ilişki nedenselliği gösterir mi?") }
+    else if variant == 4 { corpus_write(fd, "Dondurma satışı ") gen_i64(fd, a) corpus_write(fd, ", sağlık başvurusu ") gen_i64(fd, b) corpus_write(fd, ". Dondurma neden oldu mu?") }
+    else { corpus_write(fd, "Çalışma süresi ") gen_i64(fd, a) corpus_write(fd, " saat, puan ") gen_i64(fd, b) corpus_write(fd, ". Bu gözlem neden-sonuç kanıtlar mı?") }
+    corpus_write(fd, "\nlabel:3\n---\n")
+}
+
+fn main() -> i64 {
+    let fd = @open("ai/noema-training/stream_corpus.txt", 577, 420)
+    if fd < 0 { println("CORPUS_OPEN_FAIL") return 1 }
+    var i: i64 = 0
+    let total: i64 = 60000
+    while i < total {
+        gen_record(fd, i)
+        // ~%4 birebir tekrar: tekilleştirme yolunu gerçek veride sınar.
+        if i > 0 and i % 23 == 0 { gen_record(fd, i - 1) }
+        i = i + 1
+    }
+    @close(fd)
+    println("stream_corpus.txt yazıldı")
+    return 0
+}

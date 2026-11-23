@@ -3158,7 +3158,7 @@ pub const IRCodegen = struct {
                     self.loadVregToReg(inst.src1, 0);
                     break :blk 0;
                 };
-                self.emitPtrTrapN(ptr_reg, 8);
+                if (!inst.unchecked_access) self.emitPtrTrapN(ptr_reg, 8);
                 const dst_reg: u8 = self.vregPhys(inst.dest) orelse 0;
                 self.emitMemLoadDisp(dst_reg, ptr_reg, 0);
                 if (self.vregPhys(inst.dest) == null) self.storeRegToVreg(dst_reg, inst.dest);
@@ -3168,7 +3168,7 @@ pub const IRCodegen = struct {
                     self.loadVregToReg(inst.src1, 0);
                     break :blk 0;
                 };
-                self.emitPtrTrapN(ptr_reg, 8);
+                if (!inst.unchecked_access) self.emitPtrTrapN(ptr_reg, 8);
                 const val_reg: u8 = self.vregPhys(inst.src2) orelse blk: {
                     const r: u8 = if (ptr_reg == 1) 2 else 1;
                     self.loadVregToReg(inst.src2, r);
@@ -3181,11 +3181,13 @@ pub const IRCodegen = struct {
                     self.loadVregToReg(inst.src1, 0);
                     break :blk 0;
                 };
-                if (inst.field_offset == 0) {
-                    self.emitPtrTrapN(ptr_reg, 8);
-                } else {
-                    self.emitLeaRegDisp(11, ptr_reg, @intCast(inst.field_offset));
-                    self.emitPtrTrapN(11, 8);
+                if (!inst.unchecked_access) {
+                    if (inst.field_offset == 0) {
+                        self.emitPtrTrapN(ptr_reg, 8);
+                    } else {
+                        self.emitLeaRegDisp(11, ptr_reg, @intCast(inst.field_offset));
+                        self.emitPtrTrapN(11, 8);
+                    }
                 }
                 const dst_reg: u8 = self.vregPhys(inst.dest) orelse 0;
                 self.emitMemLoadDisp(dst_reg, ptr_reg, @intCast(inst.field_offset));
@@ -3196,11 +3198,13 @@ pub const IRCodegen = struct {
                     self.loadVregToReg(inst.src1, 0);
                     break :blk 0;
                 };
-                if (inst.field_offset == 0) {
-                    self.emitPtrTrapN(ptr_reg, 8);
-                } else {
-                    self.emitLeaRegDisp(11, ptr_reg, @intCast(inst.field_offset));
-                    self.emitPtrTrapN(11, 8);
+                if (!inst.unchecked_access) {
+                    if (inst.field_offset == 0) {
+                        self.emitPtrTrapN(ptr_reg, 8);
+                    } else {
+                        self.emitLeaRegDisp(11, ptr_reg, @intCast(inst.field_offset));
+                        self.emitPtrTrapN(11, 8);
+                    }
                 }
                 const val_reg: u8 = self.vregPhys(inst.src2) orelse blk: {
                     const r: u8 = if (ptr_reg == 1) 2 else 1;
@@ -4119,7 +4123,7 @@ pub const IRCodegen = struct {
                     self.loadVregToReg(inst.args[0], 0);
                     break :blk 0;
                 };
-                self.emitPtrTrapN(ptr_reg, 1);
+                if (!inst.unchecked_access) self.emitPtrTrapN(ptr_reg, 1);
                 const dst_reg: u8 = self.vregPhys(inst.dest) orelse 0;
                 self.emitMemLoadByte(dst_reg, ptr_reg);
                 if (inst.dest != 0 and self.vregPhys(inst.dest) == null) self.storeRegToVreg(dst_reg, inst.dest);
@@ -4129,7 +4133,7 @@ pub const IRCodegen = struct {
                     self.loadVregToReg(inst.args[0], 0);
                     break :blk 0;
                 };
-                self.emitPtrTrapN(ptr_reg, 1);
+                if (!inst.unchecked_access) self.emitPtrTrapN(ptr_reg, 1);
                 const val_v = inst.args[1];
                 if (val_v > 0 and val_v < MAX_VREGS and self.vreg_const_known[val_v]) {
                     const imm8: u8 = @truncate(@as(u64, @bitCast(self.vreg_const_imm[val_v])));
@@ -6124,7 +6128,7 @@ pub const IRCodegen = struct {
                     self.loadVregToReg(inst.args[0], 0);
                     break :blk 0;
                 };
-                self.emitPtrTrapN(ptr_reg, 4);
+                if (!inst.unchecked_access) self.emitPtrTrapN(ptr_reg, 4);
                 const dst_reg: u8 = self.vregPhys(inst.dest) orelse 0;
                 self.emitMemLoadU32(dst_reg, ptr_reg);
                 if (inst.dest != 0 and self.vregPhys(inst.dest) == null) self.storeRegToVreg(dst_reg, inst.dest);
@@ -6134,7 +6138,7 @@ pub const IRCodegen = struct {
                     self.loadVregToReg(inst.args[0], 0);
                     break :blk 0;
                 };
-                self.emitPtrTrapN(ptr_reg, 4);
+                if (!inst.unchecked_access) self.emitPtrTrapN(ptr_reg, 4);
                 const val_reg: u8 = self.vregPhys(inst.args[1]) orelse blk_v: {
                     self.loadVregToReg(inst.args[1], 1);
                     break :blk_v 1;

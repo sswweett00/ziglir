@@ -83,18 +83,30 @@ struct File {
     }
 
     fn readAll(self: *File, alloc: *Allocator) -> Result(string, FileError) {
-        // Read entire file into allocated buffer
-        let cap: u64 = 4096
-        let buf = alloc.allocator_alloc(cap * @size_of(u8))
+        // Read entire file into a growing allocated buffer
+        var cap: u64 = 4096
+        var buf = alloc.allocator_alloc(cap)
         if buf == null {
             return Result(string, FileError).Err(FileError.OutOfMemory)
         }
-        let total = self.read(buf as *u8, cap)
-        if total < 0 {
-            alloc.allocator_free(buf, cap * @size_of(u8))
-            return Result(string, FileError).Err(FileError.IoError)
+        var total: u64 = 0
+        while true {
+            if total >= cap {
+                cap = cap * 2
+                let nb = alloc.allocator_realloc(buf as *anyopaque, cap)
+                if nb == null {
+                    return Result(string, FileError).Err(FileError.OutOfMemory)
+                }
+                buf = nb
+            }
+            let n = syscall_read(self.fd as u64, @ptr_add(buf as *u8, total), cap - total)
+            if n == 0 { break }
+            if n > 0x7fffffffffffffff {
+                return Result(string, FileError).Err(FileError.IoError)
+            }
+            total += n
         }
-        Result(string, FileError).Ok(string { ptr: buf as *u8, len: total as u64 })
+        Result(string, FileError).Ok(string { ptr: buf as *u8, len: total })
     }
 }
 
@@ -278,19 +290,29 @@ struct StringBuilder {
         }
     }
 
+    fn ensure(self: *StringBuilder, needed: u64) -> bool {
+        if needed <= self.capacity { return true }
+        var new_cap = self.capacity * 2
+        if new_cap == 0 { new_cap = 16 }
+        if new_cap < needed { new_cap = needed }
+        let np = self.allocator.allocator_realloc(self.buf as *anyopaque, new_cap)
+        if np == null { return false }
+        self.buf = np as *u8
+        self.capacity = new_cap
+        true
+    }
+
     fn append(self: *StringBuilder, data: string) -> bool {
-        if self.len + data.len >= self.capacity { return false }
-        var i: u64 = 0
-        while i < data.len {
-            self.buf[self.len] = data.ptr[i]
-            self.len += 1
-            i += 1
+        if !self.ensure(self.len + data.len + 1) { return false }
+        if data.len > 0 {
+            @memcpy(@ptr_add(self.buf, self.len), data.ptr, data.len)
         }
+        self.len += data.len
         true
     }
 
     fn appendByte(self: *StringBuilder, ch: u8) -> bool {
-        if self.len >= self.capacity { return false }
+        if !self.ensure(self.len + 2) { return false }
         self.buf[self.len] = ch
         self.len += 1
         true
@@ -302,6 +324,7 @@ struct StringBuilder {
     }
 
     fn toString(self: *StringBuilder) -> string {
+        if self.len < self.capacity { self.buf[self.len] = 0 }
         string { ptr: self.buf, len: self.len }
     }
 

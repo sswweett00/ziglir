@@ -1,0 +1,164 @@
+// NOEMA-Φ Faz 4.2b testi: CAWR yörünge halkası + ters-zaman eşlenik
+// geri geçişi (Mimari §7.2). Kapsam: τ_orta halka kayıt/tüketim,
+// c_bar doğruluğu, Strang eşlenik çözücünün kararlılığı (‖Φ‖ sonlu),
+// girişim integrallerinin sonluluğu, determinizm, halka boşalınca
+// cawr_step'in -1 dönmesi.
+//
+// Girişim cebiri doğrulaması 53_noema_cawr.lir'dedir.
+import "../src/noema_const.lir"
+import "../src/noema_math.lir"
+import "../src/noema_arena.lir"
+import "../src/noema_arena_rt.lir"
+import "../src/noema_atlas.lir"
+import "../src/noema_metric.lir"
+import "../src/noema_metric_uv.lir"
+import "../src/noema_cawr.lir"
+
+fn q6(x: f64) -> i64 {
+    return @floor(x * 1000000.0 + 0.5) as i64
+}
+
+fn main() -> i64 {
+    var checks: i64 = 0
+    var passed: i64 = 0
+
+    var cfg = Arena.config_default()
+    cfg.ring_bytes = NOEMA_RING_MIN_MB * 1048576
+    cfg.slot_bytes = 2048   // CAWR payload: 32 + 2*64*8 = 1056 <= 2048
+    var a = Arena.init(cfg)
+
+    var c: i64 = 0
+    while c < cfg.c_total {
+        a.cavity_sig_set(c, c % 4, 1.0)
+        c = c + 1
+    }
+    a.atlas_build()
+    var j: i64 = 0
+    while j < 4 {
+        a.atlas_j_set(j, if j == 0 { 1.0 } else { 0.0 })
+        j = j + 1
+    }
+    let nsel = a.atlas_select(4)
+    let card = a.atlas_card_of(0)
+    printInt(card) println("")
+
+    // Gerçek metrik: σ taban 0.2, seyrek U/b taban değerleri
+    a.metric_sigma_set(0, 0, 0.2)
+    a.metric_u_set(0, 0, 3, 7, 0.4)
+    a.metric_u_set(0, 0, 1, 20, -0.3)
+    a.metric_b_set(0, 0, 5, 0.2)
+    a.mode_uniform()
+    a.metric_compose_all(nsel)
+    let cb = a.cawr_cbar(card)
+    // σ_eff=0.2 → c=e^{-0.4}; u2=0.4²+0.3²=0.25 → cbar=0.5(cmin+c)
+    let cex = noema_exp(0.0 - 0.4)
+    let cminex = cex / (1.0 + cex * 0.25)
+    let cbarex = 0.5 * (cminex + cex)
+    checks = checks + 1
+    if @fabs(cb - cbarex) < 1e-9 { passed = passed + 1 }
+    printlnFloat(cb)
+    printlnFloat(cbarex)
+
+    // 6 makro adımlık ileri yörünge: her adım ψ deseni ilerletilip
+    // (k=card, b=0) halka kaydı itilir.
+    const T: i64 = 6
+    var t: i64 = 0
+    while t < T {
+        var ii: i64 = 0
+        while ii < NOEMA_D {
+            let v = 0.4 * @sin(0.13 * (ii as f64) + 0.07 * (t as f64))
+            a.psi_set(card, 0, ii, v, 0.5 * v)
+            ii = ii + 1
+        }
+        let ps = a.cawr_orbit_push(card, 0)
+        if ps < 0 { break }
+        t = t + 1
+    }
+    checks = checks + 2
+    if t == T { passed = passed + 1 }
+    if a.ringst.ring_count == T { passed = passed + 1 }
+    printInt(t) println("")
+    printInt(a.ringst.ring_count) println("")
+
+    // Eşlenik başlangıç koşulu + küçük hata akımı
+    var buf: [CAWR_BUFSIZE]f64 = [0.0; CAWR_BUFSIZE]
+    var pre: [64]f64 = [0.0; 64]
+    var pim: [64]f64 = [0.0; 64]
+    var jre: [64]f64 = [0.0; 64]
+    var jim: [64]f64 = [0.0; 64]
+    var i: i64 = 0
+    while i < NOEMA_D {
+        pre[i] = 0.3 * @cos(0.11 * (i as f64))
+        pim[i] = 0.2 * @sin(0.09 * (i as f64))
+        jre[i] = 0.002 * ((i as f64) - 32.0)
+        jim[i] = -0.001 * ((i as f64) - 16.0)
+        i = i + 1
+    }
+    cawr_field_set(&buf[0], &pre[0], &pim[0])
+    cawr_force_set(&buf[0], &jre[0], &jim[0])
+    var dso: f64 = 0.0
+    var dudb: [320]f64 = [0.0; 320]
+
+    let done = a.cawr_backward(card, 0, NOEMA_DT, T, &buf[0],
+                               &dso, &dudb[0])
+    // Φ sonlu kalmalı (ters-zaman sönümü kararlı)
+    var pn: f64 = 0.0
+    i = 0
+    while i < NOEMA_D {
+        let pr2 = buf[CAWR_OFF_PR + i] * buf[CAWR_OFF_PR + i]
+        let pi2 = buf[CAWR_OFF_PI + i] * buf[CAWR_OFF_PI + i]
+        pn = pn + pr2 + pi2
+        i = i + 1
+    }
+    checks = checks + 5
+    if done == T { passed = passed + 1 }
+    if a.ringst.ring_count == 0 { passed = passed + 1 }
+    if a.cawr_ring_find(cawr_tag(card, 0)) == -1 { passed = passed + 1 }
+    if pn == pn and pn < 1e6 { passed = passed + 1 }
+    if dso == dso and dudb[10] == dudb[10] and dudb[266] == dudb[266] { passed = passed + 1 }
+    printInt(done) println("")
+    printInt(q6(pn)) println("")
+    printInt(q6(dso)) println("")
+    printInt(q6(dudb[10])) println("")
+    printInt(q6(dudb[266])) println("")
+
+    // Yörünge tükendi → ek adım -1 döner
+    let extra = a.cawr_step(card, 0, NOEMA_DT, &buf[0], &dso, &dudb[0])
+    checks = checks + 1
+    if extra == -1 { passed = passed + 1 }
+    printInt(extra) println("")
+
+    // Determinizm: aynı yörünge + aynı koşul → aynı integraller
+    t = 0
+    while t < T {
+        var ii: i64 = 0
+        while ii < NOEMA_D {
+            let v = 0.4 * @sin(0.13 * (ii as f64) + 0.07 * (t as f64))
+            a.psi_set(card, 0, ii, v, 0.5 * v)
+            ii = ii + 1
+        }
+        a.cawr_orbit_push(card, 0)
+        t = t + 1
+    }
+    cawr_buf_zero(&buf[0])
+    cawr_field_set(&buf[0], &pre[0], &pim[0])
+    cawr_force_set(&buf[0], &jre[0], &jim[0])
+    var dso2: f64 = 0.0
+    var dudb2: [320]f64 = [0.0; 320]
+    let done2 = a.cawr_backward(card, 0, NOEMA_DT, T, &buf[0],
+                                &dso2, &dudb2[0])
+    checks = checks + 2
+    if done2 == T { passed = passed + 1 }
+    let dd1 = @fabs(dso2 - dso)
+    let dd2 = @fabs(dudb2[10] - dudb[10])
+    let dd3 = @fabs(dudb2[266] - dudb[266])
+    if dd1 < 1e-9 and dd2 < 1e-9 and dd3 < 1e-9 { passed = passed + 1 }
+    printInt(done2) println("")
+
+    a.free()
+    printInt(passed)
+    print("/")
+    printInt(checks)
+    println("")
+    return 0
+}

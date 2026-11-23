@@ -55,3 +55,4 @@ ai/noema-training/turkish_decoder_predictions.v1.jsonl
 ai/noema-training/turkish_chat_memory.nsm
 ai/noema-training/turkish_training_stdout.txt
 ai/noema-training/turkish_training_time.txt
+ai/noema-training/stream_corpus.txt

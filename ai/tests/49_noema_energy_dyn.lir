@@ -1,0 +1,236 @@
+// NOEMA-Φ Faz 2 testi: serbest enerji terimleri + kapalı-form
+// Wirtinger türevleri (§4.1), alan taraması, küresel özetler
+// (C_çelişki, g_çek, Q_d, c_j, z_ort, R_geom) ve dinamik yardımcılar
+// (γ(x), iΩ̂Π, deterministik ξ, E(t), Lyapunov). Üç backend birebir.
+//
+// IMPORT SIRASI: struct'lar modül sınırını aşamaz; arena önce.
+import "../src/noema_arena.lir"
+import "../src/noema_arena_rt.lir"
+import "../src/noema_math.lir"
+import "../src/noema_const.lir"
+import "../src/noema_atlas.lir"
+import "../src/noema_metric.lir"
+import "../src/noema_metric_uv.lir"
+import "../src/noema_pot.lir"
+import "../src/noema_energy.lir"
+import "../src/noema_dyn.lir"
+
+fn main() -> i64 {
+    // ── Küçük ızgara: b_faz=2, field_n=8 → N=16 nokta ──────────────────
+    var cfg = Arena.config_default()
+    cfg.b_faz = 2
+    cfg.field_n = 8
+    cfg.ring_bytes = NOEMA_RING_MIN_MB * 1048576
+    var a = Arena.init(cfg)
+    let n = a.b_faz * a.field_n   // 16
+
+    // ψ deseni: re = 0.3+0.05p, im = -0.2+0.03p (deterministik)
+    var p: i64 = 0
+    while p < n {
+        let b = p / a.field_n
+        let i = p % a.field_n
+        a.psi_set(0, b, i, 0.3 + 0.05 * (p as f64), -0.2 + 0.03 * (p as f64))
+        a.pi_set(0, b, i, 0.1, -0.05)
+        p = p + 1
+    }
+
+    // ── V_top: değer + sonlu-fark Wirtinger doğrulaması ───────────────
+    printlnFloat(v_top_val(0.5, -0.3))
+    var gre: f64 = 0.0
+    var gim: f64 = 0.0
+    v_top_grad(0.5, -0.3, &gre, &gim)
+    printlnFloat(gre)
+    printlnFloat(gim)
+    // F_x = 2·Re(W), F_y = 2·Im(W); h=1e-4 sonlu fark
+    let h = 0.0001
+    let fx = (v_top_val(0.5 + h, -0.3) - v_top_val(0.5 - h, -0.3)) / (2.0 * h)
+    let fy = (v_top_val(0.5, -0.3 + h) - v_top_val(0.5, -0.3 - h)) / (2.0 * h)
+    printlnFloat(fx)
+    printlnFloat(2.0 * gre)
+    printlnFloat(fy)
+    printlnFloat(2.0 * gim)
+
+    // ── V_sembol / V_doğrulama / V_koruma / V_çekinme ─────────────────
+    printlnFloat(v_sembol_val(0.5, -0.3, 1.2))
+    v_sembol_grad(0.5, -0.3, 1.2, &gre, &gim)
+    printlnFloat(gre)
+    printlnFloat(gim)
+    printlnFloat(v_dogrulama_val(0.5, -0.3, 0.8, 0.6, 1.0))
+    v_dogrulama_grad(0.5, -0.3, 0.8, 0.6, 1.0, &gre, &gim)
+    printlnFloat(gre)
+    printlnFloat(gim)
+    printlnFloat(v_koruma_val(0.5, -0.3, 1))
+    printlnFloat(v_koruma_val(0.5, -0.3, 0))
+    printlnFloat(v_cekinme_val(0.5, -0.3, 0.1, 0.2, 0.7, 1))
+    printlnFloat(v_cekinme_val(0.5, -0.3, 0.1, 0.2, 0.7, 0))
+
+    // ── Köprü çifti ────────────────────────────────────────────────────
+    printlnFloat(kopru_val(1.0, 0.0, 0.0, 1.0, 0.5, 0.7))
+    var dre: f64 = 0.0
+    var dim: f64 = 0.0
+    kopru_diff_a(1.0, 0.0, 0.0, 1.0, 0.7, &dre, &dim)
+    printlnFloat(dre)
+    printlnFloat(dim)
+    kopru_force_a(1.0, 0.0, 0.0, 1.0, 0.5, 0.7, &gre, &gim)
+    printlnFloat(gre)
+    printlnFloat(gim)
+
+    // ── Alan enerjisi + kuvvet taraması ────────────────────────────────
+    // maskeler: out_m hepsi 1, kor_m ilk 4 nokta 1
+    var out_m: [16]i64 = [1; 16]
+    var kor_m: [16]i64 = [0; 16]
+    var q: i64 = 0
+    while q < 4 {
+        kor_m[q] = 1
+        q = q + 1
+    }
+    var vhat: [6]f64 = [1.0, 0.0, 1.0, 0.0, 0.5, 0.5]
+    // j/f: karmaşık akım ve kuvvet, nokta başına (re,im) ardışık
+    var jbuf: [32]f64 = [0.0; 32]
+    var fbuf: [32]f64 = [0.0; 32]
+    jbuf[0] = 0.25    // p=0: J_re
+    jbuf[1] = -0.1    // p=0: J_im
+    var prm4: [4]f64 = [0.6, 0.5, 0.2, -0.1]  // lam_sem, cek_g, cek_re, cek_im
+    let fe = a.field_energy(0, &prm4[0], &out_m[0], &kor_m[0],
+                            &vhat[0], 2)
+    printlnFloat(fe)
+    var prm5: [5]f64 = [0.6, 0.5, 0.2, -0.1, 2.0]  // + nv=2
+    a.field_force(0, &prm5[0], &out_m[0], &kor_m[0],
+                  &vhat[0], &jbuf[0], &fbuf[0])
+    printlnFloat(fbuf[0])
+    printlnFloat(fbuf[1])
+    printlnFloat(fbuf[30])
+    printlnFloat(fbuf[31])
+
+    // ── E_söz: Q_d + kuvvet ────────────────────────────────────────────
+    // n_d=1, rho = ψ deseninin kendisi → Q = Σ|ψ|² = E_Ψ
+    var rho: [32]f64 = [0.0; 32]
+    p = 0
+    while p < n {
+        let b = p / a.field_n
+        let i = p % a.field_n
+        rho[p * 2] = a.psi_re_at(0, b, i)
+        rho[p * 2 + 1] = a.psi_im_at(0, b, i)
+        p = p + 1
+    }
+    var qd: [1]f64 = [0.0; 1]
+    a.soz_charges(0, 1, &rho[0], &qd[0])
+    printlnFloat(qd[0])
+    printlnFloat(a.field_e_psi(0))   // Q = E_Ψ olmalı
+    var fr2: f64 = 0.0
+    var fi2: f64 = 0.0
+    soz_force(1, &qd[0], &rho[0], NOEMA_LAMBDA_SOZ_KOD, &fr2, &fi2)
+    printlnFloat(fr2)
+    printlnFloat(fi2)
+
+    // ── E_kilit: c_j + resid + kuvvet ─────────────────────────────────
+    // n_j=2 kip: χ0 = ψ deseni, χ1 = 2ψ deseni → c1 = 2c0, c̄ = 1.5c0
+    var chi: [64]f64 = [0.0; 64]
+    p = 0
+    while p < n {
+        let b = p / a.field_n
+        let i = p % a.field_n
+        chi[p * 2] = a.psi_re_at(0, b, i)
+        chi[p * 2 + 1] = a.psi_im_at(0, b, i)
+        chi[(n + p) * 2] = 2.0 * a.psi_re_at(0, b, i)
+        chi[(n + p) * 2 + 1] = 2.0 * a.psi_im_at(0, b, i)
+        p = p + 1
+    }
+    var cr: [2]f64 = [0.0; 2]
+    var ci: [2]f64 = [0.0; 2]
+    a.kilit_coeffs(0, 2, &chi[0], &cr[0], &ci[0])
+    printlnFloat(cr[0])
+    printlnFloat(ci[0])
+    printlnFloat(cr[1])
+    printlnFloat(ci[1])
+    var resid: [4]f64 = [0.0; 4]
+    kilit_residuals(2, &cr[0], &ci[0], &resid[0])
+    printlnFloat(resid[0])
+    printlnFloat(resid[2])
+    // χ_j(x) nokta değeri p=0: χ0=ψ(0)=(0.3,-0.2), χ1=2ψ(0)=(0.6,-0.4)
+    var kp: [4]f64 = [0.3, -0.2, 0.6, -0.4]
+    kilit_force(2, &resid[0], &kp[0], NOEMA_GAMMA_KILIT, &fr2, &fi2)
+    printlnFloat(fr2)
+    printlnFloat(fi2)
+
+    // ── I_nedensel: z_ort + S + kuvvet ────────────────────────────────
+    var orm: [16]f64 = [0.0; 16]
+    var oim: [16]f64 = [0.0; 16]
+    p = 0
+    while p < n {
+        orm[p] = 0.5
+        oim[p] = 0.0
+        p = p + 1
+    }
+    var zre: f64 = 0.0
+    var zim: f64 = 0.0
+    a.nedensel_z(0, &orm[0], &oim[0], &zre, &zim)
+    printlnFloat(zre)
+    printlnFloat(zim)
+    let ep = a.field_e_psi(0)
+    let s = nedensel_S(zre, zim, ep)
+    printlnFloat(s)
+    printlnFloat(nedensel_val(s))
+    // tek nokta kuvvet katkısı (p=0 değerleri)
+    // blk = [psi_re, psi_im, orta_re, orta_im, z_re, z_im, S, E_psi]
+    var blk: [8]f64 = [0.0; 8]
+    blk[0] = a.psi_re_at(0, 0, 0)
+    blk[1] = a.psi_im_at(0, 0, 0)
+    blk[2] = orm[0]
+    blk[3] = oim[0]
+    blk[4] = zre
+    blk[5] = zim
+    blk[6] = s
+    blk[7] = ep
+    nedensel_force(&blk[0], &fr2, &fi2)
+    printlnFloat(fr2)
+    printlnFloat(fi2)
+
+    // ── C_çelişki, g_çek, genlik ──────────────────────────────────────
+    printlnFloat(a.field_l1_abs(0))
+    printlnFloat(a.field_celiski(0))
+    printlnFloat(a.field_amp_rms(0))
+    printlnFloat(a.field_g_cek(0, NOEMA_A_GUVEN, NOEMA_C_ESIK))
+
+    // ── R_geom ─────────────────────────────────────────────────────────
+    a.metric_sigma_set(0, 0, 0.4)
+    a.metric_sigma_set(0, 1, -0.2)
+    a.metric_u_set(0, 0, 0, 0, 0.5)
+    a.metric_b_set(0, 0, 0, 0.3)
+    printlnFloat(a.geom_energy_set(0, 0))
+    printlnFloat(a.geom_energy_set(0, 1))
+    printlnFloat(a.geom_energy_card(0))
+
+    // ── Dinamik: γ, jiroskop, gürültü, enerji, Lyapunov ───────────────
+    printlnFloat(dyn_gamma(0))
+    printlnFloat(dyn_gamma(1))
+    // G = (1,0), Π=(0,1), ω0=2 → iΩ̂Π = G/2 + iω0Π = (0.5, 2.0)
+    var ore: f64 = 0.0
+    var oimv: f64 = 0.0
+    dyn_gyro_apply(2.0, 1.0, 0.0, 0.0, 1.0, &ore, &oimv)
+    printlnFloat(ore)
+    printlnFloat(oimv)
+    printlnFloat(dyn_gyro_orth(2.0, 1.0, 0.0, 0.0, 1.0)) // ≈0
+    // determinizm: aynı argümanlar → aynı değer
+    printlnFloat(dyn_noise_unit(42, 3, 7, 0))
+    printlnFloat(dyn_noise_unit(42, 3, 7, 0))
+    printlnFloat(dyn_noise_unit(42, 3, 7, 1))
+    // ξ: koruma=1 → 0 ; koruma=0 → ölçekli gürültü
+    var nprm: [4]f64 = [1.0, 2.0, 1.0, 1.0]
+    fr2 = 9.0
+    fi2 = 9.0
+    dyn_noise_xi(&nprm[0], 42, 3, 7, &fr2, &fi2)
+    printlnFloat(fr2)
+    printlnFloat(fi2)
+    nprm[3] = 0.0
+    dyn_noise_xi(&nprm[0], 42, 3, 7, &fr2, &fi2)
+    printlnFloat(fr2)
+    printlnFloat(fi2)
+    // ||Π||² = 16·(0.01+0.0025) = 0.2 ; E = F + τ2·0.2
+    printlnFloat(a.pi_norm2(0))
+    printlnFloat(a.energy_total(fe, 1))
+    printlnFloat(a.lyapunov_dot(0, &kor_m[0]))
+
+    a.free()
+    return 0
+}

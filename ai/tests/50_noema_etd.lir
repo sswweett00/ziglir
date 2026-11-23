@@ -1,0 +1,162 @@
+// NOEMA-Φ Faz 3 testi: IMEX-ETD Strang çözücü (§6).
+// Kapsam: c_min/c_max/c_bar sınırları, mikro-DCT-II gidiş-dönüş,
+// üç rejimli ETD kararlılığı, V_koruma kritik sönümlü propagatör,
+// L1/L2 döşemeli Strang + makro senkron + erken kararlılık çıkışı.
+import "../src/noema_const.lir"
+import "../src/noema_etd.lir"
+
+fn main() -> i64 {
+    var checks: i64 = 0
+    var passed: i64 = 0
+
+    // ── §6.1 kart sınırları ──────────────────────────────────────────
+    var cmin: f64 = 0.0
+    var cmax: f64 = 0.0
+    var cbar: f64 = 0.0
+    etd_card_bounds(0.0, 0.0, &cmin, &cmax, &cbar)
+    checks = checks + 1
+    if cmin == 1.0 and cmax == 1.0 and cbar == 1.0 { passed = passed + 1 }
+    etd_card_bounds(1.0, 2.0, &cmin, &cmax, &cbar)
+    checks = checks + 1
+    if cmin < cbar and cbar < cmax and cmax == noema_exp(0.0 - 2.0) { passed = passed + 1 }
+    printlnFloat(cmin)
+    printlnFloat(cbar)
+    printlnFloat(cmax)
+
+    // ── Mikro-DCT-II gidiş-dönüş (NB=8) ──────────────────────────────
+    var src: [8]f64 = [0.0; 8]
+    var dst: [8]f64 = [0.0; 8]
+    var rec: [8]f64 = [0.0; 8]
+    var i: i64 = 0
+    while i < 8 {
+        src[i] = (i as f64) * 0.25 - 0.5
+        i = i + 1
+    }
+    dct2_fwd(&src[0], &dst[0], 8)
+    dct2_inv(&dst[0], &rec[0], 8)
+    var maxerr: f64 = 0.0
+    i = 0
+    while i < 8 {
+        let e = @fabs(rec[i] - src[i])
+        if e > maxerr { maxerr = e }
+        i = i + 1
+    }
+    checks = checks + 1
+    if maxerr < 1e-9 { passed = passed + 1 }
+    // duyarlılık backend'lere göre son basamakta değişir — nicemli yaz
+    printInt(if maxerr < 1e-9 { 1 } else { 0 })
+    println("")
+
+    // ── Strang çözücü: tek bitişik tampon (ETD_BUFSIZE f64) ───────────
+    let buf = @malloc(ETD_BUFSIZE * 8) as *f64
+    i = 0
+    while i < ETD_BUFSIZE {
+        buf[i] = 0.0
+        i = i + 1
+    }
+    // başlangıç: ψ desenli, Π = 0, artık kuvvet = 0
+    i = 0
+    while i < 64 {
+        buf[ETD_OFF_PR + i] = @sin((i as f64) * 0.3)
+        buf[ETD_OFF_PI + i] = 0.5 * @cos((i as f64) * 0.2)
+        i = i + 1
+    }
+
+    // alt sönümlü rejim: σ=-1 → cbar büyük → salınımlı ama kararlı
+    etd_card_bounds(-1.0, 0.0, &cmin, &cmax, &cbar)
+    let done1 = etd_run_block(buf, NOEMA_DT, cbar, 64, 4)
+    var sp: f64 = 0.0
+    var sq: f64 = 0.0
+    var rat: f64 = 0.0
+    var ex: i64 = 0
+    etd_macro_sync(buf, 64, &sp, &sq, &rat, &ex)
+    checks = checks + 2
+    if done1 == 4 { passed = passed + 1 }
+    if sp > 0.0 and sq >= 0.0 and @fabs(rat) < 1e6 { passed = passed + 1 }
+    printlnFloat(sp)
+    printlnFloat(sq)
+    printlnFloat(rat)
+
+    // determinizm: aynı başlangıçla tekrar
+    i = 0
+    while i < 64 {
+        buf[ETD_OFF_PR + i] = @sin((i as f64) * 0.3)
+        buf[ETD_OFF_PI + i] = 0.5 * @cos((i as f64) * 0.2)
+        buf[ETD_OFF_RR + i] = 0.0
+        buf[ETD_OFF_RI + i] = 0.0
+        i = i + 1
+    }
+    let done1b = etd_run_block(buf, NOEMA_DT, cbar, 64, 4)
+    var sp2: f64 = 0.0
+    var sq2: f64 = 0.0
+    var rat2: f64 = 0.0
+    var ex2: i64 = 0
+    etd_macro_sync(buf, 64, &sp2, &sq2, &rat2, &ex2)
+    checks = checks + 1
+    if done1b == 4 and @fabs(sp2 - sp) < 1e-9 and @fabs(sq2 - sq) < 1e-9 { passed = passed + 1 }
+
+    // üst sönümlü rejim: σ=+1 → cbar küçük → aşırı sönümlü
+    etd_card_bounds(1.0, 0.0, &cmin, &cmax, &cbar)
+    i = 0
+    while i < 64 {
+        buf[ETD_OFF_PR + i] = @sin((i as f64) * 0.3)
+        buf[ETD_OFF_PI + i] = 0.0
+        buf[ETD_OFF_RR + i] = 0.0
+        buf[ETD_OFF_RI + i] = 0.0
+        i = i + 1
+    }
+    let done2 = etd_run_block(buf, NOEMA_DT, cbar, 64, 4)
+    etd_macro_sync(buf, 64, &sp, &sq, &rat, &ex)
+    checks = checks + 2
+    if done2 == 4 { passed = passed + 1 }
+    if sq >= 0.0 and rat >= 0.0 { passed = passed + 1 }
+    printlnFloat(sq)
+    printlnFloat(rat)
+
+    // ── V_koruma kritik sönümlü propagatör: büyük genlik → sönümlenir ──
+    i = 0
+    while i < 64 {
+        buf[ETD_OFF_PR + i] = 10.0
+        buf[ETD_OFF_PI + i] = 0.0
+        buf[ETD_OFF_RR + i] = 5.0
+        buf[ETD_OFF_RI + i] = 0.0
+        i = i + 1
+    }
+    // tek yarım-adımda Π geçici büyüyebilir (kritik sönüm çifti);
+    // 10 yarım-adım (τ_toplam = 5·Δt) sonra genlik ~e^{-ω·0.75} ≈ 0.
+    var rep: i64 = 0
+    while rep < 10 {
+        etd_protect_half(buf, NOEMA_DT, 64)
+        rep = rep + 1
+    }
+    var after: f64 = 0.0
+    i = 0
+    while i < 64 {
+        after = after + @fabs(buf[ETD_OFF_PR + i]) + @fabs(buf[ETD_OFF_RR + i])
+        i = i + 1
+    }
+    checks = checks + 1
+    if after < 2.0 { passed = passed + 1 }
+    printlnFloat(after)
+
+    // ── Erken kararlılık çıkışı: güçlü sönüm + 100 mikroadım ──────────
+    i = 0
+    while i < 64 {
+        buf[ETD_OFF_PR + i] = 1.0
+        buf[ETD_OFF_PI + i] = 0.0
+        buf[ETD_OFF_RR + i] = 0.0
+        buf[ETD_OFF_RI + i] = 0.0
+        i = i + 1
+    }
+    let done3 = etd_run_block(buf, NOEMA_DT, 0.0, 64, 100)
+    checks = checks + 1
+    if done3 < 100 and done3 > 0 { passed = passed + 1 }
+    printInt(done3)
+    println("")
+
+    printInt(passed)
+    print("/")
+    printInt(checks)
+    println("")
+    return 0
+}

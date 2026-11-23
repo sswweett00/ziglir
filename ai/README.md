@@ -80,6 +80,59 @@ işi yapan `bench/c_twin_train.c` ile ölçülen gerçek oran **9.6x**'tir
 **Rust ölçümü yoktur**; bu ortamda Rust çalıştırılamıyor. Karşılaştırma
 yalnızca C ile ve öyle etiketlenerek yapılmıştır.
 
+## Akış hattı (sınırlı bellek)
+
+`ai/src/stream.lir` — `---` ayırıcılı TXT kayıtlarını **parça parça** okuyan
+akış okuyucusu. Kayıt biçimi: `---` yalnızca satır başında ve ardından
+LF/CRLF/EOF gelen üç tiredir; kayıt ayırıcıyı ve önündeki tek satır sonunu
+içermez. Bellek bütçesi `chunk_cap + rec_cap + seen_cap*8` ile sabittir;
+veri kümesi RAM'i aşsa bile çalışır. Kayıt başına: artımlı UTF-8 doğrulama,
+boş/aşırı-uzun/geçersiz kayıt atlama (sayaçla raporlanır), FNV-1a tabanlı
+tekilleştirme (tablo dolunca `dedup_full`, akış durmaz).
+
+Uçtan uca demo (ölçüldü, bu makine, native backend):
+
+```bash
+./zig-out/bin/lir run ai/gen_stream_corpus.lir --backend=native   # 5.5 MB, 62.608 kayıt
+./zig-out/bin/lir run ai/train_stream.lir --backend=native
+```
+
+Sonuç: 33.479 tekil kayıt online eğitildi, 29.129 mükerrer atlandı,
+5.542.417 bayt **172 ms**'de okundu (~32 MB/s, ~195k kayıt/sn), train/dev
+doğruluğu %97.2 / %96.7. VmHWM 148→2296 kB — tepe bellek veri boyutundan
+bağımsız (parça 64 KiB + kayıt 8 KiB + dedup 2 MiB + model). Parser+dedup
+maliyeti ölçülen eğitim adımının yanında küçük; thread prefetch bu
+2 çekirdekli ortamda `pool.lir` ölçümleri gereği kazandırmıyor, bu yüzden
+okuyucu tek iş parçacıklıdır.
+
+Test: `ai/tests/46_stream_reader.lir` — parça sınırı, UTF-8, CRLF, boş/
+mükerrer/aşırı-uzun/geçersiz kayıt, satır-içi `---`, EOF son kayıt;
+native+VM+C backend'lerinde birebir.
+
+## Düşük bellek eğitim desenleri
+
+SEL mimarisi, veri boyutundan bağımsız bellek kullanımı için üç desen kullanır:
+
+1. **Akış okuyucu** (`stream.lir`): Veri kümesi RAM'e yüklenmez. Tek bir
+   `chunk` tamponu (varsayılan 64 KiB) dosyadan artımlı okur; kayıtlar
+   `---` ile ayrılır ve `rec` tamponuna (varsayılan 8 KiB) iner. Dedup
+   tablosu sabit boyutludur; dolunca `dedup_full` bayrağı ile sonraki
+   mükerrerler raporlanır ama akış durmaz.
+
+2. **Tekil tamponlar (`train_stream.lir`)**: Özellik vektörü (`DIM*8`),
+   hedef vektörü (`NCLASS*8`) ve model çıkış tamponu eğitim döngüsü
+   dışında BİR KEZ tahsis edilir; her kayıt bu tamponların üzerine yazar.
+   Per-kayıt `@malloc` yoktur (önceki sürümde `text_len_cell` her kayıt
+   için tahsis ediliyordu — kaldırıldı).
+
+3. **Model parametreleri**: Kenar tablosu (`nout * K * 4 * 8`), bias
+   (`nout * 8`) ve çıkış (`nout * 8`) blok oluşturma sırasında BİR KEZ
+   tahsis edilir; güncellemeler yerinde (`in-place`) yapılır, copy-on-write
+   yoktur.
+
+Bu desenlerle RAM sınırlı olduğunda da büyük veri kümeleri işlenebilir:
+tek bellek artışı, model boyutuyla sınırlıdır, veri boyutuyla değil.
+
 ## Ne değildir
 
 Bu, GPT/Gemini/Claude ile yarışan bir model değildir ve olduğu iddia
